@@ -2225,3 +2225,162 @@ mod stage36_tests{
         assert_eq!(STAGE36_CURRENT_BT_WINDOW_TRANSACTION_ADDR,0x16C240);assert_eq!(STAGE36_BT_WINDOW_STRIDE,1028);assert_eq!(STAGE36_BT_GROUP_STRIDE,676);
     }
 }
+
+/// Stage 37: current request-to-config update cluster at
+/// `0x16C870`, `0x16C8E4`, and `0x16C942`.
+///
+/// Each complete current body is a globally unique relocation-normalized match
+/// of its legacy counterpart. Lookup/config/commit services remain opaque traits.
+pub const STAGE37_CURRENT_BT_INDEXED_CONFIG_ADDR:u32=0x0016_C870;
+pub const STAGE37_CURRENT_BT_SELECTOR_CONFIG_ADDR:u32=0x0016_C8E4;
+pub const STAGE37_CURRENT_BT_FIELD_UPDATE_ADDR:u32=0x0016_C942;
+pub const STAGE37_BT_INDEX_COUNT_ADDR:u32=STAGE33_BT_INDEX_COUNT_ADDR;
+pub const STAGE37_BT_INDEX_METADATA_BASE_PTR_ADDR:u32=STAGE33_BT_INDEX_METADATA_BASE_PTR_ADDR;
+pub const STAGE37_BT_LOOKUP_BOUNDARY:u32=0x0008_D34C;
+pub const STAGE37_BT_CONTEXT_BOUNDARY:u32=0x0008_86E0;
+pub const STAGE37_BT_CONFIG_BOUNDARY:u32=0x0016_3724;
+pub const STAGE37_BT_COMMIT_BOUNDARY:u32=0x0016_1268;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage37Request{
+    pub key:u16,
+    pub byte14:u8,
+    pub byte15:u8,
+    pub byte16:u8,
+    pub byte17:u8,
+    pub byte18:u8,
+    pub byte19:u8,
+}
+impl BtStage37Request{
+    pub const fn word14(self)->u16{(self.byte14 as u16)|((self.byte15 as u16)<<8)}
+    pub const fn word15(self)->u16{(self.byte15 as u16)|((self.byte16 as u16)<<8)}
+    pub const fn word16(self)->u16{(self.byte16 as u16)|((self.byte17 as u16)<<8)}
+    pub const fn word17(self)->u16{(self.byte17 as u16)|((self.byte18 as u16)<<8)}
+}
+
+pub trait BtStage37ConfigBackend{
+    fn index_count(&self)->u8;
+    fn metadata_enabled(&self,index:usize)->bool;
+    /// Current `0x886E0`; zero means no current context.
+    fn current_context(&mut self)->u32;
+    fn context_byte592(&mut self,context:u32)->u8;
+    /// Current `0x8D34C` object lookup; zero means not found.
+    fn lookup_object(&mut self,key:u16)->u32;
+    fn object_byte223(&mut self,object:u32)->u8;
+    /// Current `0x163724` config-object boundary.
+    fn config_object(&mut self,object:u32)->u32;
+    fn write_config_u16(&mut self,config:u32,offset:u8,value:u16);
+    fn write_config_u8(&mut self,config:u32,offset:u8,value:u8);
+    /// Current `0x161268` tail/commit boundary.
+    fn commit_object(&mut self,object:u32)->u32;
+}
+
+/// Current `0x16C870` / legacy `sub_169D30`.
+///
+/// Request word +16 is first checked against the current global count and the
+/// 264-byte-stride metadata bit at +166. The object lookup then requires byte
+/// +223 bit 1. Success writes request words +14/+16 into config offsets +2/+4,
+/// sets config byte +11 to one, and tail-dispatches the object commit boundary.
+pub fn bt_stage37_indexed_config<B:BtStage37ConfigBackend>(
+    request_passthrough:u32,request:BtStage37Request,response_status:&mut u8,b:&mut B,
+)->u32{
+    let index=request.word16() as usize;
+    if index>=b.index_count() as usize || !b.metadata_enabled(index){
+        *response_status=66;
+        return request_passthrough;
+    }
+    let object=b.lookup_object(request.key);
+    if object==0{*response_status=2;return 0;}
+    if b.object_byte223(object)&2==0{*response_status=26;return object;}
+    let config=b.config_object(object);
+    b.write_config_u16(config,4,request.word16());
+    b.write_config_u16(config,2,request.word14());
+    b.write_config_u8(config,11,1);
+    b.commit_object(object)
+}
+
+/// Current `0x16C8E4` / legacy `sub_169DA4`.
+///
+/// Request byte +16 must be <=239. The current context must exist and have
+/// byte +592 bit 0 set. The same object/byte+223 gate as `0x16C870` follows.
+/// Success writes selector byte +16 at config +10, request word +14 at config
+/// +2, clears config byte +11, and commits the object.
+pub fn bt_stage37_selector_config<B:BtStage37ConfigBackend>(
+    request:BtStage37Request,response_status:&mut u8,b:&mut B,
+)->u32{
+    let selector=request.byte16 as u32;
+    if selector>0xEF{*response_status=18;return selector;}
+    let context=b.current_context();
+    if context==0{*response_status=66;return 0;}
+    if b.context_byte592(context)&1==0{*response_status=18;return context;}
+    let object=b.lookup_object(request.key);
+    if object==0{*response_status=2;return 0;}
+    if b.object_byte223(object)&2==0{*response_status=26;return object;}
+    let config=b.config_object(object);
+    b.write_config_u8(config,10,request.byte16);
+    b.write_config_u16(config,2,request.word14());
+    b.write_config_u8(config,11,0);
+    b.commit_object(object)
+}
+
+/// Current `0x16C942` / legacy `sub_169E02`.
+///
+/// This variant has no metadata/context/object-flag gate. A successful lookup
+/// writes request words +15/+17 to config +6/+8 and bytes +14/+19 to config
+/// +12/+13. It returns the config-object result rather than calling commit.
+pub fn bt_stage37_field_update<B:BtStage37ConfigBackend>(
+    request:BtStage37Request,response_status:&mut u8,b:&mut B,
+)->u32{
+    let object=b.lookup_object(request.key);
+    if object==0{*response_status=2;return 0;}
+    let config=b.config_object(object);
+    b.write_config_u16(config,6,request.word15());
+    b.write_config_u16(config,8,request.word17());
+    b.write_config_u8(config,12,request.byte14);
+    b.write_config_u8(config,13,request.byte19);
+    config
+}
+
+#[cfg(test)]
+mod stage37_tests{
+    use super::*;use std::vec::Vec;
+    #[derive(Clone,Debug,PartialEq,Eq)]enum E{Ctx,CB592(u32),Lookup(u16),Obj223(u32),Cfg(u32),W16(u32,u8,u16),W8(u32,u8,u8),Commit(u32)}
+    struct B{count:u8,enabled:[bool;4],ctx:u32,ctx592:u8,obj:u32,obj223:u8,cfg:u32,commit:u32,events:Vec<E>}
+    impl Default for B{fn default()->Self{Self{count:4,enabled:[true;4],ctx:0xC000,ctx592:1,obj:0xD000,obj223:2,cfg:0xE000,commit:0xF000,events:Vec::new()}}}
+    impl BtStage37ConfigBackend for B{
+        fn index_count(&self)->u8{self.count}
+        fn metadata_enabled(&self,i:usize)->bool{self.enabled.get(i).copied().unwrap_or(false)}
+        fn current_context(&mut self)->u32{self.events.push(E::Ctx);self.ctx}
+        fn context_byte592(&mut self,c:u32)->u8{self.events.push(E::CB592(c));self.ctx592}
+        fn lookup_object(&mut self,k:u16)->u32{self.events.push(E::Lookup(k));self.obj}
+        fn object_byte223(&mut self,o:u32)->u8{self.events.push(E::Obj223(o));self.obj223}
+        fn config_object(&mut self,o:u32)->u32{self.events.push(E::Cfg(o));self.cfg}
+        fn write_config_u16(&mut self,c:u32,o:u8,v:u16){self.events.push(E::W16(c,o,v))}
+        fn write_config_u8(&mut self,c:u32,o:u8,v:u8){self.events.push(E::W8(c,o,v))}
+        fn commit_object(&mut self,o:u32)->u32{self.events.push(E::Commit(o));self.commit}
+    }
+    fn r()->BtStage37Request{BtStage37Request{key:0x1234,byte14:0x78,byte15:0x56,byte16:2,byte17:0,byte18:0x9A,byte19:0xBC}}
+    #[test]fn indexed_config_preserves_gates_writes_and_return_shapes(){
+        let mut b=B::default();let mut s=0xAA;
+        assert_eq!(bt_stage37_indexed_config(0x1111,r(),&mut s,&mut b),0xF000);assert_eq!(s,0xAA);
+        assert_eq!(b.events,[E::Lookup(0x1234),E::Obj223(0xD000),E::Cfg(0xD000),E::W16(0xE000,4,2),E::W16(0xE000,2,0x5678),E::W8(0xE000,11,1),E::Commit(0xD000)]);
+        let mut b=B{count:2,..B::default()};s=0;assert_eq!(bt_stage37_indexed_config(0x1111,r(),&mut s,&mut b),0x1111);assert_eq!(s,66);assert!(b.events.is_empty());
+        let mut b=B{obj:0,..B::default()};s=0;assert_eq!(bt_stage37_indexed_config(0,r(),&mut s,&mut b),0);assert_eq!(s,2);
+        let mut b=B{obj223:0,..B::default()};s=0;assert_eq!(bt_stage37_indexed_config(0,r(),&mut s,&mut b),0xD000);assert_eq!(s,26);
+    }
+    #[test]fn selector_config_preserves_context_object_gates_and_writes(){
+        let mut b=B::default();let mut s=0x44;
+        assert_eq!(bt_stage37_selector_config(r(),&mut s,&mut b),0xF000);assert_eq!(s,0x44);
+        assert_eq!(b.events,[E::Ctx,E::CB592(0xC000),E::Lookup(0x1234),E::Obj223(0xD000),E::Cfg(0xD000),E::W8(0xE000,10,2),E::W16(0xE000,2,0x5678),E::W8(0xE000,11,0),E::Commit(0xD000)]);
+        let mut q=r();q.byte16=240;let mut b=B::default();s=0;assert_eq!(bt_stage37_selector_config(q,&mut s,&mut b),240);assert_eq!(s,18);assert!(b.events.is_empty());
+        let mut b=B{ctx:0,..B::default()};s=0;assert_eq!(bt_stage37_selector_config(r(),&mut s,&mut b),0);assert_eq!(s,66);
+        let mut b=B{ctx592:0,..B::default()};s=0;assert_eq!(bt_stage37_selector_config(r(),&mut s,&mut b),0xC000);assert_eq!(s,18);
+    }
+    #[test]fn field_update_returns_config_and_preserves_exact_offsets(){
+        let mut q=r();q.byte16=0x34;q.byte17=0x12;q.byte18=0xEF;let mut b=B::default();let mut s=7;
+        assert_eq!(bt_stage37_field_update(q,&mut s,&mut b),0xE000);assert_eq!(s,7);
+        assert_eq!(b.events,[E::Lookup(0x1234),E::Cfg(0xD000),E::W16(0xE000,6,0x3456),E::W16(0xE000,8,0xEF12),E::W8(0xE000,12,0x78),E::W8(0xE000,13,0xBC)]);
+        let mut b=B{obj:0,..B::default()};s=0;assert_eq!(bt_stage37_field_update(r(),&mut s,&mut b),0);assert_eq!(s,2);
+        assert_eq!(STAGE37_CURRENT_BT_INDEXED_CONFIG_ADDR,0x16C870);assert_eq!(STAGE37_CURRENT_BT_FIELD_UPDATE_ADDR,0x16C942);
+    }
+}
