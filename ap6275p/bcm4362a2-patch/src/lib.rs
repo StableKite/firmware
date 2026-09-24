@@ -1984,3 +1984,244 @@ mod stage35_tests{
         assert_eq!(STAGE35_CURRENT_BT_MASK_LOOKUP_ADDR,0x16D3B8);assert_eq!(STAGE35_CURRENT_BT_MATCH_RECORD_ADDR,0x16D490);
     }
 }
+
+/// Stage 36: current 440-byte window transaction at `0x16C240`.
+///
+/// The complete current body is a globally unique relocation-normalized match
+/// of legacy `sub_169868`. Runtime services that are not independently
+/// identified remain explicit traits; the known flag-code helper is composed
+/// from Stage 33.
+pub const STAGE36_CURRENT_BT_WINDOW_TRANSACTION_ADDR:u32=0x0016_C240;
+pub const STAGE36_BT_WINDOW_BASE_PTR_ADDR:u32=0x0020_CE98;
+pub const STAGE36_BT_GROUP_BASE_PTR_ADDR:u32=0x0020_BE7C;
+pub const STAGE36_BT_WINDOW_STRIDE:u32=1028;
+pub const STAGE36_BT_GROUP_STRIDE:u32=676;
+pub const STAGE36_BT_READY_BOUNDARY:u32=0x0008_E12C;
+pub const STAGE36_BT_CONTEXT_BOUNDARY:u32=0x0008_86E0;
+pub const STAGE36_BT_VALIDATE_BOUNDARY:u32=0x0009_D7C4;
+pub const STAGE36_BT_CRITICAL_BOUNDARY:u32=0x0000_0780;
+pub const STAGE36_BT_TRANSFORM_LOW12_BOUNDARY:u32=0x0008_F160;
+pub const STAGE36_BT_NOTIFY_GROUP_BOUNDARY:u32=0x0007_9AAE;
+pub const STAGE36_BT_MEMCPY_BOUNDARY:u32=ROM_MEMCPY_ADDR;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage36Context{
+    pub word552:u16,
+    pub byte19:u8,
+    pub byte554:u8,
+    pub byte555:u8,
+    pub byte556:u8,
+    pub flags564:u16,
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage36Request<'a>{
+    /// Request bytes +9..+11, visible to the still-opaque validator.
+    pub prefix9_11:[u8;3],
+    pub selector:u8,
+    pub operation:u8,
+    pub byte14:u8,
+    pub length:u8,
+    /// Bytes beginning at firmware request offset +16. Stage 36 itself never
+    /// indexes this slice; copies are delegated to the backend with exact
+    /// firmware offset/length arguments.
+    pub payload:&'a[u8],
+}
+
+pub trait BtStage36WindowBackend{
+    /// Current `0x8E12C` readiness-like boundary.
+    fn ready(&mut self)->u32;
+    /// Current `0x886E0`; `false` represents its null result.
+    fn context_present(&mut self)->bool;
+    /// Current `0x9D7C4(request+9, context, window, special)` call shape.
+    fn validate(&mut self,request:&BtStage36Request<'_>,context:&BtStage36Context,window_index:u8,special:u8)->u32;
+    fn read_header16(&mut self,window_index:u8)->u16;
+    fn write_header16(&mut self,window_index:u8,value:u16);
+    fn read_header32(&mut self,window_index:u8)->u32;
+    fn write_header32(&mut self,window_index:u8,value:u32);
+    fn read_header_byte2(&mut self,window_index:u8)->u8;
+    fn write_header_byte2(&mut self,window_index:u8,value:u8);
+    /// Current critical-state exchange at `0x780`.
+    fn critical(&mut self,arg:u32)->u32;
+    /// Current `0x8F160`, called with the low 12 bits of context word +552.
+    fn transform_low12(&mut self,value:u16)->u32;
+    /// Current `0x79AAE` on the 676-byte-stride group selected by window index.
+    fn notify_group(&mut self,window_index:u8);
+    /// Known memcpy-like `0x3DB4`, with the request source beginning at +16.
+    fn copy_request_payload(&mut self,request:&BtStage36Request<'_>,window_index:u8,offset:u16,length:u8);
+}
+
+fn bt_stage36_replace_low12(old:u16,value:u32)->u16{
+    (old&0xF000)|((value as u16)&0x0FFF)
+}
+fn bt_stage36_replace_low11_u16(old:u16,value:u32)->u16{
+    (old&!0x07FF)|((value as u16)&0x07FF)
+}
+fn bt_stage36_replace_bits11_21(old:u32,value:u32)->u32{
+    (old&!(0x07FFu32<<11))|((value&0x07FF)<<11)
+}
+
+/// Safe source-level model of current `0x16C240` / legacy `sub_169868`.
+///
+/// The routine validates selector/window state, preserves the firmware's
+/// status/error return shapes, optionally updates a 1028-byte-stride window,
+/// and restores the critical-state token on every entered-critical path.
+/// Successful noncritical `special != 0` exits intentionally leave
+/// `response_status` untouched.
+pub fn bt_stage36_window_transaction<B:BtStage36WindowBackend>(
+    request:&BtStage36Request<'_>,context:&mut BtStage36Context,
+    response_status:&mut u8,b:&mut B,
+)->u32{
+    if b.ready()==0{
+        *response_status=1;
+        return 0;
+    }
+
+    let mut result=request.selector as u32;
+    if result>0xEF{
+        *response_status=18;
+        return result;
+    }
+    if !b.context_present(){
+        *response_status=66;
+        return 0;
+    }
+
+    let window_index=(context.byte555>>3)&0x0F;
+    let special=(context.byte556>>2)&1;
+    result=b.validate(request,context,window_index,special);
+    if result!=0{
+        *response_status=result as u8;
+        return result;
+    }
+
+    let flags=context.flags564;
+    if flags&0x10==0{
+        result=bt_stage33_flag_code(flags);
+        if context.byte554&0x30==0x10{
+            let opmask=request.operation&0xFD;
+            if opmask==1{
+                if result<(request.length as u32){
+                    *response_status=18;
+                    return result;
+                }
+            }else if opmask==0{
+                let used=(b.read_header16(window_index)&0x07FF) as u32;
+                if (request.length as u32)+used>result{
+                    *response_status=18;
+                    return result;
+                }
+            }
+        }
+    }
+
+    if ((flags&0x12)==2 || (flags&0x14)==0x14)
+        && (request.operation!=3 || request.length!=0)
+    {
+        *response_status=18;
+        return result;
+    }
+
+    if special!=0{return result;}
+
+    let token=b.critical(1);
+    if request.operation==4{
+        let transformed=b.transform_low12(context.word552&0x0FFF);
+        context.word552=bt_stage36_replace_low12(context.word552,transformed);
+        return b.critical(token);
+    }
+
+    let opmask=request.operation&0xFD;
+    if opmask==1{
+        // Firmware first writes the low halfword, then performs a full-word
+        // BFI of bits 11..21. Preserve that write sequence explicitly.
+        let h16=b.read_header16(window_index);
+        b.write_header16(window_index,bt_stage36_replace_low11_u16(h16,request.length as u32));
+        let h32=b.read_header32(window_index);
+        b.write_header32(window_index,bt_stage36_replace_bits11_21(h32,special as u32));
+
+        if context.byte19!=0{b.notify_group(window_index);}
+        if context.byte554&0x30!=0x20{
+            let transformed=b.transform_low12(context.word552&0x0FFF);
+            context.word552=bt_stage36_replace_low12(context.word552,transformed);
+        }
+        if request.length!=0{
+            b.copy_request_payload(request,window_index,0,request.length);
+        }
+
+        let byte2=b.read_header_byte2(window_index)|0x40;
+        b.write_header_byte2(window_index,byte2);
+        let byte2=b.read_header_byte2(window_index);
+        b.write_header_byte2(
+            window_index,
+            if request.operation==3{byte2|0x80}else{byte2&0x7F},
+        );
+    }else{
+        if request.length!=0{
+            // Destination offset is captured before the copy. The firmware
+            // re-reads the header after the copy before adding the length.
+            let offset=b.read_header16(window_index)&0x07FF;
+            b.copy_request_payload(request,window_index,offset,request.length);
+            let h16=b.read_header16(window_index);
+            let next=((h16&0x07FF) as u32).wrapping_add(request.length as u32);
+            b.write_header16(window_index,bt_stage36_replace_low11_u16(h16,next));
+        }
+        if request.operation==2{
+            let byte2=b.read_header_byte2(window_index);
+            b.write_header_byte2(window_index,byte2|0x80);
+        }
+    }
+
+    b.critical(token)
+}
+
+#[cfg(test)]
+mod stage36_tests{
+    use super::*;use std::vec::Vec;
+    #[derive(Clone,Debug,PartialEq,Eq)]enum E{Ready,Present,Validate(u8,u8),R16(u8),W16(u8,u16),R32(u8),W32(u8,u32),RB2(u8),WB2(u8,u8),Crit(u32),Xform(u16),Notify(u8),Copy(u8,u16,u8)}
+    struct B{ready:u32,present:bool,validate:u32,h16:u16,h32:u32,b2:u8,token:u32,xform:u32,events:Vec<E>}
+    impl Default for B{fn default()->Self{Self{ready:1,present:true,validate:0,h16:0,h32:0,b2:0,token:0x55,xform:0x456,events:Vec::new()}}}
+    impl BtStage36WindowBackend for B{
+        fn ready(&mut self)->u32{self.events.push(E::Ready);self.ready}
+        fn context_present(&mut self)->bool{self.events.push(E::Present);self.present}
+        fn validate(&mut self,r:&BtStage36Request<'_>,_:&BtStage36Context,i:u8,s:u8)->u32{self.events.push(E::Validate(i,s));assert_eq!(r.prefix9_11,[9,10,11]);self.validate}
+        fn read_header16(&mut self,i:u8)->u16{self.events.push(E::R16(i));self.h16}
+        fn write_header16(&mut self,i:u8,v:u16){self.events.push(E::W16(i,v));self.h16=v;self.h32=(self.h32&0xFFFF_0000)|v as u32}
+        fn read_header32(&mut self,i:u8)->u32{self.events.push(E::R32(i));self.h32}
+        fn write_header32(&mut self,i:u8,v:u32){self.events.push(E::W32(i,v));self.h32=v;self.h16=v as u16;self.b2=(v>>16) as u8}
+        fn read_header_byte2(&mut self,i:u8)->u8{self.events.push(E::RB2(i));self.b2}
+        fn write_header_byte2(&mut self,i:u8,v:u8){self.events.push(E::WB2(i,v));self.b2=v;self.h32=(self.h32&!(0xFF<<16))|((v as u32)<<16)}
+        fn critical(&mut self,a:u32)->u32{self.events.push(E::Crit(a));if a==1{self.token}else{0x7777}}
+        fn transform_low12(&mut self,v:u16)->u32{self.events.push(E::Xform(v));self.xform}
+        fn notify_group(&mut self,i:u8){self.events.push(E::Notify(i))}
+        fn copy_request_payload(&mut self,_:&BtStage36Request<'_>,i:u8,o:u16,n:u8){self.events.push(E::Copy(i,o,n))}
+    }
+    fn req(op:u8,len:u8)->BtStage36Request<'static>{BtStage36Request{prefix9_11:[9,10,11],selector:7,operation:op,byte14:0,length:len,payload:&[]}}
+    #[test]fn early_gates_preserve_status_and_result_shapes(){
+        let mut c=BtStage36Context::default();let mut s=0xAA;let mut b=B{ready:0,..B::default()};
+        assert_eq!(bt_stage36_window_transaction(&req(0,0),&mut c,&mut s,&mut b),0);assert_eq!(s,1);assert_eq!(b.events,[E::Ready]);
+        let r=BtStage36Request{selector:240,..req(0,0)};let mut b=B::default();s=0;
+        assert_eq!(bt_stage36_window_transaction(&r,&mut c,&mut s,&mut b),240);assert_eq!(s,18);assert_eq!(b.events,[E::Ready]);
+        let mut b=B{present:false,..B::default()};s=9;assert_eq!(bt_stage36_window_transaction(&req(0,0),&mut c,&mut s,&mut b),0);assert_eq!(s,66);
+        let mut b=B{validate:0x123,..B::default()};s=9;assert_eq!(bt_stage36_window_transaction(&req(0,0),&mut c,&mut s,&mut b),0x123);assert_eq!(s,0x23);
+    }
+    #[test]fn replace_append_special_and_op4_preserve_update_order(){
+        let mut c=BtStage36Context{word552:0xA123,byte19:1,byte554:0,byte555:0x18,byte556:0,flags564:0x10};
+        let mut b=B{h16:0xF123,h32:0xAA55_F123,b2:0x55,..B::default()};let mut s=0xCC;
+        assert_eq!(bt_stage36_window_transaction(&req(1,4),&mut c,&mut s,&mut b),0x7777);assert_eq!(s,0xCC);assert_eq!(c.word552,0xA456);
+        assert!(b.events.contains(&E::Notify(3)));assert!(b.events.contains(&E::Copy(3,0,4)));assert_eq!(b.b2&0xC0,0x40);
+        let mut c=BtStage36Context{byte555:0x08,flags564:0x10,..BtStage36Context::default()};let mut b=B{h16:5,h32:5,b2:0,..B::default()};
+        assert_eq!(bt_stage36_window_transaction(&req(2,3),&mut c,&mut s,&mut b),0x7777);assert!(b.events.contains(&E::Copy(1,5,3)));assert_eq!(b.h16&0x7ff,8);assert_eq!(b.b2&0x80,0x80);
+        let mut c=BtStage36Context{byte556:4,flags564:0,..BtStage36Context::default()};let mut b=B::default();s=0x5A;
+        assert_eq!(bt_stage36_window_transaction(&req(0,0),&mut c,&mut s,&mut b),245);assert_eq!(s,0x5A);assert!(!b.events.iter().any(|e|matches!(e,E::Crit(_))));
+        let mut c=BtStage36Context{word552:0xB123,flags564:0x10,..BtStage36Context::default()};let mut b=B{xform:0xABC,..B::default()};
+        assert_eq!(bt_stage36_window_transaction(&req(4,0),&mut c,&mut s,&mut b),0x7777);assert_eq!(c.word552,0xBABC);assert!(b.events.contains(&E::Xform(0x123)));
+    }
+    #[test]fn capacity_and_restricted_rejections_return_current_result(){
+        let mut c=BtStage36Context{byte554:0x10,flags564:0,..BtStage36Context::default()};let mut b=B::default();let mut s=0;
+        assert_eq!(bt_stage36_window_transaction(&req(1,246),&mut c,&mut s,&mut b),245);assert_eq!(s,18);
+        b=B{h16:240,..B::default()};s=0;assert_eq!(bt_stage36_window_transaction(&req(0,6),&mut c,&mut s,&mut b),245);assert_eq!(s,18);
+        c=BtStage36Context{flags564:2,..BtStage36Context::default()};b=B::default();s=0;assert_eq!(bt_stage36_window_transaction(&req(1,0),&mut c,&mut s,&mut b),245);assert_eq!(s,18);
+        assert_eq!(STAGE36_CURRENT_BT_WINDOW_TRANSACTION_ADDR,0x16C240);assert_eq!(STAGE36_BT_WINDOW_STRIDE,1028);assert_eq!(STAGE36_BT_GROUP_STRIDE,676);
+    }
+}
