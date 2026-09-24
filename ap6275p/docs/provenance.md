@@ -52,3 +52,9 @@ Stage 23 combines two conservative evidence classes:
 2. **Unique relocation-normalized table consumer** — a complete legacy PatchRAM function has exactly one normalized match in the current executable region after canonicalizing only direct Thumb branch immediates; current literal words and branch destinations are then independently checked.
 
 No proprietary firmware bytes are committed. The Stage-23 tools carry hashes/normalized metadata only and extract current Orange Pi references outside the repository at runtime.
+
+## Stage-24 evidence class
+
+Stage 24 promotes wrapper/control-plane source only when a complete legacy function has exactly one relocation-normalized current match and all current literals/direct targets are independently re-read. Opaque ROM boundaries remain traits or structural addresses.
+
+This adds no IDA-derived current claims and does not identify Wi-Fi `0x11d54`/`0x7616c` or Bluetooth `0x151bc` by vendor symbol.

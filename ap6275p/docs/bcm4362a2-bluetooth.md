@@ -82,3 +82,15 @@ Stage 23 expands the Stage-22 empty-slot semantics into the current table lifecy
 The recovered record is exactly seven bytes: one tag byte followed by six payload bytes. The reconstructed source preserves firmware return behavior: insertion returns `0` both for an existing duplicate and a successful new insert, returns `17` when all eight slots are occupied; removal returns `1` when a record was cleared and `0` when absent.
 
 A deliberate edge case is preserved: key `0` with a six-byte zero payload matches an already-empty all-zero record.
+
+## Stage-24 adjacent control-plane semantics
+
+Stage 24 extends the verified slot-table lifecycle with three source-level operations.
+
+Current `0x172480` is the unique relocation-normalized match of legacy `sub_16E370`. Current literals prove mode byte `0x223064`, auxiliary flag `0x222fd0`, opaque reset contexts `0x22304c`/`0x223068`, and table base `0x222fd6`. When mode is nonzero the firmware calls stable boundary `0x151bc` with context A; when mode is 4 it also calls context B and clears the auxiliary flag. It then clears mode and always clears all 56 table bytes. The exact role of `0x151bc` remains opaque and is a Rust trait.
+
+Current `0x1724c8` removes a six-byte payload under tag 0, retrying tag 1 only when tag 0 was absent.
+
+Current `0x1724e4` clears a 59-byte scratch buffer at `0x22300e`, stores the low byte of `input_len >> 1` in byte 0, and copies `min(input_len,58)` source bytes into bytes 1.. using the stable memset/memcpy boundaries.
+
+Two adjacent functions are retained as structural seeds only: current `0x172408` (legacy `sub_16E2F8`) calls stable `0x8d34c` then current insert `0x1723d0`; current `0x172430` dispatches by mode through `0x172408`, `0x6e4b4`, and `0x11ea8`. Their external ROM contracts are not yet promoted.

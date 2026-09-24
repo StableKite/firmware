@@ -547,3 +547,96 @@ mod stage23_tests{
         assert_eq!(STAGE23_CURRENT_BT_RESET_TABLE_TAIL_ADDR,0x172480);
     }
 }
+
+/// Stage 24: adjacent current Bluetooth control-plane functions proven by
+/// unique relocation-normalized complete-body identity plus re-read current
+/// literals/direct branch targets.
+pub const STAGE24_CURRENT_BT_EVENT_INSERT_ADAPTER_ADDR:u32=0x0017_2408;
+pub const STAGE24_CURRENT_BT_EVENT_STATE_DISPATCH_ADDR:u32=0x0017_2430;
+pub const STAGE24_CURRENT_BT_RESET_SLOT_SUBSYSTEM_ADDR:u32=0x0017_2480;
+pub const STAGE24_CURRENT_BT_REMOVE_TAG0_OR1_ADDR:u32=0x0017_24C8;
+pub const STAGE24_CURRENT_BT_PREPARE_CAPPED_PAYLOAD_ADDR:u32=0x0017_24E4;
+
+pub const STAGE24_BT_MODE_ADDR:u32=0x0022_3064;
+pub const STAGE24_BT_AUX_FLAG_ADDR:u32=0x0022_2FD0;
+pub const STAGE24_BT_RESET_CONTEXT_A:u32=0x0022_304C;
+pub const STAGE24_BT_RESET_CONTEXT_B:u32=0x0022_3068;
+pub const STAGE24_BT_SCRATCH_ADDR:u32=0x0022_300E;
+pub const STAGE24_BT_OPAQUE_RESET_BOUNDARY_ADDR:u32=0x0001_51BC;
+pub const STAGE24_BT_SCRATCH_BYTES:usize=59;
+pub const STAGE24_BT_SCRATCH_PAYLOAD_MAX:usize=58;
+
+pub trait BtOpaqueResetBoundary{fn call(&mut self,context_address:u32);}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtSlotSubsystemState{
+    pub mode:u8,
+    pub aux_flag:u8,
+    pub records:[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+}
+
+/// Semantic replacement for current `0x172480` table/reset logic. The two calls
+/// to 0x151BC stay opaque; current instruction bytes prove only their argument
+/// addresses and ordering.
+pub fn bt_reset_slot_subsystem<B:BtOpaqueResetBoundary>(state:&mut BtSlotSubsystemState,b:&mut B){
+    if state.mode!=0{
+        b.call(STAGE24_BT_RESET_CONTEXT_A);
+        if state.mode==4{
+            b.call(STAGE24_BT_RESET_CONTEXT_B);
+            state.aux_flag=0;
+        }
+        state.mode=0;
+    }
+    bt_clear_slot_table(&mut state.records);
+}
+
+/// Semantic replacement for current `0x1724C8`: remove payload under tag 0;
+/// if absent, retry tag 1.
+pub fn bt_remove_payload_tag0_or1(
+    records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    payload:&[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],
+)->u8{
+    let r=bt_remove_slot(records,0,payload);
+    if r!=0{return r}
+    bt_remove_slot(records,1,payload)
+}
+
+/// Semantic replacement for current `0x1724E4` for valid callers that provide
+/// at least 58 source bytes. It clears 59 output bytes, stores the low byte of
+/// `input_len >> 1` at byte 0, then copies min(input_len,58) bytes to byte 1.
+pub fn bt_prepare_capped_payload(
+    input_len:u32,
+    source:&[u8;STAGE24_BT_SCRATCH_PAYLOAD_MAX],
+    out:&mut[u8;STAGE24_BT_SCRATCH_BYTES],
+){
+    *out=[0;STAGE24_BT_SCRATCH_BYTES];
+    out[0]=(input_len>>1) as u8;
+    let n=core::cmp::min(input_len as usize,STAGE24_BT_SCRATCH_PAYLOAD_MAX);
+    let mut i=0usize;while i<n{out[i+1]=source[i];i+=1}
+}
+
+#[cfg(test)]
+mod stage24_tests{
+    use super::*;
+    #[derive(Default)]struct B{n:u8,a:[u32;2]}impl BtOpaqueResetBoundary for B{fn call(&mut self,x:u32){self.a[self.n as usize]=x;self.n+=1}}
+    #[test]fn reset_and_dual_tag_remove(){
+        assert_eq!(STAGE24_CURRENT_BT_RESET_SLOT_SUBSYSTEM_ADDR,0x172480);
+        let mut s=BtSlotSubsystemState{mode:4,aux_flag:7,records:[[1;7];8]};let mut b=B::default();
+        bt_reset_slot_subsystem(&mut s,&mut b);
+        assert_eq!((s.mode,s.aux_flag,b.n,b.a),(0,0,2,[STAGE24_BT_RESET_CONTEXT_A,STAGE24_BT_RESET_CONTEXT_B]));
+        assert_eq!(s.records,[[0;7];8]);
+        let p=[1,2,3,4,5,6];let mut r=[[0u8;7];8];
+        assert_eq!(bt_insert_slot_if_absent(&mut r,1,&p),0);
+        assert_eq!(bt_remove_payload_tag0_or1(&mut r,&p),1);
+        assert_eq!(bt_remove_payload_tag0_or1(&mut r,&p),0);
+    }
+    #[test]fn reset_mode_zero_still_clears_table(){
+        let mut s=BtSlotSubsystemState{mode:0,aux_flag:9,records:[[2;7];8]};let mut b=B::default();
+        bt_reset_slot_subsystem(&mut s,&mut b);assert_eq!(b.n,0);assert_eq!(s.aux_flag,9);assert_eq!(s.records,[[0;7];8]);
+    }
+    #[test]fn capped_payload_builder(){
+        let mut src=[0u8;58];let mut i=0usize;while i<src.len(){src[i]=i as u8;i+=1}
+        let mut out=[0xAAu8;59];bt_prepare_capped_payload(4,&src,&mut out);
+        assert_eq!(out[0],2);assert_eq!(&out[1..5],&[0,1,2,3]);assert!(out[5..].iter().all(|&x|x==0));
+        bt_prepare_capped_payload(100,&src,&mut out);assert_eq!(out[0],50);assert_eq!(&out[1..],&src);
+    }
+}

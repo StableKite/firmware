@@ -87,3 +87,12 @@ Stage 22 left five calls across four ROM targets intentionally unresolved. Stage
 | `0x7616c` | `sub_1A36D0` → current `0x1a5a88` | 1 | one-argument call whose return value is consumed |
 
 These are ABI-shape facts only. They deliberately remain `Unresolved` in the source model until stronger current-image evidence establishes semantics.
+
+## Stage-24 current wrapper semantics
+
+Two Stage-21 relocation-normalized functions are now lifted to source while their ROM dependencies remain explicitly opaque.
+
+- Current `0x1869f0` (legacy `sub_185538`) selects one of two optional callback shapes and then always tail-calls `0x11d54` with the second argument. `0x11d54` remains an unresolved one-argument tail boundary.
+- Current `0x1a5a88` (legacy `sub_1A36D0`) increments an 8-bit wrapping counter. The callback path executes only when the incremented value is 0 or 1. If a callback is present it queries `0x7616c`; a nonzero result is replaced by a current literal fallback before the pair callback. `0x7616c` remains an unresolved one-argument return boundary.
+
+Rust models both ROM entries through traits. No vendor symbol or stronger behavior is assigned.

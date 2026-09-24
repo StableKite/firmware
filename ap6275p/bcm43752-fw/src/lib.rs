@@ -480,3 +480,80 @@ mod stage23_tests{
         assert_eq!(stage23_current_wifi_unresolved_shape(0xF030),None);
     }
 }
+
+/// Stage 24: source-level lifting of two Stage-21 verified current wrappers.
+/// Their unresolved ROM boundaries remain explicit traits rather than guessed
+/// vendor symbols.
+pub const STAGE24_CURRENT_WIFI_DIRECTIONAL_WRAPPER_ADDR:u32=0x0018_69F0;
+pub const STAGE24_CURRENT_WIFI_COUNTER_CALLBACK_ADDR:u32=0x001A_5A88;
+pub const STAGE24_CURRENT_WIFI_ONE_ARG_TAIL_BOUNDARY:u32=0x0001_1D54;
+pub const STAGE24_CURRENT_WIFI_ONE_ARG_QUERY_BOUNDARY:u32=0x0007_616C;
+
+pub trait CurrentWifiDirectionalCallbacks {
+    fn three_arg(&mut self,context:u32,value:u32,zero:u32);
+    fn one_arg(&mut self,context:u32);
+}
+pub trait CurrentWifiOneArgTailBoundary { fn call(&mut self,value:u32); }
+
+/// Semantic model of current `sub_185538` / `0x1869f0`.
+/// The selected optional callback runs first; the one-argument ROM boundary is
+/// then always invoked with `value`.
+pub fn current_wifi_directional_wrapper<C:CurrentWifiDirectionalCallbacks,T:CurrentWifiOneArgTailBoundary>(
+    selector_nonzero:bool,
+    three_arg_present:bool,three_arg_context:u32,
+    one_arg_present:bool,one_arg_context:u32,
+    value:u32,callbacks:&mut C,tail:&mut T,
+){
+    if selector_nonzero{
+        if three_arg_present{callbacks.three_arg(three_arg_context,value,0);}
+    }else if one_arg_present{callbacks.one_arg(one_arg_context);}
+    tail.call(value);
+}
+
+pub trait CurrentWifiOneArgQueryBoundary { fn query(&mut self,arg:u32)->u32; }
+pub trait CurrentWifiPairCallback { fn call(&mut self,context:u32,value:u32); }
+
+/// Semantic model of current `sub_1A36D0` / `0x1A5A88`.
+/// The counter is an 8-bit wrapping counter. The callback path runs only when
+/// the incremented value is 0 or 1. A nonzero opaque-query result is replaced
+/// with `fallback` before the pair callback.
+pub fn current_wifi_wrapped_counter_callback<Q:CurrentWifiOneArgQueryBoundary,C:CurrentWifiPairCallback>(
+    counter:&mut u8,callback_present:bool,query_arg:u32,fallback:u32,callback_context:u32,
+    query:&mut Q,callback:&mut C,
+){
+    *counter=counter.wrapping_add(1);
+    if *counter<=1 && callback_present{
+        let mut value=query.query(query_arg);
+        if value!=0{value=fallback;}
+        callback.call(callback_context,value);
+    }
+}
+
+#[cfg(test)]
+mod stage24_tests{
+    use super::*;
+    #[derive(Default)]struct C{three:u8,one:u8,last:[u32;3]}
+    impl CurrentWifiDirectionalCallbacks for C{
+        fn three_arg(&mut self,c:u32,v:u32,z:u32){self.three+=1;self.last=[c,v,z]}
+        fn one_arg(&mut self,c:u32){self.one+=1;self.last=[c,0,0]}
+    }
+    #[derive(Default)]struct T{n:u8,v:u32}impl CurrentWifiOneArgTailBoundary for T{fn call(&mut self,v:u32){self.n+=1;self.v=v}}
+    struct Q{v:u32}impl CurrentWifiOneArgQueryBoundary for Q{fn query(&mut self,_:u32)->u32{self.v}}
+    #[derive(Default)]struct P{n:u8,c:u32,v:u32}impl CurrentWifiPairCallback for P{fn call(&mut self,c:u32,v:u32){self.n+=1;self.c=c;self.v=v}}
+    #[test]fn current_wrappers_preserve_order_and_wrap(){
+        assert_eq!(STAGE24_CURRENT_WIFI_ONE_ARG_TAIL_BOUNDARY,0x11D54);
+        assert_eq!(STAGE24_CURRENT_WIFI_ONE_ARG_QUERY_BOUNDARY,0x7616C);
+        let mut c=C::default();let mut t=T::default();
+        current_wifi_directional_wrapper(true,true,7,false,9,11,&mut c,&mut t);
+        assert_eq!((c.three,c.one,c.last,t.n,t.v),(1,0,[7,11,0],1,11));
+        current_wifi_directional_wrapper(false,false,7,true,9,12,&mut c,&mut t);
+        assert_eq!((c.three,c.one,c.last,t.n,t.v),(1,1,[9,0,0],2,12));
+        let mut q=Q{v:0};let mut p=P::default();let mut ctr=0u8;
+        current_wifi_wrapped_counter_callback(&mut ctr,true,5,99,6,&mut q,&mut p);
+        assert_eq!((ctr,p.n,p.c,p.v),(1,1,6,0));
+        q.v=1;current_wifi_wrapped_counter_callback(&mut ctr,true,5,99,6,&mut q,&mut p);
+        assert_eq!((ctr,p.n),(2,1));
+        ctr=255;current_wifi_wrapped_counter_callback(&mut ctr,true,5,99,6,&mut q,&mut p);
+        assert_eq!((ctr,p.n,p.v),(0,2,99));
+    }
+}

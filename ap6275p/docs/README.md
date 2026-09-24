@@ -15,3 +15,5 @@ Stage 21 follows Stage-20 current destinations and verifies a relocation-normali
 Stage 22 promotes only ROM-boundary roles supported by stable current call sites plus prior behavioral recovery, and adds libre current `dngl_finddev` / Bluetooth empty-slot semantics.
 
 Stage 23 freezes the ABI shapes of the four still-unresolved current Wi-Fi ROM targets and reconstructs the current Bluetooth eight-record slot-table lifecycle from unique relocation-normalized consumers.
+
+Stage 24 lifts verified current wrapper/reset semantics into Rust while retaining unresolved ROM calls as explicit traits.
