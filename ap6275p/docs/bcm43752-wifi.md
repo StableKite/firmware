@@ -42,3 +42,22 @@ Stage 20 follows the exact Stage-19 thunks on the **current** Orange Pi bytes ra
 The destination addresses are current control-flow anchors. Stage 20 does **not** claim that the destination function bodies are byte-identical to the legacy implementations.
 
 For repeated exact bodies, Stage 20 also builds a strictly monotonic spine from the 608 globally unique >=8-byte Wi-Fi matches. Of the 37 globally repeated exact bodies, 29 have exactly one occurrence between their nearest monotonic exact neighbors and are therefore recorded as context-disambiguated structural relocations. They are not automatically promoted to semantic names.
+
+## Stage-21 destination-body closure
+
+Stage 21 starts only from Stage-20 **current** destinations and follows corresponding direct branch sites recursively. A function is admitted only when its complete current body has the same SHA-256 as the legacy body after canonicalizing direct Thumb `BL`/`B.W`/wide-conditional branch immediates. Branch-site offsets and branch kinds must also match.
+
+This proves a 13-function Wi-Fi relocation-normalized closure. Named current anchors inside that closure are:
+
+| Name | Legacy | Current | Bytes | Current corroboration |
+| --- | --- | --- | ---: | --- |
+| `dngl_getdev_by_ifidx` | `0x184528` | `0x185920` | 32 | Stage-19 exact full body |
+| `dngl_finddev` | `0x184548` | `0x185940` | 50 | normalized body + current `"dngl_finddev"` and error string |
+| `dngl_sendwl` | `0x184708` | `0x185b00` | 220 | normalized body + current `"dngl_sendwl"` and drop diagnostic |
+| `hnd_free` | `0x1a3c1c` | `0x1a5fd4` | 414 | normalized body + current `"hnd_free"` and allocator diagnostics |
+
+The Stage-20 `j_nullsub_56` destination `0x1a63bc` begins with current opcode `0x4770` (`BX LR`), directly confirming a return/no-op stub at that destination.
+
+Thirteen direct-call/tail-call ROM-side boundaries reached by this verified closure remain at the exact same absolute current addresses: `0xa814`, `0x11d54`, `0x12d10`, `0x6fdac`, `0x70718`, `0x70814`, `0x70b80`, `0x70e10`, `0x710cc`, `0x710dc`, `0x711c8`, `0x71248`, `0x7616c`. In particular, current `hnd_free` still calls `0x70e10`, upgrading the previously legacy-only heap-block-size-like boundary to a current-image call boundary.
+
+Literal pools are not assumed equal. Stage 21 reads them from the current image: the `dngl_*` identity/diagnostic strings moved into the `0x2002xx` range and the `hnd_free` strings into the `0x2024xx` range while low RAM pointers such as `0x170100`, `0x170220`, and `0x170224` remain unchanged.

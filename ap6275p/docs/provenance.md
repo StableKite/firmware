@@ -33,3 +33,9 @@ Stage 20 adds evidence without requiring IDA:
 3. **Exact-body direct-call target** — a direct Thumb `BL` instruction inside a Stage-19 exact complete-body anchor is byte-checked and decoded on the current image.
 
 These classes identify current structure/control-flow only. They do not by themselves establish unchanged callee implementations or whole-image semantic equivalence.
+
+## Stage-21 evidence class
+
+Stage 21 adds **relocation-normalized body identity**. The current body must match the legacy complete-body hash after canonicalizing only direct Thumb branch immediates; branch offsets and kinds are checked independently, and literal-pool words are read from the current image rather than assumed unchanged. Current embedded strings are also verified for named Wi-Fi functions.
+
+This is stronger than address-delta or similarity matching, but it remains explicit about dependencies: same-address ROM calls become current ABI boundaries, while unresolved ROM semantics remain unresolved.

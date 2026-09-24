@@ -385,3 +385,35 @@ mod stage20_tests {
         assert_eq!(STAGE20_BT_CONTEXT_DISAMBIGUATED_EXACT,3);
     }
 }
+
+/// Stage 21: the Stage-20 helper destination is relocation-normalized identical
+/// to legacy sub_16DF94 across all 62 code bytes after canonicalizing only its
+/// three direct BL immediates.  The literal pool is checked independently:
+/// stack-guard/context word 0x200890 is unchanged and the 7-byte record table
+/// moved from 0x222e42 to 0x222fd6.
+pub const STAGE21_BT_SLOT_HELPER_LEGACY_ADDR:u32=0x0016_DF94;
+pub const STAGE21_BT_SLOT_HELPER_CURRENT_ADDR:u32=0x0017_2044;
+pub const STAGE21_BT_SLOT_HELPER_BYTES:u16=62;
+pub const STAGE21_BT_SLOT_HELPER_STACK_WORD_ADDR:u32=0x0020_0890;
+pub const STAGE21_BT_SLOT_RECORD_BASE:u32=0x0022_2FD6;
+pub const STAGE21_BT_SLOT_RECORD_WIDTH:u32=7;
+pub const STAGE21_BT_SLOT_COUNT:u8=8;
+pub const STAGE21_BT_SLOT_HELPER_ROM_TARGETS:&[u32]=&[0x0000_3D24,0x000F_8CAC,0x0000_94C0];
+pub const fn current_bt_slot_record_address(index:u8)->Option<u32>{
+    if index<STAGE21_BT_SLOT_COUNT{
+        Some(STAGE21_BT_SLOT_RECORD_BASE+(index as u32)*STAGE21_BT_SLOT_RECORD_WIDTH)
+    }else{None}
+}
+#[cfg(test)]
+mod stage21_tests {
+    use super::*;
+    #[test]
+    fn relocated_slot_helper(){
+        assert_eq!(STAGE21_BT_SLOT_HELPER_CURRENT_ADDR,STAGE20_BT_FIND_FIRST_SLOT_HELPER);
+        assert_eq!(STAGE21_BT_SLOT_HELPER_BYTES,62);
+        assert_eq!(current_bt_slot_record_address(0),Some(0x0022_2FD6));
+        assert_eq!(current_bt_slot_record_address(7),Some(0x0022_3007));
+        assert_eq!(current_bt_slot_record_address(8),None);
+        assert_eq!(STAGE21_BT_SLOT_HELPER_ROM_TARGETS,&[0x0000_3D24,0x000F_8CAC,0x0000_94C0]);
+    }
+}

@@ -322,3 +322,68 @@ mod stage20_tests {
         assert_eq!(STAGE20_WIFI_CONTEXT_DISAMBIGUATED_EXACT,29);
     }
 }
+
+/// Stage 21: relocation-normalized current Wi-Fi closure seeded only by
+/// Stage-20 current control-flow destinations.  For every entry below the
+/// current function has the same complete instruction bytes as the legacy
+/// function after canonicalizing only direct Thumb branch immediates. Literal
+/// pool values are checked separately by the Stage-21 evidence runner.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RelocationNormalizedFunction {
+    pub legacy_address:u32,
+    pub current_address:u32,
+    pub byte_len:u16,
+    pub name:&'static str,
+}
+pub const STAGE21_WIFI_RELOCATION_NORMALIZED:&[RelocationNormalizedFunction]=&[
+    RelocationNormalizedFunction{legacy_address:0x0018_29E0,current_address:0x0018_2E34,byte_len:4,name:"sub_1829E0"},
+    RelocationNormalizedFunction{legacy_address:0x0018_4528,current_address:0x0018_5920,byte_len:32,name:"dngl_getdev_by_ifidx"},
+    RelocationNormalizedFunction{legacy_address:0x0018_4548,current_address:0x0018_5940,byte_len:50,name:"dngl_finddev"},
+    RelocationNormalizedFunction{legacy_address:0x0018_4708,current_address:0x0018_5B00,byte_len:220,name:"dngl_sendwl"},
+    RelocationNormalizedFunction{legacy_address:0x0018_5152,current_address:0x0018_660A,byte_len:92,name:"sub_185152"},
+    RelocationNormalizedFunction{legacy_address:0x0018_5538,current_address:0x0018_69F0,byte_len:38,name:"sub_185538"},
+    RelocationNormalizedFunction{legacy_address:0x001A_36D0,current_address:0x001A_5A88,byte_len:52,name:"sub_1A36D0"},
+    RelocationNormalizedFunction{legacy_address:0x001A_3718,current_address:0x001A_5AD0,byte_len:56,name:"sub_1A3718"},
+    RelocationNormalizedFunction{legacy_address:0x001A_39A4,current_address:0x001A_5D5C,byte_len:4,name:"sub_1A39A4"},
+    RelocationNormalizedFunction{legacy_address:0x001A_39AC,current_address:0x001A_5D64,byte_len:12,name:"sub_1A39AC"},
+    RelocationNormalizedFunction{legacy_address:0x001A_39BC,current_address:0x001A_5D74,byte_len:42,name:"sub_1A39BC"},
+    RelocationNormalizedFunction{legacy_address:0x001A_3C1C,current_address:0x001A_5FD4,byte_len:414,name:"hnd_free"},
+    RelocationNormalizedFunction{legacy_address:0x001A_45B0,current_address:0x001A_6968,byte_len:4,name:"sub_1A45B0"},
+];
+pub const CURRENT_DNGL_GETDEV_BY_IFIDX_ADDR:u32=0x0018_5920;
+pub const CURRENT_DNGL_FINDDEV_ADDR:u32=0x0018_5940;
+pub const CURRENT_DNGL_SENDWL_ADDR:u32=0x0018_5B00;
+pub const CURRENT_HND_FREE_ADDR:u32=0x001A_5FD4;
+pub const CURRENT_NULLSUB_56_ADDR:u32=0x001A_63BC;
+pub const CURRENT_NULLSUB_56_FIRST_OPCODE:u16=0x4770; // BX LR
+/// Direct-call/tail-call boundaries reached by the Stage-21 verified closure
+/// that remain at the same absolute ROM address in the current image.
+pub const STAGE21_WIFI_STABLE_ROM_CALL_TARGETS:&[u32]=&[
+    0x0000_A814,0x0001_1D54,0x0001_2D10,0x0006_FDAC,0x0007_0718,
+    0x0007_0814,0x0007_0B80,0x0007_0E10,0x0007_10CC,0x0007_10DC,
+    0x0007_11C8,0x0007_1248,0x0007_616C,
+];
+/// Stage 6 identified 0x70e10 behaviorally; Stage 21 proves that the current
+/// relocated hnd_free body still calls this same ROM boundary.
+pub const CURRENT_VERIFIED_ROM_HEAP_BLOCK_SIZE_LIKE_ADDR:u32=ROM_HEAP_BLOCK_SIZE_LIKE_ADDR;
+pub fn stage21_current_address_for_legacy(legacy:u32)->Option<u32>{
+    for r in STAGE21_WIFI_RELOCATION_NORMALIZED{
+        if r.legacy_address==legacy{return Some(r.current_address)}
+    }
+    None
+}
+#[cfg(test)]
+mod stage21_tests {
+    use super::*;
+    #[test]
+    fn normalized_destination_closure(){
+        assert_eq!(STAGE21_WIFI_RELOCATION_NORMALIZED.len(),13);
+        assert_eq!(stage21_current_address_for_legacy(0x0018_4548),Some(CURRENT_DNGL_FINDDEV_ADDR));
+        assert_eq!(stage21_current_address_for_legacy(0x0018_4708),Some(CURRENT_DNGL_SENDWL_ADDR));
+        assert_eq!(stage21_current_address_for_legacy(0x001A_3C1C),Some(CURRENT_HND_FREE_ADDR));
+        assert_eq!(CURRENT_NULLSUB_56_FIRST_OPCODE,0x4770);
+        assert_eq!(CURRENT_VERIFIED_ROM_HEAP_BLOCK_SIZE_LIKE_ADDR,0x0007_0E10);
+        assert!(STAGE21_WIFI_STABLE_ROM_CALL_TARGETS.contains(&0x0000_A814));
+        assert!(STAGE21_WIFI_STABLE_ROM_CALL_TARGETS.contains(&0x0007_0E10));
+    }
+}
