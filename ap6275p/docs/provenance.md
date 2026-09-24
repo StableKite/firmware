@@ -39,3 +39,7 @@ These classes identify current structure/control-flow only. They do not by thems
 Stage 21 adds **relocation-normalized body identity**. The current body must match the legacy complete-body hash after canonicalizing only direct Thumb branch immediates; branch offsets and kinds are checked independently, and literal-pool words are read from the current image rather than assumed unchanged. Current embedded strings are also verified for named Wi-Fi functions.
 
 This is stronger than address-delta or similarity matching, but it remains explicit about dependencies: same-address ROM calls become current ABI boundaries, while unresolved ROM semantics remain unresolved.
+
+## Stage-22 semantic-promotion rule
+
+Stage 22 does not byte-compare ROM routine bodies because those bodies are absent from the current RAM/PatchRAM reference files. A current ROM role is promoted only when all three conditions hold: the current verified function reaches the same absolute ROM target at the same normalized call site, the legacy behavioral classification is strong, and the surrounding current function semantics/literals remain independently verified. All other boundaries remain generic or unresolved.

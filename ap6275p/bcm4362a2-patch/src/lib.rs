@@ -417,3 +417,34 @@ mod stage21_tests {
         assert_eq!(STAGE21_BT_SLOT_HELPER_ROM_TARGETS,&[0x0000_3D24,0x000F_8CAC,0x0000_94C0]);
     }
 }
+
+/// Stage 22: current slot-helper semantics recovered by combining the Stage-21
+/// relocation-normalized body with its stable ROM call roles. 0x3D24 and
+/// 0xF8CAC were already behaviorally recovered as memset/memcmp; 0x94C0 is the
+/// stack-canary terminal sink. The current helper retains those exact targets.
+pub const STAGE22_CURRENT_BT_MEMSET_ADDR:u32=ROM_MEMSET_ADDR;
+pub const STAGE22_CURRENT_BT_MEMCMP_ADDR:u32=ROM_MEMCMP_ADDR;
+pub const STAGE22_CURRENT_BT_STACK_GUARD_FAIL_ADDR:u32=ROM_STACK_GUARD_FAIL_ADDR;
+pub const STAGE22_BT_SLOT_RECORD_BYTES:usize=7;
+pub const STAGE22_BT_SLOT_COUNT:usize=8;
+pub fn bt_slot_record_is_empty(record:&[u8;STAGE22_BT_SLOT_RECORD_BYTES])->bool{
+    let mut i=0usize;while i<record.len(){if record[i]!=0{return false}i+=1}true
+}
+/// Semantic replacement for current `bt_find_first_slot_state1`: the helper's
+/// state value 1 is precisely the "all seven record bytes are zero" condition.
+pub fn bt_find_first_empty_slot(records:&[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT])->u8{
+    let mut i=0usize;while i<records.len(){if bt_slot_record_is_empty(&records[i]){return i as u8}i+=1}STAGE22_BT_SLOT_COUNT as u8
+}
+#[cfg(test)]
+mod stage22_tests{
+    use super::*;
+    #[test]fn empty_slot_semantics(){
+        assert_eq!(STAGE22_CURRENT_BT_MEMSET_ADDR,0x3D24);
+        assert_eq!(STAGE22_CURRENT_BT_MEMCMP_ADDR,0xF8CAC);
+        assert_eq!(STAGE22_CURRENT_BT_STACK_GUARD_FAIL_ADDR,0x94C0);
+        let mut r=[[1u8;7];8];r[3]=[0;7];
+        assert!(bt_slot_record_is_empty(&r[3]));assert!(!bt_slot_record_is_empty(&r[0]));
+        assert_eq!(bt_find_first_empty_slot(&r),3);
+        r[3]=[1;7];assert_eq!(bt_find_first_empty_slot(&r),8);
+    }
+}

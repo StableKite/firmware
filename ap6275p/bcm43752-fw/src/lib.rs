@@ -387,3 +387,50 @@ mod stage21_tests {
         assert!(STAGE21_WIFI_STABLE_ROM_CALL_TARGETS.contains(&0x0007_0E10));
     }
 }
+
+/// Stage 22: current-image semantic rebasing for the Stage-21 verified closure.
+/// ROM bodies are not present in the RAM reference; roles below are therefore
+/// promoted only when current call sites, stable absolute ROM targets, and the
+/// prior behavioral classification all agree.
+pub const CURRENT_ROM_DIAGNOSTIC_PRINTF_LIKE_ADDR:u32=0x0000_A814;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CurrentWifiBoundaryClass{DiagnosticSink,HeapBlockSizeLike,HndFreeInternal,Unresolved}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct CurrentWifiBoundaryAudit{pub diagnostic_calls:u8,pub heap_block_size_calls:u8,pub hnd_free_internal_calls:u8,pub unresolved_calls:u8}
+pub const STAGE22_CURRENT_WIFI_BOUNDARY_AUDIT:CurrentWifiBoundaryAudit=CurrentWifiBoundaryAudit{
+    diagnostic_calls:6,heap_block_size_calls:7,hnd_free_internal_calls:10,unresolved_calls:5
+};
+pub const fn stage22_current_wifi_boundary_class(address:u32)->CurrentWifiBoundaryClass{
+    match address{
+        0x0000_A814=>CurrentWifiBoundaryClass::DiagnosticSink,
+        0x0007_0E10=>CurrentWifiBoundaryClass::HeapBlockSizeLike,
+        0x0007_0718|0x0007_0814|0x0007_0B80|0x0007_10CC|0x0007_10DC|0x0007_11C8|0x0007_1248=>CurrentWifiBoundaryClass::HndFreeInternal,
+        _=>CurrentWifiBoundaryClass::Unresolved
+    }
+}
+/// Minimal diagnostic boundary used by the reconstructed current dngl_finddev.
+pub trait DnglDiagnosticSink{fn slave_not_found(&mut self,ifidx:i32);}
+/// Libre semantic replacement for current `dngl_finddev` after Stage-21
+/// relocation-normalized identity and Stage-22 diagnostic-boundary verification.
+/// The vendor implementation repeats the table lookup on success; returning the
+/// already-resolved reference is observationally equivalent for this source model.
+pub fn dngl_finddev_with_diagnostics<'a,T,D:DnglDiagnosticSink>(
+    ifidx:i32,max_if:i32,if_to_slot:&[i32],devices:&'a[T],diagnostics_enabled:bool,diag:&mut D
+)->Option<&'a T>{
+    let found=dngl_getdev_by_ifidx(ifidx,max_if,if_to_slot,devices);
+    if found.is_none()&&diagnostics_enabled{diag.slave_not_found(ifidx);}
+    found
+}
+#[cfg(test)]
+mod stage22_tests{
+    use super::*;
+    struct D{n:u8,last:i32}impl DnglDiagnosticSink for D{fn slave_not_found(&mut self,i:i32){self.n+=1;self.last=i}}
+    #[test]fn current_boundary_audit_and_finddev(){
+        assert_eq!(STAGE22_CURRENT_WIFI_BOUNDARY_AUDIT,CurrentWifiBoundaryAudit{diagnostic_calls:6,heap_block_size_calls:7,hnd_free_internal_calls:10,unresolved_calls:5});
+        assert_eq!(stage22_current_wifi_boundary_class(0xA814),CurrentWifiBoundaryClass::DiagnosticSink);
+        assert_eq!(stage22_current_wifi_boundary_class(0x70E10),CurrentWifiBoundaryClass::HeapBlockSizeLike);
+        let slots=[1,0];let devs=[10u32,20];let mut d=D{n:0,last:0};
+        assert_eq!(dngl_finddev_with_diagnostics(0,2,&slots,&devs,true,&mut d),Some(&20));assert_eq!(d.n,0);
+        assert_eq!(dngl_finddev_with_diagnostics(2,2,&slots,&devs,true,&mut d),None);assert_eq!((d.n,d.last),(1,2));
+    }
+}

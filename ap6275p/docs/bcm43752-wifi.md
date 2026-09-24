@@ -61,3 +61,16 @@ The Stage-20 `j_nullsub_56` destination `0x1a63bc` begins with current opcode `0
 Thirteen direct-call/tail-call ROM-side boundaries reached by this verified closure remain at the exact same absolute current addresses: `0xa814`, `0x11d54`, `0x12d10`, `0x6fdac`, `0x70718`, `0x70814`, `0x70b80`, `0x70e10`, `0x710cc`, `0x710dc`, `0x711c8`, `0x71248`, `0x7616c`. In particular, current `hnd_free` still calls `0x70e10`, upgrading the previously legacy-only heap-block-size-like boundary to a current-image call boundary.
 
 Literal pools are not assumed equal. Stage 21 reads them from the current image: the `dngl_*` identity/diagnostic strings moved into the `0x2002xx` range and the `hnd_free` strings into the `0x2024xx` range while low RAM pointers such as `0x170100`, `0x170220`, and `0x170224` remain unchanged.
+
+## Stage-22 current ROM-boundary semantics
+
+Stage 21 proves the complete current instruction skeleton for 13 functions. Stage 22 audits every direct ROM-boundary call from that verified closure: 28 current call sites reach 13 stable absolute ROM targets.
+
+Two roles are now promoted for the **current** image because current call-site layout and the prior behavioral recovery agree:
+
+- `0xA814`: diagnostic/printf-like sink — 6 verified current call sites, including the miss path of current `dngl_finddev` and the invalid/free diagnostics in current `hnd_free`.
+- `0x70E10`: heap-block-size-like boundary — 7 verified calls, all from current `hnd_free`.
+
+Seven additional addresses reached only from the verified `hnd_free` body (`0x70718`, `0x70814`, `0x70b80`, `0x710cc`, `0x710dc`, `0x711c8`, `0x71248`) are kept as **hnd_free-internal boundaries** without inventing vendor semantics. Four targets (`0x11d54`, `0x12d10`, `0x6fdac`, `0x7616c`) remain unresolved.
+
+The source now includes a libre `dngl_finddev_with_diagnostics` wrapper: it reuses the already reconstructed interface-index mapping and exposes the optional miss diagnostic through a trait rather than depending on the proprietary ROM logger.

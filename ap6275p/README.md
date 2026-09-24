@@ -20,3 +20,4 @@ Tehniskai dokumentāi ast en `docs/`.
 **Stage 20:** current direct Thumb branch targets are derived only after re-checking exact current instruction bytes; repeated exact bodies may be structurally disambiguated by monotonic neighboring anchors without being promoted to semantics.
 
 **Stage 21:** Stage-20 destinations are followed into relocation-normalized current bodies; current literal pools/identity strings are checked separately, and stable ROM call boundaries are recorded without inventing unresolved ROM semantics.
+**Stage 22:** current verified call sites rebase selected ROM boundary roles (`0xA814`, `0x70E10`, BT memset/memcmp/stack-guard) and add source-level `dngl_finddev` / empty-slot semantics without requiring IDA.

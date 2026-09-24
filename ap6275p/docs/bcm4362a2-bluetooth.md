@@ -52,3 +52,17 @@ Following the Stage-20 `bt_find_first_slot_state1` call target to current `0x172
 The helper's literal pool is checked separately. The context/guard word remains `0x200890`; the 7-byte per-slot record base moves from legacy `0x222e42` to current `0x222fd6`. The instruction sequence still computes `7 * index`, so the eight indices scanned by `bt_find_first_slot_state1` correspond to current record starts `0x222fd6 .. 0x223007` in steps of seven bytes.
 
 This establishes the current helper's record-addressing/control-flow shape. The exact vendor identities of ROM routines `0x3d24`, `0xf8cac`, and `0x94c0` remain unresolved; Stage 21 therefore does not rename those ROM boundaries.
+
+## Stage-22 slot-helper semantics
+
+Stage 21 proves that current helper `0x172044` has the same complete instruction skeleton as legacy `sub_16DF94`, while independently verifying the relocated record base `0x222fd6`.
+
+The helper's three direct ROM calls remain at the same absolute addresses and call-site offsets:
+
+- `0x3d24` — memset-like: zeroes a 7-byte local comparison buffer;
+- `0xf8cac` — memcmp-like: compares `record_base + 7 * index` with that zero buffer;
+- `0x94c0` — stack-guard terminal sink, reached only if the canary changes.
+
+Therefore the helper returns `1` exactly when the selected 7-byte slot record is all zero (apart from the terminal stack-canary failure path). Combined with current `bt_find_first_slot_state1` at `0x1720c0`, the higher-level behavior is now reconstructed as: **return the first empty slot in indices 0..7, or 8 if none is empty**.
+
+The Rust source adds `bt_slot_record_is_empty` and `bt_find_first_empty_slot` as allocation-free libre equivalents.
