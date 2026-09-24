@@ -13,3 +13,5 @@ Stage 20 extends Stage 19A with IDA-independent current control-flow anchors and
 
 Stage 21 follows Stage-20 current destinations and verifies a relocation-normalized destination closure, including current literal-pool/string evidence and stable ROM call boundaries.
 Stage 22 promotes only ROM-boundary roles supported by stable current call sites plus prior behavioral recovery, and adds libre current `dngl_finddev` / Bluetooth empty-slot semantics.
+
+Stage 23 freezes the ABI shapes of the four still-unresolved current Wi-Fi ROM targets and reconstructs the current Bluetooth eight-record slot-table lifecycle from unique relocation-normalized consumers.

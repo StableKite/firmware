@@ -43,3 +43,12 @@ This is stronger than address-delta or similarity matching, but it remains expli
 ## Stage-22 semantic-promotion rule
 
 Stage 22 does not byte-compare ROM routine bodies because those bodies are absent from the current RAM/PatchRAM reference files. A current ROM role is promoted only when all three conditions hold: the current verified function reaches the same absolute ROM target at the same normalized call site, the legacy behavioral classification is strong, and the surrounding current function semantics/literals remain independently verified. All other boundaries remain generic or unresolved.
+
+## Stage-23 evidence class
+
+Stage 23 combines two conservative evidence classes:
+
+1. **Current unresolved ABI shape** — stable ROM address plus current relocation-normalized caller and exact direct-branch offset/kind. This freezes argument/return shape without assigning semantics.
+2. **Unique relocation-normalized table consumer** — a complete legacy PatchRAM function has exactly one normalized match in the current executable region after canonicalizing only direct Thumb branch immediates; current literal words and branch destinations are then independently checked.
+
+No proprietary firmware bytes are committed. The Stage-23 tools carry hashes/normalized metadata only and extract current Orange Pi references outside the repository at runtime.

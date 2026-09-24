@@ -434,3 +434,49 @@ mod stage22_tests{
         assert_eq!(dngl_finddev_with_diagnostics(2,2,&slots,&devs,true,&mut d),None);assert_eq!((d.n,d.last),(1,2));
     }
 }
+
+/// Stage 23: the four remaining Stage-22 Wi-Fi ROM boundaries stay
+/// semantically unresolved, but their ABI call shapes are now frozen from the
+/// relocation-normalized current closure. This prevents later work from
+/// silently assigning an unsupported vendor symbol or argument convention.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CurrentWifiUnresolvedCallShape {
+    OneArgTail,
+    TwoArgCall,
+    ZeroArgCall,
+    OneArgReturn,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct CurrentWifiUnresolvedBoundary {
+    pub address:u32,
+    pub call_count:u8,
+    pub shape:CurrentWifiUnresolvedCallShape,
+}
+pub const STAGE23_CURRENT_WIFI_UNRESOLVED_BOUNDARIES:&[CurrentWifiUnresolvedBoundary]=&[
+    CurrentWifiUnresolvedBoundary{address:0x0001_1D54,call_count:1,shape:CurrentWifiUnresolvedCallShape::OneArgTail},
+    CurrentWifiUnresolvedBoundary{address:0x0001_2D10,call_count:1,shape:CurrentWifiUnresolvedCallShape::TwoArgCall},
+    CurrentWifiUnresolvedBoundary{address:0x0006_FDAC,call_count:2,shape:CurrentWifiUnresolvedCallShape::ZeroArgCall},
+    CurrentWifiUnresolvedBoundary{address:0x0007_616C,call_count:1,shape:CurrentWifiUnresolvedCallShape::OneArgReturn},
+];
+pub const fn stage23_current_wifi_unresolved_shape(address:u32)->Option<CurrentWifiUnresolvedCallShape>{
+    match address{
+        0x0001_1D54=>Some(CurrentWifiUnresolvedCallShape::OneArgTail),
+        0x0001_2D10=>Some(CurrentWifiUnresolvedCallShape::TwoArgCall),
+        0x0006_FDAC=>Some(CurrentWifiUnresolvedCallShape::ZeroArgCall),
+        0x0007_616C=>Some(CurrentWifiUnresolvedCallShape::OneArgReturn),
+        _=>None,
+    }
+}
+#[cfg(test)]
+mod stage23_tests{
+    use super::*;
+    #[test]fn unresolved_current_abi_shapes_are_frozen(){
+        let mut calls=0u8;for x in STAGE23_CURRENT_WIFI_UNRESOLVED_BOUNDARIES{calls+=x.call_count}
+        assert_eq!(calls,5);
+        assert_eq!(stage23_current_wifi_unresolved_shape(0x11D54),Some(CurrentWifiUnresolvedCallShape::OneArgTail));
+        assert_eq!(stage23_current_wifi_unresolved_shape(0x12D10),Some(CurrentWifiUnresolvedCallShape::TwoArgCall));
+        assert_eq!(stage23_current_wifi_unresolved_shape(0x6FDAC),Some(CurrentWifiUnresolvedCallShape::ZeroArgCall));
+        assert_eq!(stage23_current_wifi_unresolved_shape(0x7616C),Some(CurrentWifiUnresolvedCallShape::OneArgReturn));
+        assert_eq!(stage23_current_wifi_unresolved_shape(0xF030),None);
+    }
+}

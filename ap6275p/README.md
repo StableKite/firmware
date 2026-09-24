@@ -21,3 +21,5 @@ Tehniskai dokumentāi ast en `docs/`.
 
 **Stage 21:** Stage-20 destinations are followed into relocation-normalized current bodies; current literal pools/identity strings are checked separately, and stable ROM call boundaries are recorded without inventing unresolved ROM semantics.
 **Stage 22:** current verified call sites rebase selected ROM boundary roles (`0xA814`, `0x70E10`, BT memset/memcmp/stack-guard) and add source-level `dngl_finddev` / empty-slot semantics without requiring IDA.
+
+**Stage 23:** unresolved Wi-Fi ROM boundaries remain unnamed but their current ABI call shapes are frozen; the current Bluetooth 8×7-byte slot table now has libre lookup/clear/insert/remove semantics backed by unique relocation-normalized consumers.

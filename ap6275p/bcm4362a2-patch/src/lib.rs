@@ -448,3 +448,102 @@ mod stage22_tests{
         r[3]=[1;7];assert_eq!(bt_find_first_empty_slot(&r),8);
     }
 }
+
+/// Stage 23: current slot-table lifecycle functions. Each address below is the
+/// unique relocation-normalized match of the complete legacy function body;
+/// current literal words and direct branch targets are independently checked
+/// by the Stage-23 runner before this source is applied.
+pub const STAGE23_CURRENT_BT_FIND_MATCHING_SLOT_ADDR:u32=0x0017_208C;
+pub const STAGE23_CURRENT_BT_CLEAR_SLOT_TABLE_ADDR:u32=0x0017_23C0;
+pub const STAGE23_CURRENT_BT_INSERT_SLOT_IF_ABSENT_ADDR:u32=0x0017_23D0;
+pub const STAGE23_CURRENT_BT_REMOVE_SLOT_ADDR:u32=0x0017_2458;
+pub const STAGE23_CURRENT_BT_RESET_TABLE_TAIL_ADDR:u32=0x0017_2480;
+pub const STAGE23_CURRENT_BT_MEMCPY_ADDR:u32=ROM_MEMCPY_ADDR;
+pub const STAGE23_BT_SLOT_PAYLOAD_BYTES:usize=6;
+pub const STAGE23_BT_TABLE_BYTES:usize=STAGE22_BT_SLOT_RECORD_BYTES*STAGE22_BT_SLOT_COUNT;
+
+/// Semantic replacement for current `sub_16DFDC`: find the first record whose
+/// tag byte and six-byte payload both match, or return 8 when absent.
+pub fn bt_find_matching_slot(
+    records:&[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    tag:u8,
+    payload:&[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],
+)->u8{
+    let mut i=0usize;
+    while i<records.len(){
+        let r=&records[i];
+        if r[0]==tag{
+            let mut j=0usize;let mut same=true;
+            while j<STAGE23_BT_SLOT_PAYLOAD_BYTES{
+                if r[j+1]!=payload[j]{same=false;break}
+                j+=1;
+            }
+            if same{return i as u8}
+        }
+        i+=1;
+    }
+    STAGE22_BT_SLOT_COUNT as u8
+}
+
+/// Semantic replacement for current `sub_16E2B0`.
+pub fn bt_clear_slot_table(records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT]){
+    let mut i=0usize;
+    while i<records.len(){records[i]=[0;STAGE22_BT_SLOT_RECORD_BYTES];i+=1}
+}
+
+/// Semantic replacement for the table part of current `sub_16E2C0`.
+/// Return values preserve the firmware: 0 for duplicate or successful insert,
+/// and 17 when no empty slot exists.
+pub fn bt_insert_slot_if_absent(
+    records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    tag:u8,
+    payload:&[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],
+)->u8{
+    if bt_find_matching_slot(records,tag,payload)<STAGE22_BT_SLOT_COUNT as u8{return 0}
+    let slot=bt_find_first_empty_slot(records);
+    if slot>=STAGE22_BT_SLOT_COUNT as u8{return 17}
+    let r=&mut records[slot as usize];r[0]=tag;
+    let mut j=0usize;while j<STAGE23_BT_SLOT_PAYLOAD_BYTES{r[j+1]=payload[j];j+=1}
+    0
+}
+
+/// Semantic replacement for current `sub_16E348`: clear a matching record and
+/// return 1, or return 0 when the key/payload pair is absent.
+pub fn bt_remove_slot(
+    records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    tag:u8,
+    payload:&[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],
+)->u8{
+    let slot=bt_find_matching_slot(records,tag,payload);
+    if slot>=STAGE22_BT_SLOT_COUNT as u8{return 0}
+    records[slot as usize]=[0;STAGE22_BT_SLOT_RECORD_BYTES];1
+}
+#[cfg(test)]
+mod stage23_tests{
+    use super::*;
+    #[test]fn slot_table_lifecycle(){
+        assert_eq!(STAGE23_BT_TABLE_BYTES,56);
+        assert_eq!(STAGE23_CURRENT_BT_MEMCPY_ADDR,0x3DB4);
+        let p1=[1,2,3,4,5,6];let p2=[6,5,4,3,2,1];
+        let mut r=[[0u8;7];8];
+        assert_eq!(bt_find_matching_slot(&r,9,&p1),8);
+        assert_eq!(bt_insert_slot_if_absent(&mut r,9,&p1),0);
+        assert_eq!(r[0],[9,1,2,3,4,5,6]);
+        assert_eq!(bt_insert_slot_if_absent(&mut r,9,&p1),0);
+        assert_eq!(bt_find_matching_slot(&r,9,&p1),0);
+        assert_eq!(bt_remove_slot(&mut r,9,&p1),1);assert_eq!(r[0],[0;7]);
+        assert_eq!(bt_remove_slot(&mut r,9,&p1),0);
+        let mut i=0u8;while (i as usize)<r.len(){let p=[i,1,2,3,4,5];assert_eq!(bt_insert_slot_if_absent(&mut r,i+1,&p),0);i+=1}
+        assert_eq!(bt_insert_slot_if_absent(&mut r,99,&p2),17);
+        bt_clear_slot_table(&mut r);assert_eq!(r,[[0;7];8]);
+        // Exact firmware quirk: an all-zero key/payload already matches an empty record.
+        assert_eq!(bt_find_matching_slot(&r,0,&[0;6]),0);
+    }
+    #[test]fn current_consumer_addresses(){
+        assert_eq!(STAGE23_CURRENT_BT_FIND_MATCHING_SLOT_ADDR,0x17208C);
+        assert_eq!(STAGE23_CURRENT_BT_CLEAR_SLOT_TABLE_ADDR,0x1723C0);
+        assert_eq!(STAGE23_CURRENT_BT_INSERT_SLOT_IF_ABSENT_ADDR,0x1723D0);
+        assert_eq!(STAGE23_CURRENT_BT_REMOVE_SLOT_ADDR,0x172458);
+        assert_eq!(STAGE23_CURRENT_BT_RESET_TABLE_TAIL_ADDR,0x172480);
+    }
+}

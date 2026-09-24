@@ -74,3 +74,16 @@ Two roles are now promoted for the **current** image because current call-site l
 Seven additional addresses reached only from the verified `hnd_free` body (`0x70718`, `0x70814`, `0x70b80`, `0x710cc`, `0x710dc`, `0x711c8`, `0x71248`) are kept as **hnd_free-internal boundaries** without inventing vendor semantics. Four targets (`0x11d54`, `0x12d10`, `0x6fdac`, `0x7616c`) remain unresolved.
 
 The source now includes a libre `dngl_finddev_with_diagnostics` wrapper: it reuses the already reconstructed interface-index mapping and exposes the optional miss diagnostic through a trait rather than depending on the proprietary ROM logger.
+
+## Stage-23 unresolved-boundary ABI freeze
+
+Stage 22 left five calls across four ROM targets intentionally unresolved. Stage 23 does not guess their vendor symbols. Instead it freezes the exact call shapes reached from the Stage-21 relocation-normalized current closure:
+
+| ROM target | Current caller | Calls | Verified shape |
+| --- | --- | ---: | --- |
+| `0x11d54` | `sub_185538` → current `0x1869f0` | 1 | one-argument tail boundary |
+| `0x12d10` | `sub_1A3718` → current `0x1a5ad0` | 1 | two-argument direct call |
+| `0x6fdac` | `sub_1A3718` → current `0x1a5ad0` | 2 | zero-argument direct call |
+| `0x7616c` | `sub_1A36D0` → current `0x1a5a88` | 1 | one-argument call whose return value is consumed |
+
+These are ABI-shape facts only. They deliberately remain `Unresolved` in the source model until stronger current-image evidence establishes semantics.
