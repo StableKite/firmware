@@ -349,3 +349,39 @@ mod stage19_tests {
         assert_eq!(STAGE19_BT_FUNCTIONS_GE8_UNIQUE_EXACT+STAGE19_BT_FUNCTIONS_GE8_MULTI_EXACT+STAGE19_BT_FUNCTIONS_GE8_NO_EXACT,STAGE19_BT_FUNCTIONS_GE8_COMPARED);
     }
 }
+
+/// Stage 20: current Thumb control-flow anchors derived directly from current
+/// bytes inside Stage-19 exact full-body relocations. These are destination
+/// addresses, not claims that the destination implementation is byte-identical.
+pub const STAGE20_BT_MONOTONIC_UNIQUE_SPINE:u32=44;
+pub const STAGE20_BT_CONTEXT_DISAMBIGUATED_EXACT:u32=3;
+pub const STAGE20_BT_FIND_FIRST_SLOT_CALLSITE:u32=0x0017_20C6;
+pub const STAGE20_BT_FIND_FIRST_SLOT_HELPER:u32=0x0017_2044;
+pub const STAGE20_BT_ANCHOR_160800_DIRECT_BL_CALLS:u32=19;
+pub const STAGE20_BT_ANCHOR_160800_ROM_TARGETS:&[u32]=&[
+    0x0002_02C0,
+    0x0002_02E8,
+    0x0002_1F0C,
+    0x0002_22A4,
+    0x0002_24A8,
+    0x0004_3D2C,
+    0x0004_43FC,
+    0x0004_5DD4,
+];
+pub const fn stage20_bt_is_anchor_rom_target(address:u32)->bool{
+    matches!(address,0x0002_02C0|0x0002_02E8|0x0002_1F0C|0x0002_22A4|0x0002_24A8|0x0004_3D2C|0x0004_43FC|0x0004_5DD4)
+}
+#[cfg(test)]
+mod stage20_tests {
+    use super::*;
+    #[test]
+    fn current_control_flow_anchors(){
+        assert_eq!(STAGE20_BT_FIND_FIRST_SLOT_CALLSITE,0x0017_20C6);
+        assert_eq!(STAGE20_BT_FIND_FIRST_SLOT_HELPER,0x0017_2044);
+        assert_eq!(STAGE20_BT_ANCHOR_160800_DIRECT_BL_CALLS,19);
+        assert_eq!(STAGE20_BT_ANCHOR_160800_ROM_TARGETS.len(),8);
+        assert!(stage20_bt_is_anchor_rom_target(0x0004_3D2C));
+        assert!(!stage20_bt_is_anchor_rom_target(0x0017_2044));
+        assert_eq!(STAGE20_BT_CONTEXT_DISAMBIGUATED_EXACT,3);
+    }
+}

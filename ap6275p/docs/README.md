@@ -8,3 +8,5 @@
 Stage 18 deliberately prioritizes provenance correctness over new semantic claims.
 
 Stage 19A records cryptographic exact-byte relocation anchors independently of IDA. Verified fresh IDA output is still required before any current-image call-graph or decompiler conclusions are accepted.
+
+Stage 20 extends Stage 19A with IDA-independent current control-flow anchors and context-disambiguated exact structural relocations.

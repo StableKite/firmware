@@ -284,3 +284,41 @@ mod stage19_tests {
         assert_eq!(STAGE18_WIFI_REFERENCE_STATUS,Bcm43752ReconstructionReferenceStatus::CurrentOrangePiPendingDisassembly);
     }
 }
+
+/// Stage 20: current control-flow targets derived from exact 4-byte Thumb
+/// branch thunks. The thunk instruction bytes are re-verified on the current
+/// Orange Pi image before this table is committed. A target address is a
+/// control-flow anchor only; it does not claim that the target body is unchanged.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ExactThunkTarget {
+    pub legacy_thunk:u32,
+    pub current_thunk:u32,
+    pub legacy_target:u32,
+    pub current_target:u32,
+    pub thunk_name:&'static str,
+}
+pub const STAGE20_WIFI_EXACT_THUNK_TARGETS:&[ExactThunkTarget]=&[
+    ExactThunkTarget{legacy_thunk:0x0018_47F4,current_thunk:0x0018_5BEC,legacy_target:0x0018_4708,current_target:0x0018_5B00,thunk_name:"j_dngl_sendwl"},
+    ExactThunkTarget{legacy_thunk:0x001A_390E,current_thunk:0x001A_5CC6,legacy_target:0x001A_3C1C,current_target:0x001A_5FD4,thunk_name:"j_hnd_free"},
+    ExactThunkTarget{legacy_thunk:0x001A_45A8,current_thunk:0x001A_6960,legacy_target:0x001A_4004,current_target:0x001A_63BC,thunk_name:"j_nullsub_56"},
+];
+pub const STAGE20_WIFI_MONOTONIC_UNIQUE_SPINE:u32=608;
+pub const STAGE20_WIFI_CONTEXT_DISAMBIGUATED_EXACT:u32=29;
+pub fn current_target_from_exact_thunk(legacy_thunk:u32)->Option<u32>{
+    for r in STAGE20_WIFI_EXACT_THUNK_TARGETS{
+        if r.legacy_thunk==legacy_thunk{return Some(r.current_target)}
+    }
+    None
+}
+#[cfg(test)]
+mod stage20_tests {
+    use super::*;
+    #[test]
+    fn exact_thunk_targets(){
+        assert_eq!(current_target_from_exact_thunk(0x0018_47F4),Some(0x0018_5B00));
+        assert_eq!(current_target_from_exact_thunk(0x001A_390E),Some(0x001A_5FD4));
+        assert_eq!(current_target_from_exact_thunk(0x001A_45A8),Some(0x001A_63BC));
+        assert_eq!(STAGE20_WIFI_MONOTONIC_UNIQUE_SPINE,608);
+        assert_eq!(STAGE20_WIFI_CONTEXT_DISAMBIGUATED_EXACT,29);
+    }
+}

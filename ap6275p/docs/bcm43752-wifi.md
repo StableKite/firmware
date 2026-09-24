@@ -28,3 +28,17 @@ High-value uniquely matched named anchors:
 | `j_nullsub_56` `0x1a45a8` | `0x1a6960` | 4 | exact unique Thumb thunk |
 
 Only the 32-byte `dngl_getdev_by_ifidx` body is promoted as a direct current semantic anchor at this stage. The tiny thunks are useful seeds for fresh IDA analysis but their downstream targets must be followed in the current image. Legacy ROM-boundary addresses and the Stage-17 closure are not transferred by this table.
+
+## Stage-20 current control-flow anchors
+
+Stage 20 follows the exact Stage-19 thunks on the **current** Orange Pi bytes rather than assuming their legacy destinations. Each 4-byte thunk instruction is SHA-256 checked against the legacy instruction, decoded again at its relocated current address, and required to produce the expected current target.
+
+| Exact thunk | Current thunk | Current destination | Claim |
+| --- | --- | --- | --- |
+| `j_dngl_sendwl` | `0x185bec` | `0x185b00` | direct Thumb `B.W` destination |
+| `j_hnd_free` | `0x1a5cc6` | `0x1a5fd4` | direct Thumb `B.W` destination |
+| `j_nullsub_56` | `0x1a6960` | `0x1a63bc` | direct Thumb `B.W` destination |
+
+The destination addresses are current control-flow anchors. Stage 20 does **not** claim that the destination function bodies are byte-identical to the legacy implementations.
+
+For repeated exact bodies, Stage 20 also builds a strictly monotonic spine from the 608 globally unique >=8-byte Wi-Fi matches. Of the 37 globally repeated exact bodies, 29 have exactly one occurrence between their nearest monotonic exact neighbors and are therefore recorded as context-disambiguated structural relocations. They are not automatically promoted to semantic names.

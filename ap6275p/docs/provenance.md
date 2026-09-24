@@ -23,3 +23,13 @@ This distinction is intentional and fail-safe: source is retained as useful evid
 ## Stage-19 evidence correction
 
 The Stage-18 result package was re-audited before semantic porting. Both current-image `ida.log` files contain only `License not yet accepted, cannot run in batch mode`, and no `report.json`, call graph, assembly export, or decompiler output exists. Stage 19 therefore invalidates the earlier "IDA evidence generated" status. Exact-byte relocation metadata is derived independently from the legacy evidence images and current Orange Pi references; fresh IDA output is accepted only when the runner verifies non-empty exported reports.
+
+## Stage-20 evidence class
+
+Stage 20 adds evidence without requiring IDA:
+
+1. **Context-disambiguated exact body** — the complete legacy function body occurs multiple times globally in the current image, but exactly one occurrence lies between the nearest monotonic unique exact anchors.
+2. **Exact-thunk target** — the current 4-byte Thumb branch instruction is byte-identical to the legacy thunk instruction and is decoded again at its current address.
+3. **Exact-body direct-call target** — a direct Thumb `BL` instruction inside a Stage-19 exact complete-body anchor is byte-checked and decoded on the current image.
+
+These classes identify current structure/control-flow only. They do not by themselves establish unchanged callee implementations or whole-image semantic equivalence.
