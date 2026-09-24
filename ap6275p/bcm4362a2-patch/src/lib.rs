@@ -2971,3 +2971,145 @@ mod stage41_tests{
         let mut b=base();b.mode=2;let mut r=req(0);assert_eq!(bt_stage41_object_update(&mut r,&mut b),0x9006);assert_eq!((b.hist.dword89,b.hist.dword90,b.hist.dword91,b.hist.dword92),(1,2,3,4));assert_eq!((b.hist.dword81,b.hist.dword82),(0x11,0x22));assert!(b.calls.contains(&(0x10000+0x4433)));assert!(b.calls.contains(&(0x20000+0x55)));assert!(b.calls.contains(&(0x30000+0xFFFF)));
     }
 }
+
+/// Stage 42: current request/mode transaction at `0x16CDC4`, promoted from
+/// the globally unique relocation-normalized legacy `sub_16A284` body.
+pub const STAGE42_CURRENT_BT_REQUEST_MODE_ADDR:u32=0x0016_CDC4;
+pub const STAGE42_CURRENT_BT_MODE1_POST_ADDR:u32=0x0016_D90C;
+pub const STAGE42_BT_LOOKUP_BOUNDARY:u32=0x0003_3730;
+pub const STAGE42_BT_MODE_BOUNDARY:u32=0x0003_3B8C;
+pub const STAGE42_BT_VALIDATE_BOUNDARY:u32=0x0003_3AC8;
+pub const STAGE42_BT_STATUS_BOUNDARY:u32=0x0006_E774;
+pub const STAGE42_BT_MODE0_BUILD_BOUNDARY:u32=0x0006_5244;
+pub const STAGE42_BT_MODE0_FOLLOWUP_BOUNDARY:u32=0x0003_2EA4;
+pub const STAGE42_BT_GUARD_WORD_ADDR:u32=0x0020_0890;
+pub const STAGE42_BT_TEMPLATE_CONTEXT_ADDR:u32=0x0020_8338;
+pub const STAGE42_BT_MODE0_CALLBACK_THUMB:u32=0x0007_1C61;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage42Mode0Message{
+    pub completion:u16,
+    pub kind:u8,
+    pub lookup_key:u16,
+    pub byte16:u8,
+    pub byte17:u8,
+    pub byte18:u8,
+    pub byte19:u8,
+    pub byte20:u8,
+    pub byte21:u8,
+    pub byte22:u8,
+    pub byte23:u8,
+    pub template_word:u16,
+    pub control_hi3:u16,
+}
+
+pub trait BtStage42Backend{
+    /// Current `0x33730(key,3)`: return an opaque object handle when present.
+    fn lookup_kind3(&mut self,key:u16)->Option<u32>;
+    /// Current `0x33B8C(*object)` mode result.
+    fn mode(&mut self,object:u32)->u32;
+    /// Current `0x33AC8(mask)` boolean-like validation.
+    fn validate_mask(&mut self,mask:u16)->bool;
+    fn object_byte31(&mut self,object:u32)->u8;
+    fn set_object_word236(&mut self,object:u32,value:u16);
+    /// Current `0x6E774(completion,status)` pointer-shaped/integer result.
+    fn status(&mut self,completion:u16,status:u32)->u32;
+    /// Current relocated `0x16D90C(object)`; semantics remain a later closure.
+    fn mode1_post(&mut self,object:u32)->u32;
+    /// Current word loaded through literal context `0x208338` at byte offset 77.
+    fn template_word77(&mut self)->u16;
+    /// Current `0x65244(&message,1,&out_handle)`.
+    fn build_mode0(&mut self,message:&BtStage42Mode0Message,out_handle:&mut u32)->u32;
+    /// Current `0x32EA4(out_handle,&message,0x71C61)`.
+    fn mode0_followup(&mut self,out_handle:u32,message:&BtStage42Mode0Message,callback_thumb:u32)->u32;
+}
+
+fn bt_stage42_u16(raw:&[u8;16],off:usize)->u16{u16::from_le_bytes([raw[off],raw[off+1]])}
+
+/// Safe source-level model of current `0x16CDC4`.
+///
+/// The raw request layout is kept to preserve the firmware's unaligned u16 at
+/// byte +9, lookup key at +12, and control word at +14.  The early
+/// `(control ^ 0x3306) & ~1 == 0` path returns the opaque object handle without
+/// status/finalization.  Mode 1 validates `(control ^ 0x3306) & 0xFF1E`, gates
+/// on object byte +31 bit 3, stores the mask at object word +236, reports
+/// status zero, then invokes the independently relocated current `0x16D90C`.
+/// Mode 0 builds the exact constant-shaped local message and reports the build
+/// result before the zero-only follow-up. Other modes preserve the opaque mode
+/// result exactly.
+pub fn bt_stage42_request_mode<B:BtStage42Backend>(request:&[u8;16],b:&mut B)->u32{
+    let completion=bt_stage42_u16(request,9);
+    let key=bt_stage42_u16(request,12);
+    let control=bt_stage42_u16(request,14);
+    let Some(object)=b.lookup_kind3(key) else{return b.status(completion,2)};
+    let x=control^0x3306;
+    if x&0xFFFE==0{return object;}
+    let mode=b.mode(object);
+    if mode==1{
+        let mask=x&0xFF1E;
+        if !b.validate_mask(mask){return b.status(completion,18);}
+        let bit=b.object_byte31(object)&8;
+        if bit!=0{return b.status(completion,12);}
+        b.set_object_word236(object,mask);
+        let _=b.status(completion,bit as u32);
+        return b.mode1_post(object);
+    }
+    if mode==0{
+        let message=BtStage42Mode0Message{
+            completion,
+            kind:17,
+            lookup_key:key,
+            byte16:64,
+            byte17:31,
+            byte18:0,
+            byte19:0,
+            byte20:64,
+            byte21:31,
+            byte22:0,
+            byte23:0,
+            template_word:b.template_word77(),
+            control_hi3:((control as u8)>>5) as u16,
+        };
+        let mut out=0u32;
+        let r=b.build_mode0(&message,&mut out);
+        let status_result=b.status(completion,r);
+        if r==0{return b.mode0_followup(out,&message,STAGE42_BT_MODE0_CALLBACK_THUMB);}
+        return status_result;
+    }
+    mode
+}
+
+#[cfg(test)]
+mod stage42_tests{
+    use super::*;use std::vec::Vec;
+    struct B{obj:Option<u32>,mode:u32,valid:bool,b31:u8,template:u16,build:u32,out:u32,calls:Vec<(u8,u32,u32)>,stored:Option<u16>}
+    impl BtStage42Backend for B{
+        fn lookup_kind3(&mut self,k:u16)->Option<u32>{self.calls.push((1,k as u32,3));self.obj}
+        fn mode(&mut self,o:u32)->u32{self.calls.push((2,o,0));self.mode}
+        fn validate_mask(&mut self,m:u16)->bool{self.calls.push((3,m as u32,0));self.valid}
+        fn object_byte31(&mut self,_:u32)->u8{self.b31}
+        fn set_object_word236(&mut self,_:u32,v:u16){self.stored=Some(v)}
+        fn status(&mut self,c:u16,s:u32)->u32{self.calls.push((4,c as u32,s));0x8000_0000|s}
+        fn mode1_post(&mut self,o:u32)->u32{self.calls.push((5,o,0));0x1111}
+        fn template_word77(&mut self)->u16{self.template}
+        fn build_mode0(&mut self,m:&BtStage42Mode0Message,out:&mut u32)->u32{assert_eq!(m.kind,17);*out=self.out;self.calls.push((6,m.lookup_key as u32,m.control_hi3 as u32));self.build}
+        fn mode0_followup(&mut self,o:u32,_:&BtStage42Mode0Message,cb:u32)->u32{self.calls.push((7,o,cb));0x2222}
+    }
+    fn req(completion:u16,key:u16,control:u16)->[u8;16]{let mut r=[0u8;16];r[9..11].copy_from_slice(&completion.to_le_bytes());r[12..14].copy_from_slice(&key.to_le_bytes());r[14..16].copy_from_slice(&control.to_le_bytes());r}
+    fn backend()->B{B{obj:Some(0x55),mode:1,valid:true,b31:0,template:0x1234,build:0,out:0x66,calls:Vec::new(),stored:None}}
+    #[test]fn missing_early_mask_and_other_mode_preserve_returns(){
+        let mut b=backend();b.obj=None;assert_eq!(bt_stage42_request_mode(&req(7,9,0),&mut b),0x8000_0002);
+        let mut b=backend();assert_eq!(bt_stage42_request_mode(&req(1,2,0x3306),&mut b),0x55);assert_eq!(b.calls.len(),1);
+        let mut b=backend();b.mode=7;assert_eq!(bt_stage42_request_mode(&req(1,2,0),&mut b),7);
+    }
+    #[test]fn mode1_preserves_validate_bit_gate_store_status_and_post(){
+        let mut b=backend();let r=bt_stage42_request_mode(&req(0x1234,4,0),&mut b);assert_eq!(r,0x1111);assert_eq!(b.stored,Some(0x3306&0xFF1E));assert!(b.calls.iter().any(|x|*x==(4,0x1234,0)));assert!(b.calls.iter().any(|x|x.0==5));
+        let mut b=backend();b.valid=false;assert_eq!(bt_stage42_request_mode(&req(3,4,0),&mut b),0x8000_0012);
+        let mut b=backend();b.b31=8;assert_eq!(bt_stage42_request_mode(&req(3,4,0),&mut b),0x8000_000c);
+    }
+    #[test]fn mode0_message_constants_status_and_zero_followup_are_exact(){
+        let mut b=backend();b.mode=0;b.template=0xABCD;b.out=0xCAFE;b.build=0;assert_eq!(bt_stage42_request_mode(&req(0x102,0x304,0xE123),&mut b),0x2222);assert!(b.calls.contains(&(4,0x102,0)));assert!(b.calls.contains(&(7,0xCAFE,STAGE42_BT_MODE0_CALLBACK_THUMB)));
+        let mut b=backend();b.mode=0;b.build=5;assert_eq!(bt_stage42_request_mode(&req(8,9,0x8123),&mut b),0x8000_0005);assert!(!b.calls.iter().any(|x|x.0==7));
+        assert_eq!(STAGE42_CURRENT_BT_REQUEST_MODE_ADDR,0x16CDC4);assert_eq!(STAGE42_CURRENT_BT_MODE1_POST_ADDR,0x16D90C);
+    }
+}
