@@ -19,3 +19,5 @@ Stage 23 freezes the ABI shapes of the four still-unresolved current Wi-Fi ROM t
 Stage 24 lifts verified current wrapper/reset semantics into Rust while retaining unresolved ROM calls as explicit traits.
 
 Stage 25 lifts current deadman-control wrappers and Bluetooth pair/event/control dispatch while preserving opaque ROM exits as traits/routes rather than guessing vendor symbols.
+
+Stage 26 lifts the verified current Bluetooth mode machine, init wrapper, and post-init MMIO program while keeping unresolved ROM contracts opaque.

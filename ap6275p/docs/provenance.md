@@ -64,3 +64,7 @@ This adds no IDA-derived current claims and does not identify Wi-Fi `0x11d54`/`0
 Stage 25 extends relocation-normalized identity with current control-plane composition. Each promoted wrapper/dispatcher must have one complete normalized match in the current image, and all current literal words, direct targets, and relevant embedded strings are independently re-read.
 
 Source promotion stops at unresolved ROM exits. Wi-Fi `0x12d10`/`0x6fdac` and Bluetooth `0x8d34c`/`0x6e4b4`/`0x11ea8` remain unnamed boundaries even though their call shapes and order are now frozen by current callers.
+
+## Stage-26 evidence class
+
+Stage 26 promotes only complete functions with exactly one relocation-normalized match in the current PatchRAM image. Every current literal word and direct branch target used by the source model is re-read from the current bytes. The mode-machine and init-wrapper ROM callees remain unnamed traits; only their current addresses, argument values, ordering, and return/control effects visible in the caller are frozen. The post-init MMIO function contains no external calls, so its four register operations are lifted directly from the uniquely matched current body.

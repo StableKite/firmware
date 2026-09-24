@@ -109,3 +109,13 @@ The event path is also lifted conservatively. Current `0x172408` checks event by
 Current `0x172594` implements command opcodes 1..4: capped payload preparation, byte store at `0x222fd1`, pair-config update, and current mode-machine invocation `0x172518`. Unknown opcode returns 18. Current `0x1725dc` routes mode 1 to current `0x17218c`, mode 2 to `0x1720e8`, and otherwise returns.
 
 Current `0x172518` and init wrapper `0x1725f8` are verified normalized matches but remain structural seeds because several external ROM contracts are still unresolved.
+
+## Stage-26 mode/init/MMIO lifting
+
+Stage 26 closes the two Stage-25 structural seeds without assigning vendor names to their ROM dependencies. Current `0x172518` is the unique relocation-normalized match of legacy `sub_16E408`; all four current direct targets remain at `0x72b24`, `0x151fe`, `0x151bc`, and `0x15180`, while current literals independently resolve mode `0x223064`, mirrored byte `0x223065`, source byte `0x222084`, interval word `0x22208c`, context `0x22304c`, and callback Thumb address `0x171ff9`.
+
+The source model preserves the exact switch: mode 0 performs the `0x72b24(0)` prelude, changes mode to 1, mirrors the source byte, invokes the four-argument `0x151fe` boundary and then the common `0x15180` boundary; mode 1 mirrors the byte, invokes `0x151bc`, then the same common boundary; modes 2..4 become 5. The function returns 0 only when the resulting mode is below 2, otherwise 3. All four ROM contracts remain opaque traits.
+
+Current `0x1725f8` uniquely matches legacy `sub_16E4E8`. It zeroes 268 bytes at `0x217c8c`, calls `0xbfad0(0)`, conditionally feeds that result to `0xbf9f4` when bit 2 of word `0x320180` is clear, then invokes stable boundaries with contexts `0x217d48` and `0x217d6c`. The final seven-argument boundary `0x144bc` receives workspace `0x217c8c`, config `0x222570`, kind 23, callback Thumb address `0xbfc11`, two zero arguments, and the current u16 value from `0x204bc8`. The Rust model preserves this sequence while keeping the five unresolved ROM calls behind a trait.
+
+Stage 26 also recovers current `0x17294c`, the sole relocation-normalized match of legacy `sub_16E768`. It has no external calls and directly programs four 32-bit MMIO operations: write 10 to `0x423758`; OR `0x800` into `0x64085c`; replace bits `0xF80` with `0x100` at `0x640834`; and replace bits `0xF8` with `0xE8` at `0x420be0`. These operations are exposed through a hardware-register trait rather than raw host memory access.

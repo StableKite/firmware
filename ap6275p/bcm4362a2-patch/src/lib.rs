@@ -813,3 +813,162 @@ mod stage25_tests{
         assert_eq!(bt_mode_edge_route(1),BtModeEdgeRoute::Mode1);assert_eq!(bt_mode_edge_route(2),BtModeEdgeRoute::Mode2);assert_eq!(bt_mode_edge_route(0),BtModeEdgeRoute::None);
     }
 }
+
+/// Stage 26: current Bluetooth mode-machine, init-wrapper, and post-init MMIO
+/// program recovered from unique relocation-normalized complete-body identity.
+/// Unresolved ROM entries remain explicit boundary traits.
+pub const STAGE26_CURRENT_BT_MODE_MACHINE_ADDR:u32=0x0017_2518;
+pub const STAGE26_CURRENT_BT_INIT_WRAPPER_ADDR:u32=0x0017_25F8;
+pub const STAGE26_CURRENT_BT_POST_INIT_REG_PROGRAM_ADDR:u32=0x0017_294C;
+
+pub const STAGE26_BT_MODE_ADDR:u32=0x0022_3064;
+pub const STAGE26_BT_MODE_MIRROR_ADDR:u32=0x0022_3065;
+pub const STAGE26_BT_MODE_SOURCE_ADDR:u32=0x0022_2084;
+pub const STAGE26_BT_MODE_INTERVAL_ADDR:u32=0x0022_208C;
+pub const STAGE26_BT_MODE_CONTEXT_ADDR:u32=0x0022_304C;
+pub const STAGE26_BT_MODE_CALLBACK_THUMB:u32=0x0017_1FF9;
+pub const STAGE26_BT_MODE_PRELUDE_BOUNDARY:u32=0x0007_2B24;
+pub const STAGE26_BT_MODE_REGISTER_BOUNDARY:u32=0x0001_51FE;
+pub const STAGE26_BT_MODE_ONE_ARG_BOUNDARY:u32=0x0001_51BC;
+pub const STAGE26_BT_MODE_TWO_ARG_BOUNDARY:u32=0x0001_5180;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtModeMachineState{
+    pub mode:u8,
+    pub source_byte:u8,
+    pub mirrored_byte:u8,
+    pub interval:u32,
+}
+pub trait BtModeMachineOpaqueBoundaries{
+    fn boundary_72b24(&mut self,arg0:u32);
+    fn boundary_151fe(&mut self,context:u32,callback_thumb:u32,zero:u32,interval:u32);
+    fn boundary_151bc(&mut self,context:u32);
+    fn boundary_15180(&mut self,context:u32,interval:u32);
+}
+
+/// Source-level control model of current `0x172518` / legacy `sub_16E408`.
+/// The ROM entry points remain unnamed; only exact arguments/order and global
+/// state transitions are promoted.
+pub fn bt_mode_machine_step<B:BtModeMachineOpaqueBoundaries>(state:&mut BtModeMachineState,b:&mut B)->u8{
+    match state.mode{
+        0=>{
+            b.boundary_72b24(0);
+            state.mode=1;
+            state.mirrored_byte=state.source_byte;
+            b.boundary_151fe(STAGE26_BT_MODE_CONTEXT_ADDR,STAGE26_BT_MODE_CALLBACK_THUMB,0,state.interval);
+            b.boundary_15180(STAGE26_BT_MODE_CONTEXT_ADDR,state.interval);
+        }
+        1=>{
+            state.mirrored_byte=state.source_byte;
+            b.boundary_151bc(STAGE26_BT_MODE_CONTEXT_ADDR);
+            b.boundary_15180(STAGE26_BT_MODE_CONTEXT_ADDR,state.interval);
+        }
+        2|3|4=>state.mode=5,
+        _=>{},
+    }
+    if state.mode<2{0}else{3}
+}
+
+pub const STAGE26_BT_INIT_WORKSPACE_ADDR:u32=0x0021_7C8C;
+pub const STAGE26_BT_INIT_WORKSPACE_BYTES:usize=268;
+pub const STAGE26_BT_INIT_STATUS_ADDR:u32=0x0032_0180;
+pub const STAGE26_BT_INIT_CONTEXT_A:u32=0x0021_7D48;
+pub const STAGE26_BT_INIT_CONTEXT_B:u32=0x0021_7D6C;
+pub const STAGE26_BT_INIT_WORD_ADDR:u32=0x0020_4BC8;
+pub const STAGE26_BT_INIT_CONFIG_ADDR:u32=0x0022_2570;
+pub const STAGE26_BT_INIT_CALLBACK_THUMB:u32=0x000B_FC11;
+pub const STAGE26_BT_INIT_PROBE_BOUNDARY:u32=0x000B_FAD0;
+pub const STAGE26_BT_INIT_APPLY_BOUNDARY:u32=0x000B_F9F4;
+pub const STAGE26_BT_INIT_CONTEXT_A_BOUNDARY:u32=0x000B_0864;
+pub const STAGE26_BT_INIT_CONTEXT_B_BOUNDARY:u32=0x0001_7670;
+pub const STAGE26_BT_INIT_REGISTER_BOUNDARY:u32=0x0001_44BC;
+
+pub trait BtInitOpaqueBoundaries{
+    fn probe(&mut self,arg0:u32)->u32;
+    fn apply_probe(&mut self,token:u32);
+    fn init_context_a(&mut self,address:u32);
+    fn init_context_b(&mut self,address:u32);
+    fn register(&mut self,workspace:u32,config:u32,kind:u32,callback_thumb:u32,arg4:u32,arg5:u32,word:u16)->u32;
+}
+
+/// Source-level sequencing model of current `0x1725F8` / legacy `sub_16E4E8`.
+/// The 268-byte memset is libre; the other five ROM calls remain explicit
+/// opaque boundaries with their current arguments frozen.
+pub fn bt_init_wrapper<B:BtInitOpaqueBoundaries>(
+    workspace:&mut[u8;STAGE26_BT_INIT_WORKSPACE_BYTES],status_word:u32,registration_word:u16,b:&mut B,
+)->u32{
+    *workspace=[0;STAGE26_BT_INIT_WORKSPACE_BYTES];
+    let token=b.probe(0);
+    if status_word&4==0{b.apply_probe(token);}
+    b.init_context_a(STAGE26_BT_INIT_CONTEXT_A);
+    b.init_context_b(STAGE26_BT_INIT_CONTEXT_B);
+    b.register(
+        STAGE26_BT_INIT_WORKSPACE_ADDR,STAGE26_BT_INIT_CONFIG_ADDR,23,
+        STAGE26_BT_INIT_CALLBACK_THUMB,0,0,registration_word,
+    )
+}
+
+pub const STAGE26_BT_MMIO_WRITE10_ADDR:u32=0x0042_3758;
+pub const STAGE26_BT_MMIO_OR800_ADDR:u32=0x0064_085C;
+pub const STAGE26_BT_MMIO_MASK_F80_ADDR:u32=0x0064_0834;
+pub const STAGE26_BT_MMIO_MASK_F8_ADDR:u32=0x0042_0BE0;
+pub trait BtMmio32{fn read32(&mut self,address:u32)->u32;fn write32(&mut self,address:u32,value:u32);}
+
+/// Exact register program of current `0x17294C` / legacy `sub_16E768`.
+pub fn bt_post_init_register_program<I:BtMmio32>(io:&mut I)->u8{
+    io.write32(STAGE26_BT_MMIO_WRITE10_ADDR,10);
+    let a=io.read32(STAGE26_BT_MMIO_OR800_ADDR);
+    io.write32(STAGE26_BT_MMIO_OR800_ADDR,a|0x800);
+    let b=io.read32(STAGE26_BT_MMIO_MASK_F80_ADDR);
+    io.write32(STAGE26_BT_MMIO_MASK_F80_ADDR,(b&!0xF80)|0x100);
+    let c=io.read32(STAGE26_BT_MMIO_MASK_F8_ADDR);
+    io.write32(STAGE26_BT_MMIO_MASK_F8_ADDR,(c&!0xF8)|0xE8);
+    0
+}
+
+#[cfg(test)]
+mod stage26_tests{
+    use super::*;
+    #[derive(Default)]struct M{calls:[u8;4],n:usize,args:[[u32;4];4]}
+    impl BtModeMachineOpaqueBoundaries for M{
+        fn boundary_72b24(&mut self,a:u32){self.calls[self.n]=1;self.args[self.n][0]=a;self.n+=1}
+        fn boundary_151fe(&mut self,c:u32,cb:u32,z:u32,i:u32){self.calls[self.n]=2;self.args[self.n]=[c,cb,z,i];self.n+=1}
+        fn boundary_151bc(&mut self,c:u32){self.calls[self.n]=3;self.args[self.n][0]=c;self.n+=1}
+        fn boundary_15180(&mut self,c:u32,i:u32){self.calls[self.n]=4;self.args[self.n][0]=c;self.args[self.n][1]=i;self.n+=1}
+    }
+    #[test]fn mode_machine_preserves_transitions_and_order(){
+        let mut s=BtModeMachineState{mode:0,source_byte:7,mirrored_byte:0,interval:99};let mut m=M::default();
+        assert_eq!(bt_mode_machine_step(&mut s,&mut m),0);assert_eq!((s.mode,s.mirrored_byte),(1,7));
+        assert_eq!(&m.calls[..m.n],&[1,2,4]);assert_eq!(m.args[1],[STAGE26_BT_MODE_CONTEXT_ADDR,STAGE26_BT_MODE_CALLBACK_THUMB,0,99]);
+        m=M::default();s.source_byte=8;assert_eq!(bt_mode_machine_step(&mut s,&mut m),0);assert_eq!(s.mirrored_byte,8);assert_eq!(&m.calls[..m.n],&[3,4]);
+        for mode in [2u8,3,4]{let mut x=BtModeMachineState{mode,source_byte:1,mirrored_byte:2,interval:3};let mut q=M::default();assert_eq!(bt_mode_machine_step(&mut x,&mut q),3);assert_eq!(x.mode,5);assert_eq!(q.n,0);}
+        let mut x=BtModeMachineState{mode:9,source_byte:1,mirrored_byte:2,interval:3};let mut q=M::default();assert_eq!(bt_mode_machine_step(&mut x,&mut q),3);assert_eq!(x.mode,9);
+    }
+    #[derive(Default)]struct I{calls:[u8;5],n:usize,last:[u32;7],probe_value:u32,ret:u32}
+    impl BtInitOpaqueBoundaries for I{
+        fn probe(&mut self,a:u32)->u32{self.calls[self.n]=1;self.n+=1;self.last[0]=a;self.probe_value}
+        fn apply_probe(&mut self,t:u32){self.calls[self.n]=2;self.n+=1;self.last[1]=t}
+        fn init_context_a(&mut self,a:u32){self.calls[self.n]=3;self.n+=1;self.last[2]=a}
+        fn init_context_b(&mut self,a:u32){self.calls[self.n]=4;self.n+=1;self.last[3]=a}
+        fn register(&mut self,w:u32,c:u32,k:u32,cb:u32,a4:u32,a5:u32,word:u16)->u32{self.calls[self.n]=5;self.n+=1;self.last=[w,c,k,cb,a4,a5,word as u32];self.ret}
+    }
+    #[test]fn init_wrapper_preserves_gate_and_arguments(){
+        let mut ws=[0xAAu8;STAGE26_BT_INIT_WORKSPACE_BYTES];let mut i=I{probe_value:0x55,ret:0x1234,..I::default()};
+        assert_eq!(bt_init_wrapper(&mut ws,0,0xBEEF,&mut i),0x1234);assert!(ws.iter().all(|&x|x==0));assert_eq!(&i.calls[..i.n],&[1,2,3,4,5]);
+        assert_eq!(i.last,[STAGE26_BT_INIT_WORKSPACE_ADDR,STAGE26_BT_INIT_CONFIG_ADDR,23,STAGE26_BT_INIT_CALLBACK_THUMB,0,0,0xBEEF]);
+        let mut ws=[1u8;STAGE26_BT_INIT_WORKSPACE_BYTES];let mut j=I::default();let _=bt_init_wrapper(&mut ws,4,7,&mut j);assert_eq!(&j.calls[..j.n],&[1,3,4,5]);
+    }
+    struct R{v:[(u32,u32);8],n:usize,reads:[(u32,u32);3],rn:usize}
+    impl BtMmio32 for R{
+        fn read32(&mut self,a:u32)->u32{let x=self.reads[self.rn];assert_eq!(x.0,a);self.rn+=1;x.1}
+        fn write32(&mut self,a:u32,v:u32){self.v[self.n]=(a,v);self.n+=1}
+    }
+    #[test]fn post_init_register_program_exact_masks(){
+        let mut r=R{v:[(0,0);8],n:0,reads:[(STAGE26_BT_MMIO_OR800_ADDR,0x20),(STAGE26_BT_MMIO_MASK_F80_ADDR,0xFFFF_FFFF),(STAGE26_BT_MMIO_MASK_F8_ADDR,0x1234_5678)],rn:0};
+        assert_eq!(bt_post_init_register_program(&mut r),0);assert_eq!(r.rn,3);assert_eq!(r.n,4);
+        assert_eq!(r.v[0],(STAGE26_BT_MMIO_WRITE10_ADDR,10));
+        assert_eq!(r.v[1],(STAGE26_BT_MMIO_OR800_ADDR,0x820));
+        assert_eq!(r.v[2],(STAGE26_BT_MMIO_MASK_F80_ADDR,(0xFFFF_FFFF&!0xF80)|0x100));
+        assert_eq!(r.v[3],(STAGE26_BT_MMIO_MASK_F8_ADDR,(0x1234_5678&!0xF8)|0xE8));
+    }
+}

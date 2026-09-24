@@ -27,3 +27,5 @@ Tehniskai dokumentāi ast en `docs/`.
 **Stage 24:** verified current wrapper/reset semantics are reconstructed in Rust; unresolved ROM boundaries remain explicit and unnamed.
 
 **Stage 25:** current Wi-Fi deadman wrappers and Bluetooth pair/event/control dispatch are reconstructed from unique relocation-normalized bodies plus current literals/targets/strings; still-opaque ROM exits remain explicit boundaries.
+
+**Stage 26:** current Bluetooth mode-machine and initialization sequencing are source-lifted behind explicit opaque ROM traits, and the uniquely matched post-init MMIO routine is reconstructed as exact 32-bit register operations. No new Wi-Fi ROM symbol names are asserted.
