@@ -586,9 +586,9 @@ pub fn current_wifi_deadman_apply<B:CurrentWifiDeadmanBoundary>(
 /// wrapping subtraction and rearms only when `threshold < now-last` (strict,
 /// not <=).  On rearm it stores `now` before invoking the opaque boundary.
 pub fn current_wifi_deadman_rearm_if_elapsed<B:CurrentWifiDeadmanBoundary>(
-    enabled:u32,threshold:u32,now:u32,last:&mut u32,handle:u32,configured_value:u32,boundary:&mut B,
+    threshold:u32,now:u32,last:&mut u32,handle:u32,configured_value:u32,boundary:&mut B,
 )->bool{
-    if enabled!=0 && threshold<now.wrapping_sub(*last){
+    if threshold!=0 && threshold<now.wrapping_sub(*last){
         *last=now;
         boundary.apply(handle,configured_value);
         true
@@ -608,12 +608,209 @@ mod stage25_tests{
         current_wifi_deadman_apply(1,7,99,&mut d);assert_eq!((d.n,d.h,d.v),(1,7,99));
         current_wifi_deadman_apply(2,8,77,&mut d);assert_eq!((d.n,d.h,d.v),(2,8,0));
         let mut last=100u32;
-        assert!(!current_wifi_deadman_rearm_if_elapsed(1,10,110,&mut last,5,6,&mut d));
+        assert!(!current_wifi_deadman_rearm_if_elapsed(10,110,&mut last,5,6,&mut d));
         assert_eq!(last,100);
-        assert!(current_wifi_deadman_rearm_if_elapsed(1,10,111,&mut last,5,6,&mut d));
+        assert!(current_wifi_deadman_rearm_if_elapsed(10,111,&mut last,5,6,&mut d));
         assert_eq!((last,d.h,d.v),(111,5,6));
         last=u32::MAX-2;
-        assert!(current_wifi_deadman_rearm_if_elapsed(1,2,1,&mut last,9,10,&mut d));
+        assert!(current_wifi_deadman_rearm_if_elapsed(2,1,&mut last,9,10,&mut d));
         assert_eq!(last,1);
+    }
+}
+
+/// Stage 27: complete current Wi-Fi deadman-runtime lifting. Every function
+/// address below is backed by a globally unique relocation-normalized match in
+/// the current Orange Pi image; unresolved ROM entries stay explicit traits.
+pub const STAGE27_CURRENT_WIFI_DEADMAN_SAMPLE_CHANGE_ADDR:u32=0x001A_5C08;
+pub const STAGE27_CURRENT_WIFI_DEADMAN_THRESHOLD_SAMPLE_ADDR:u32=0x001A_5C28;
+pub const STAGE27_CURRENT_WIFI_OPAQUE_LOOKUP_WRAPPER_ADDR:u32=0x001A_5CA6;
+pub const STAGE27_CURRENT_WIFI_SAMPLE_SOURCE_ADDR:u32=0x001A_6898;
+pub const STAGE27_CURRENT_WIFI_SAMPLE_CHANGED_BOUNDARY_ADDR:u32=0x001A_67D4;
+pub const STAGE27_CURRENT_WIFI_SAMPLE_EVALUATOR_ADDR:u32=0x001A_6824;
+pub const STAGE27_CURRENT_WIFI_EVENT3_GATE_ADDR:u32=0x001A_6FF0;
+pub const STAGE27_CURRENT_WIFI_CRITICAL_ENTER_ADDR:u32=0x001A_7310;
+pub const STAGE27_CURRENT_WIFI_CRITICAL_LEAVE_ADDR:u32=0x001A_7316;
+pub const STAGE27_WIFI_EVENT3_NOW_ROM_ADDR:u32=0x0006_FB24;
+pub const STAGE27_WIFI_OPAQUE_LOOKUP_ROM_ADDR:u32=0x0007_03C0;
+pub const STAGE27_WIFI_DEADMAN_STATE_ADDR:u32=0x0020_A504;
+pub const STAGE27_WIFI_DEADMAN_OUTSTANDING_ADDR:u32=0x0020_A500;
+pub const STAGE27_WIFI_DEADMAN_THRESHOLD_ADDR:u32=0x0020_A580;
+pub const STAGE27_WIFI_DEADMAN_LAST_REARM_ADDR:u32=0x0020_A574;
+pub const STAGE27_WIFI_DEADMAN_CONFIGURED_VALUE_ADDR:u32=0x0020_A508;
+pub const STAGE27_WIFI_DEADMAN_HANDLE_ADDR:u32=0x0017_01E8;
+pub const STAGE27_WIFI_SAMPLE_CHANGE_LAST_ADDR:u32=0x0020_A578;
+pub const STAGE27_WIFI_THRESHOLD_SAMPLE_LAST_ADDR:u32=0x0020_A57C;
+pub const STAGE27_WIFI_THRESHOLD_SAMPLE_SHIFT_ADDR:u32=0x0020_A744;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct CurrentWifiDeadmanMachineState{
+    pub machine_state:u32,
+    pub outstanding:u32,
+    pub rearm_threshold:u32,
+    pub last_rearm:u32,
+    pub handle:u32,
+    pub configured_value:u32,
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct CurrentWifiDeadmanObjectState{
+    pub count:u32,
+    pub event3_seen:u32,
+}
+
+/// Runtime-only effects that remain outside the reconstructed source boundary.
+/// The method names intentionally describe caller-visible behavior rather than
+/// assigning unsupported vendor symbols to the target routines.
+pub trait CurrentWifiDeadmanMachineBoundary:CurrentWifiDeadmanBoundary{
+    fn enter_critical(&mut self)->u32;
+    fn leave_critical(&mut self,token:u32)->u32;
+    fn event3_gate(&mut self)->u32;
+    fn event3_now(&mut self)->u32;
+    fn unexpected_event(&mut self,event:u32,state:u32);
+}
+
+/// Exact source-level transition model of current `0x1A5B60`.
+/// Object offsets `+0xB0/+0xB4` are represented by `object.count/event3_seen`.
+pub fn current_wifi_deadman_state_step<B:CurrentWifiDeadmanMachineBoundary>(
+    state:&mut CurrentWifiDeadmanMachineState,
+    object:&mut CurrentWifiDeadmanObjectState,
+    event:u32,
+    boundary:&mut B,
+)->u32{
+    let token=boundary.enter_critical();
+    match state.machine_state{
+        0=>{
+            if event==0{
+                current_wifi_deadman_apply(1,state.handle,state.configured_value,boundary);
+                state.machine_state=1;
+            }else{
+                boundary.unexpected_event(event,0);
+            }
+        }
+        1=>{
+            if event==2{
+                object.count=object.count.wrapping_add(1);
+                state.outstanding=state.outstanding.wrapping_add(1);
+            }else if event==3{
+                object.event3_seen=1;
+                object.count=object.count.wrapping_sub(1);
+                state.outstanding=state.outstanding.wrapping_sub(1);
+                if boundary.event3_gate()==1{
+                    let now=boundary.event3_now();
+                    let _=current_wifi_deadman_rearm_if_elapsed(
+                        state.rearm_threshold,now,&mut state.last_rearm,
+                        state.handle,state.configured_value,boundary,
+                    );
+                }
+            }
+            if state.outstanding==0 && (event&!2)==1{
+                current_wifi_deadman_apply(0,state.handle,state.configured_value,boundary);
+                state.machine_state=0;
+            }
+        }
+        _=>{}
+    }
+    boundary.leave_critical(token)
+}
+
+pub trait CurrentWifiSampleSource{fn sample(&mut self)->u32;}
+pub trait CurrentWifiSampleChangedBoundary{fn changed(&mut self)->u32;}
+pub trait CurrentWifiSampleEvaluator{fn evaluate(&mut self,delta:u32,flag:u8)->u32;}
+
+/// Current `0x1A5C08`: return zero for an unchanged sample; otherwise update the
+/// stored sample and tail-dispatch the opaque change boundary.
+pub fn current_wifi_sample_change<S:CurrentWifiSampleSource,B:CurrentWifiSampleChangedBoundary>(
+    last:&mut u32,source:&mut S,boundary:&mut B,
+)->u32{
+    let now=source.sample();
+    let delta=now.wrapping_sub(*last);
+    if delta==0{return 0;}
+    *last=now;
+    boundary.changed()
+}
+
+/// ARM register-shift semantics for `MOVS r3,#1; LSLS r3,r5` in current
+/// `0x1A5C28`. The shift amount is the low byte; values >=32 produce zero.
+pub const fn current_wifi_lsl_one_register(shift:u32)->u32{
+    let s=shift&0xff;
+    if s==0{1}else if s<32{1u32<<s}else{0}
+}
+
+/// Current `0x1A5C28`: tracks a wrapping sample delta and sticky one-byte flag,
+/// then tail-dispatches `(delta,flag)` to the still-opaque evaluator.
+pub fn current_wifi_thresholded_sample<S:CurrentWifiSampleSource,E:CurrentWifiSampleEvaluator>(
+    last:&mut u32,flag:&mut u8,shift:u32,source:&mut S,evaluator:&mut E,
+)->u32{
+    let now=source.sample();
+    let delta=now.wrapping_sub(*last);
+    if delta==0{
+        *flag=0;
+        return 0;
+    }
+    if *flag!=0 || delta>current_wifi_lsl_one_register(shift){
+        *last=now;
+        *flag=1;
+    }
+    evaluator.evaluate(delta,*flag)
+}
+
+pub trait CurrentWifiOpaqueLookupBoundary{
+    fn lookup(&mut self,a0:u32,a1:u32,a2:u32,a3:u32)->u32;
+}
+
+/// Current `0x1A5CA6`: call stable opaque ROM `0x703C0` with two trailing zero
+/// arguments; update outputs only on a nonzero return.
+pub fn current_wifi_lookup_with_outputs<B:CurrentWifiOpaqueLookupBoundary>(
+    a0:u32,a1:u32,out_a0:&mut u32,out_result:&mut u32,boundary:&mut B,
+)->u32{
+    let result=boundary.lookup(a0,a1,0,0);
+    if result!=0{
+        *out_a0=a0;
+        *out_result=result;
+    }
+    result
+}
+
+#[cfg(test)]
+mod stage27_tests{
+    use super::*;
+    #[derive(Default)]struct D{calls:[u8;16],n:usize,last:[u32;3],gate:u32,now:u32}
+    impl CurrentWifiDeadmanBoundary for D{fn apply(&mut self,h:u32,v:u32){self.calls[self.n]=1;self.n+=1;self.last=[h,v,0]}}
+    impl CurrentWifiDeadmanMachineBoundary for D{
+        fn enter_critical(&mut self)->u32{self.calls[self.n]=2;self.n+=1;0x55}
+        fn leave_critical(&mut self,t:u32)->u32{assert_eq!(t,0x55);self.calls[self.n]=3;self.n+=1;0xABCD}
+        fn event3_gate(&mut self)->u32{self.calls[self.n]=4;self.n+=1;self.gate}
+        fn event3_now(&mut self)->u32{self.calls[self.n]=5;self.n+=1;self.now}
+        fn unexpected_event(&mut self,e:u32,s:u32){self.calls[self.n]=6;self.n+=1;self.last=[e,s,0]}
+    }
+    #[test]fn deadman_full_transition_model_and_corrected_threshold(){
+        let mut s=CurrentWifiDeadmanMachineState{handle:7,configured_value:9,rearm_threshold:10,last_rearm:100,..CurrentWifiDeadmanMachineState::default()};
+        let mut o=CurrentWifiDeadmanObjectState::default();let mut d=D::default();
+        assert_eq!(current_wifi_deadman_state_step(&mut s,&mut o,0,&mut d),0xABCD);
+        assert_eq!(s.machine_state,1);assert_eq!(&d.calls[..d.n],&[2,1,3]);assert_eq!(d.last,[7,9,0]);
+        d=D::default();assert_eq!(current_wifi_deadman_state_step(&mut s,&mut o,2,&mut d),0xABCD);
+        assert_eq!((o.count,s.outstanding),(1,1));assert_eq!(&d.calls[..d.n],&[2,3]);
+        d=D{gate:1,now:111,..D::default()};assert_eq!(current_wifi_deadman_state_step(&mut s,&mut o,3,&mut d),0xABCD);
+        assert_eq!((o.count,o.event3_seen,s.outstanding,s.machine_state,s.last_rearm),(0,1,0,0,111));
+        assert_eq!(&d.calls[..d.n],&[2,4,5,1,1,3]);assert_eq!(d.last,[7,0,0]);
+        let mut last=5;let mut plain=D::default();assert!(!current_wifi_deadman_rearm_if_elapsed(0,999,&mut last,1,2,&mut plain));assert_eq!(plain.n,0);
+        let mut invalid=CurrentWifiDeadmanMachineState{machine_state:0,..CurrentWifiDeadmanMachineState::default()};let mut q=D::default();
+        assert_eq!(current_wifi_deadman_state_step(&mut invalid,&mut o,7,&mut q),0xABCD);assert_eq!(&q.calls[..q.n],&[2,6,3]);assert_eq!(q.last,[7,0,0]);
+    }
+    struct S{v:u32}impl CurrentWifiSampleSource for S{fn sample(&mut self)->u32{self.v}}
+    #[derive(Default)]struct C{n:u8,r:u32}impl CurrentWifiSampleChangedBoundary for C{fn changed(&mut self)->u32{self.n+=1;self.r}}
+    #[derive(Default)]struct E{n:u8,d:u32,f:u8,r:u32}impl CurrentWifiSampleEvaluator for E{fn evaluate(&mut self,d:u32,f:u8)->u32{self.n+=1;self.d=d;self.f=f;self.r}}
+    #[test]fn sample_helpers_preserve_wrap_shift_and_flag(){
+        let mut last=10;let mut src=S{v:10};let mut c=C{r:77,..C::default()};assert_eq!(current_wifi_sample_change(&mut last,&mut src,&mut c),0);assert_eq!(c.n,0);
+        src.v=12;assert_eq!(current_wifi_sample_change(&mut last,&mut src,&mut c),77);assert_eq!((last,c.n),(12,1));
+        last=u32::MAX-1;src.v=1;let mut flag=0;let mut e=E{r:9,..E::default()};
+        assert_eq!(current_wifi_thresholded_sample(&mut last,&mut flag,1,&mut src,&mut e),9);assert_eq!((last,flag,e.d,e.f),(1,1,3,1));
+        assert_eq!(current_wifi_lsl_one_register(0),1);assert_eq!(current_wifi_lsl_one_register(5),32);assert_eq!(current_wifi_lsl_one_register(32),0);assert_eq!(current_wifi_lsl_one_register(256),1);
+        src.v=1;assert_eq!(current_wifi_thresholded_sample(&mut last,&mut flag,7,&mut src,&mut e),0);assert_eq!(flag,0);
+    }
+    #[derive(Default)]struct L{ret:u32,args:[u32;4]}impl CurrentWifiOpaqueLookupBoundary for L{fn lookup(&mut self,a0:u32,a1:u32,a2:u32,a3:u32)->u32{self.args=[a0,a1,a2,a3];self.ret}}
+    #[test]fn lookup_wrapper_preserves_zero_args_and_output_gate(){
+        let mut a=90;let mut r=91;let mut l=L::default();assert_eq!(current_wifi_lookup_with_outputs(7,8,&mut a,&mut r,&mut l),0);assert_eq!((a,r,l.args),(90,91,[7,8,0,0]));
+        l.ret=0x1234;assert_eq!(current_wifi_lookup_with_outputs(7,8,&mut a,&mut r,&mut l),0x1234);assert_eq!((a,r),(7,0x1234));
+        assert_eq!(STAGE27_CURRENT_WIFI_DEADMAN_SAMPLE_CHANGE_ADDR,0x1A5C08);assert_eq!(STAGE27_WIFI_OPAQUE_LOOKUP_ROM_ADDR,0x703C0);
     }
 }

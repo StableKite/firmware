@@ -110,6 +110,19 @@ Four legacy functions around the deadman state machine have exactly one relocati
 
 The current image independently contains `deadman_state_machine` at `0x202344` and `%s: Unexpected event [%d] in state [%d]!!!\n` at `0x20235a`.
 
-Current `0x1a5b14` preserves the strict unsigned test `threshold < now-last`; on success it stores `now` before calling stable `0x12d10(handle,configured_value)`. Current `0x1a5b44` calls the same boundary with the stored value only when mode is 1, otherwise with zero. Rust models `0x12d10` as an opaque two-argument trait. `0x6fdac`, reached twice by current `0x1a5ad0`, also remains opaque.
+Current `0x1a5b14` has one threshold word: the same value is first tested for nonzero and then used in the strict unsigned test `threshold < now-last`; on success it stores `now` before calling stable `0x12d10(handle,configured_value)`. Current `0x1a5b44` calls the same boundary with the stored value only when mode is 1, otherwise with zero. Rust models `0x12d10` as an opaque two-argument trait. `0x6fdac`, reached twice by current `0x1a5ad0`, also remains opaque.
 
 No vendor symbol is assigned to either ROM boundary.
+
+
+## Stage-27 complete deadman runtime
+
+Stage 27 corrects one Stage-25 over-parameterization and closes the current deadman runtime around the verified state-machine body. Legacy/current `sub_1A375C` / `0x1a5b14` has a single threshold word, not independent `enabled` and `threshold` values: the same word must be nonzero and must satisfy the strict unsigned comparison `threshold < wrapping(now-last)` before rearm.
+
+An exhaustive scan of the whole current Wi-Fi image finds exactly one relocation-normalized match for each promoted body: state machine `0x1a5b60`, sample-change helper `0x1a5c08`, thresholded-sample helper `0x1a5c28`, opaque lookup/output wrapper `0x1a5ca6`, and their three RAM-side dependency callees `0x1a6898`, `0x1a67d4`, `0x1a6824`. Current literals and branch destinations are re-read independently.
+
+The state-machine source model preserves the exact 32-bit wrapping transitions. State 0 accepts event 0 by applying the stored deadman value and entering state 1; other events use the verified diagnostic path. In state 1, event 2 increments object/global outstanding counters with wraparound. Event 3 marks object offset `+0xB4`, decrements both counters with wraparound, optionally obtains the current value through the verified event-3 gate and stable ROM `0x6fb24`, and applies the corrected threshold rearm. If outstanding becomes zero and `(event & ~2) == 1`, the source disables the boundary value and returns to state 0. Critical enter/leave and the still-opaque event-3 routines remain traits.
+
+Current `0x1a5c08` performs wrapping sample subtraction, returns zero when unchanged, otherwise stores the new sample and tail-dispatches an opaque change handler. Current `0x1a5c28` additionally implements the ARM register-shift threshold `1 << (shift & 0xff)` with shifts >=32 producing zero; its one-byte flag is cleared on zero delta and made sticky when already set or when delta exceeds the shifted threshold. The final `(delta,flag)` evaluator remains opaque.
+
+Current `0x1a5ca6` calls stable ROM `0x703c0` with its third and fourth register arguments forced to zero. Its two output words are updated only for a nonzero result. No vendor name is assigned to `0x703c0`.
