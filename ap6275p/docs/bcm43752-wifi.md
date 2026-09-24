@@ -1,9 +1,13 @@
 # BCM43752A2 Wi-Fi reconstruction
 
-The original Orange Pi AP6275P package carries `fw_bcm43752a2_pcie_ag.bin` as the executable FullMAC runtime firmware. On StableKite `main` that binary is removed and the Stage-17 Rust reconstruction lives in `../bcm43752-fw/`.
+StableKite `main` removes `ap6275p/fw_bcm43752a2_pcie_ag.bin` and carries the Rust reconstruction in `../bcm43752-fw/`.
 
-## Stage-17 status
+## Stage-18 correction
 
-The reconstruction models recovered ROM/runtime boundaries, memory primitives, TLV/NVRAM handling, ROM-call classification, and dependency closure. The frozen Stage-7 top-target audit has total observed call-site weight 5219: 505 classified as libre source, 1014 as hardware-trait boundaries, 668 as terminal sinks, and 3032 still unresolved across 21 targets. The highest unresolved target is `0xF030` with observed weight 628. These weights are static call-site evidence, not runtime frequency estimates.
+Stages 6–17 were recovered from legacy image SHA-256 `bfcdc3ecb5274745f3c3551abd0d9b11ede89b305837241364a055fefbf09de7` (857142 bytes). Its firmware string identifies version `18.35.387.23.57`, build `2021-08-03T09:39:42Z`, FWID `01-ea656a70`.
 
-CLM and NVRAM/config files are not removed by this track because they are distinct data/configuration inputs rather than the executable firmware image being reconstructed.
+The current Orange Pi image is SHA-256 `6a2dbe01e72221defba91a52e158768d973a3c85ca2d881c924379e35ad36b23` (936074 bytes), identifying version `18.35.387.23.146`, build `2022-07-12T10:55:29Z`, FWID `01-93c53be6`.
+
+Therefore the Stage-17 closure audit (5219 observed call-site weight; 3032 unresolved across 21 targets, top legacy target `0xF030`) remains valid only for the legacy evidence image until current-image disassembly relocates or re-identifies those routines.
+
+Stage 18 records both identities in Rust and generates fresh IDA/Hex-Rays evidence from the current Orange Pi reference. No old function address is promoted to the current image merely because names or firmware family match.

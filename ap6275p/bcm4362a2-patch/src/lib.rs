@@ -152,8 +152,11 @@ pub fn is_ap6275p_patch_layout(l:&PatchLayout)->bool{l.region_count==3&&l.writes
 /// treating another BCM4362A2 HCD as the AP6275P image recovered here.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]pub enum Ap6275pApplyError<E>{Layout(PatchLayoutError),WrongProfile,Apply(PatchApplyError<E>)}
 pub fn apply_ap6275p_hcd<S:PatchRamSink>(data:&[u8],sink:&mut S)->Result<PatchApplyReport,Ap6275pApplyError<S::Error>>{
-    let layout=analyze_patch_layout(data).map_err(Ap6275pApplyError::Layout)?;
-    if !is_ap6275p_patch_layout(&layout){return Err(Ap6275pApplyError::WrongProfile)}
+    match validate_patch_profile_unordered(data,&LEGACY_AP6275P_PATCH_PROFILE){
+        Ok(_)=>{},
+        Err(PatchProfileError::Layout(e))=>return Err(Ap6275pApplyError::Layout(e)),
+        Err(_)=>return Err(Ap6275pApplyError::WrongProfile),
+    }
     apply_hcd(data,sink).map_err(Ap6275pApplyError::Apply)
 }
 #[cfg(test)]mod stage14_tests{use super::*;struct S;impl PatchRamSink for S{type Error=();fn write_ram(&mut self,_:u32,_:&[u8])->Result<(),()>{Ok(())}fn launch_ram(&mut self,_:LaunchAddress)->Result<(),()>{Ok(())}}#[test]fn rejects_other_profile(){let h=[0x4c,0xfc,5,0,0,0x24,0,1,0x4e,0xfc,4,0xff,0xff,0xff,0xff];let mut s=S;assert_eq!(apply_ap6275p_hcd(&h,&mut s),Err(Ap6275pApplyError::WrongProfile));}}
@@ -161,7 +164,7 @@ pub fn apply_ap6275p_hcd<S:PatchRamSink>(data:&[u8],sink:&mut S)->Result<PatchAp
 /// Stage 15: validated AP6275P program object. Construction performs the exact
 /// structural profile check once; applying it then cannot target another HCD image.
 #[derive(Clone,Copy,Debug)]pub struct Ap6275pPatchProgram<'a>{data:&'a[u8],layout:PatchLayout}
-impl<'a> Ap6275pPatchProgram<'a>{pub fn parse(data:&'a[u8])->Result<Self,PatchLayoutError>{let layout=analyze_patch_layout(data)?;if !is_ap6275p_patch_layout(&layout){return Err(PatchLayoutError::Malformed)}Ok(Self{data,layout})}pub const fn layout(&self)->PatchLayout{self.layout}pub fn apply<S:PatchRamSink>(&self,sink:&mut S)->Result<PatchApplyReport,PatchApplyError<S::Error>>{apply_hcd(self.data,sink)}}
+impl<'a> Ap6275pPatchProgram<'a>{pub fn parse(data:&'a[u8])->Result<Self,PatchLayoutError>{validate_patch_profile_unordered(data,&LEGACY_AP6275P_PATCH_PROFILE).map_err(|e|match e{PatchProfileError::Layout(x)=>x,_=>PatchLayoutError::Malformed})?;let p=&LEGACY_AP6275P_PATCH_PROFILE;let layout=PatchLayout{regions:[Some(p.regions[0]),Some(p.regions[1]),Some(p.regions[2])],region_count:3,writes:p.writes,bytes:p.bytes,sentinel_launches:p.sentinel_launches,explicit_launches:p.explicit_launches};Ok(Self{data,layout})}pub const fn layout(&self)->PatchLayout{self.layout}pub fn apply<S:PatchRamSink>(&self,sink:&mut S)->Result<PatchApplyReport,PatchApplyError<S::Error>>{apply_hcd(self.data,sink)}}
 #[cfg(test)]mod stage15_tests{use super::*;#[test]fn bad_program_rejected(){let h=[0x4c,0xfc,5,0,0,0x24,0,1,0x4e,0xfc,4,0xff,0xff,0xff,0xff];assert_eq!(Ap6275pPatchProgram::parse(&h).err(),Some(PatchLayoutError::Malformed));}}
 
 /// Stage 16: classify every validated AP6275P WRITE_RAM record by the exact
@@ -178,5 +181,132 @@ impl Ap6275pPatchProgram<'_>{pub fn for_each_classified_write<F>(&self,mut f:F)-
 pub const AP6275P_CODE_WRITES:u32=414;pub const AP6275P_DATA_WRITES:u32=8;pub const AP6275P_CONFIG_WRITES:u32=40;
 pub const AP6275P_CODE_BYTES:u32=58_280;pub const AP6275P_DATA_BYTES:u32=1_840;pub const AP6275P_CONFIG_BYTES:u32=9_775;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]pub enum PatchProfileError{Layout(PatchLayoutError),NonContiguous{region:Ap6275pWriteRegion,expected:u32,actual:u32},UnexpectedProfile,NonSentinelLaunch}
-pub fn validate_ap6275p_contiguous_profile(data:&[u8])->Result<Ap6275pRegionWriteCounts,PatchProfileError>{let p=Ap6275pPatchProgram::parse(data).map_err(PatchProfileError::Layout)?;let mut next_code=PATCH_CODE_START;let mut next_data=PATCH_DATA_START;let mut next_config=PATCH_CONFIG_START;let mut counts=Ap6275pRegionWriteCounts::default();p.for_each_classified_write(|r,a,d|{let next=match r{Ap6275pWriteRegion::Code=>&mut next_code,Ap6275pWriteRegion::Data=>&mut next_data,Ap6275pWriteRegion::Config=>&mut next_config};if a==*next{*next=next.wrapping_add(d.len()as u32)}else{*next=u32::MAX}match r{Ap6275pWriteRegion::Code=>{counts.code_writes+=1;counts.code_bytes+=d.len()as u32},Ap6275pWriteRegion::Data=>{counts.data_writes+=1;counts.data_bytes+=d.len()as u32},Ap6275pWriteRegion::Config=>{counts.config_writes+=1;counts.config_bytes+=d.len()as u32}}}).map_err(PatchProfileError::Layout)?;if next_code==u32::MAX{return Err(PatchProfileError::NonContiguous{region:Ap6275pWriteRegion::Code,expected:0,actual:0})}if next_data==u32::MAX{return Err(PatchProfileError::NonContiguous{region:Ap6275pWriteRegion::Data,expected:0,actual:0})}if next_config==u32::MAX{return Err(PatchProfileError::NonContiguous{region:Ap6275pWriteRegion::Config,expected:0,actual:0})}if next_code!=PATCH_CODE_END||next_data!=PATCH_DATA_END||next_config!=PATCH_CONFIG_END||counts.code_writes!=AP6275P_CODE_WRITES||counts.data_writes!=AP6275P_DATA_WRITES||counts.config_writes!=AP6275P_CONFIG_WRITES||counts.code_bytes!=AP6275P_CODE_BYTES||counts.data_bytes!=AP6275P_DATA_BYTES||counts.config_bytes!=AP6275P_CONFIG_BYTES{return Err(PatchProfileError::UnexpectedProfile)}let prof=p.layout();if prof.sentinel_launches!=1||prof.explicit_launches!=0{return Err(PatchProfileError::NonSentinelLaunch)}Ok(counts)}
+pub fn validate_ap6275p_contiguous_profile(data:&[u8])->Result<Ap6275pRegionWriteCounts,PatchProfileError>{
+    validate_patch_profile_unordered(data,&LEGACY_AP6275P_PATCH_PROFILE)
+}
 #[cfg(test)]mod stage17_tests{use super::*;#[test]fn constants_match_regions(){assert_eq!(AP6275P_CODE_BYTES,PATCH_CODE_END-PATCH_CODE_START);assert_eq!(AP6275P_DATA_BYTES,PATCH_DATA_END-PATCH_DATA_START);assert_eq!(AP6275P_CONFIG_BYTES,PATCH_CONFIG_END-PATCH_CONFIG_START);assert_eq!(AP6275P_CODE_WRITES+AP6275P_DATA_WRITES+AP6275P_CONFIG_WRITES,462);assert_eq!(AP6275P_CODE_BYTES+AP6275P_DATA_BYTES+AP6275P_CONFIG_BYTES,69_895);}}
+
+/// Stage 18: reference identity correction and order-independent structural
+/// validation. The HCD command stream is not ordered by destination address;
+/// contiguity is therefore proved after sorting WRITE_RAM extents.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct PatchReferenceProfile {
+    pub sha256: &'static str,
+    pub hcd_size: u32,
+    pub writes: u32,
+    pub bytes: u32,
+    pub sentinel_launches: u8,
+    pub explicit_launches: u8,
+    pub region_writes: [u32;3],
+    pub regions: [PatchRegion;3],
+}
+
+pub const LEGACY_AP6275P_PATCH_PROFILE: PatchReferenceProfile = PatchReferenceProfile {
+    sha256: "3e4a1eddaf80f3e45f99e9c77b3cd84c85f605540da5f4f92300b80bca6d67ec",
+    hcd_size: 73_136,
+    writes: 462,
+    bytes: 69_895,
+    sentinel_launches: 1,
+    explicit_launches: 0,
+    region_writes: [414,8,40],
+    regions: [
+        PatchRegion{start:0x0016_0400,end:0x0016_E7A8},
+        PatchRegion{start:0x0022_1D9C,end:0x0022_24CC},
+        PatchRegion{start:0x0024_0000,end:0x0024_262F},
+    ],
+};
+
+pub const CURRENT_ORANGEPI_PATCH_PROFILE: PatchReferenceProfile = PatchReferenceProfile {
+    sha256: "f7adf14413063f14b0204684fb67ddcd2ae6bca3120343cb9a5cab86a1a545c3",
+    hcd_size: 91_900,
+    writes: 575,
+    bytes: 87_868,
+    sentinel_launches: 1,
+    explicit_launches: 0,
+    region_writes: [518,9,48],
+    regions: [
+        PatchRegion{start:0x0016_0800,end:0x0017_298C},
+        PatchRegion{start:0x0022_1D9C,end:0x0022_2578},
+        PatchRegion{start:0x0024_0000,end:0x0024_2DD4},
+    ],
+};
+
+const MAX_STAGE18_WRITES: usize = 575;
+#[derive(Clone,Copy)]
+struct PatchExtent { region:u8, start:u32, end:u32 }
+const EMPTY_EXTENT: PatchExtent = PatchExtent{region:0,start:0,end:0};
+
+fn classify_profile_write(profile:&PatchReferenceProfile,address:u32,bytes:u32)->Option<u8>{
+    if bytes==0{return None}
+    let end=address.checked_add(bytes)?;
+    let mut i=0usize;
+    while i<profile.regions.len(){let r=profile.regions[i];if address>=r.start&&end<=r.end{return Some(i as u8)}i+=1}
+    None
+}
+
+/// Validates exact HCD structural coverage independent of WRITE_RAM record order.
+/// SHA-256 remains a provenance property checked by the host-side runner.
+pub fn validate_patch_profile_unordered(data:&[u8],profile:&PatchReferenceProfile)->Result<Ap6275pRegionWriteCounts,PatchProfileError>{
+    if data.len()!=profile.hcd_size as usize{return Err(PatchProfileError::UnexpectedProfile)}
+    let mut extents=[EMPTY_EXTENT;MAX_STAGE18_WRITES];
+    let mut extent_count=0usize;
+    let mut off=0usize;
+    let mut writes=0u32;let mut bytes=0u32;let mut sentinel=0u8;let mut explicit=0u8;
+    let mut counts=Ap6275pRegionWriteCounts::default();
+    while off<data.len(){
+        if data.len()-off<3{return Err(PatchProfileError::Layout(PatchLayoutError::Truncated))}
+        let op=u16::from_le_bytes([data[off],data[off+1]]);let n=data[off+2]as usize;off+=3;
+        if data.len()-off<n{return Err(PatchProfileError::Layout(PatchLayoutError::Truncated))}
+        let p=&data[off..off+n];off+=n;
+        match op{
+            HCI_WRITE_RAM=>{
+                if p.len()<4{return Err(PatchProfileError::Layout(PatchLayoutError::Malformed))}
+                if extent_count>=MAX_STAGE18_WRITES{return Err(PatchProfileError::UnexpectedProfile)}
+                let a=u32::from_le_bytes([p[0],p[1],p[2],p[3]]);let dlen=(p.len()-4)as u32;
+                let ridx=classify_profile_write(profile,a,dlen).ok_or(PatchProfileError::UnexpectedProfile)?;
+                let end=a.checked_add(dlen).ok_or(PatchProfileError::Layout(PatchLayoutError::AddressOverflow))?;
+                extents[extent_count]=PatchExtent{region:ridx,start:a,end};extent_count+=1;writes+=1;bytes=bytes.saturating_add(dlen);
+                match ridx{0=>{counts.code_writes+=1;counts.code_bytes+=dlen},1=>{counts.data_writes+=1;counts.data_bytes+=dlen},2=>{counts.config_writes+=1;counts.config_bytes+=dlen},_=>return Err(PatchProfileError::UnexpectedProfile)}
+            }
+            HCI_LAUNCH_RAM=>{
+                if p.len()!=4{return Err(PatchProfileError::Layout(PatchLayoutError::Malformed))}
+                let a=u32::from_le_bytes([p[0],p[1],p[2],p[3]]);if a==u32::MAX{sentinel=sentinel.saturating_add(1)}else{explicit=explicit.saturating_add(1)}
+            }
+            x=>return Err(PatchProfileError::Layout(PatchLayoutError::UnsupportedOpcode(x))),
+        }
+    }
+    if writes!=profile.writes||bytes!=profile.bytes||sentinel!=profile.sentinel_launches||explicit!=profile.explicit_launches{return Err(PatchProfileError::UnexpectedProfile)}
+    let got_writes=[counts.code_writes,counts.data_writes,counts.config_writes];if got_writes!=profile.region_writes{return Err(PatchProfileError::UnexpectedProfile)}
+    let mut i=1usize;while i<extent_count{let key=extents[i];let mut j=i;while j>0{let prev=extents[j-1];if (prev.region,prev.start)<=(key.region,key.start){break}extents[j]=prev;j-=1}extents[j]=key;i+=1}
+    let mut cursor=[profile.regions[0].start,profile.regions[1].start,profile.regions[2].start];
+    let mut k=0usize;while k<extent_count{let e=extents[k];let r=e.region as usize;if e.start!=cursor[r]{return Err(PatchProfileError::NonContiguous{region:match r{0=>Ap6275pWriteRegion::Code,1=>Ap6275pWriteRegion::Data,_=>Ap6275pWriteRegion::Config},expected:cursor[r],actual:e.start})}cursor[r]=e.end;k+=1}
+    if cursor[0]!=profile.regions[0].end||cursor[1]!=profile.regions[1].end||cursor[2]!=profile.regions[2].end{return Err(PatchProfileError::UnexpectedProfile)}
+    Ok(counts)
+}
+
+/// Structural identity gate for the current Orange Pi HCD. This does not
+/// transfer legacy semantic names to current addresses.
+pub fn validate_current_orangepi_patch_profile(data:&[u8])->Result<Ap6275pRegionWriteCounts,PatchProfileError>{
+    validate_patch_profile_unordered(data,&CURRENT_ORANGEPI_PATCH_PROFILE)
+}
+
+#[cfg(test)]
+mod stage18_tests {
+    use super::*;
+    use std::vec::Vec;
+    fn wr(h:&mut Vec<u8>,a:u32,d:&[u8]){h.extend_from_slice(&HCI_WRITE_RAM.to_le_bytes());h.push((4+d.len())as u8);h.extend_from_slice(&a.to_le_bytes());h.extend_from_slice(d)}
+    #[test]
+    fn current_profile_constants(){
+        assert_eq!(CURRENT_ORANGEPI_PATCH_PROFILE.region_writes,[518,9,48]);
+        assert_eq!(CURRENT_ORANGEPI_PATCH_PROFILE.writes,575);
+        assert_eq!(CURRENT_ORANGEPI_PATCH_PROFILE.bytes,87_868);
+        assert_eq!(CURRENT_ORANGEPI_PATCH_PROFILE.regions.iter().map(|r|r.end-r.start).sum::<u32>(),87_868);
+        assert_ne!(CURRENT_ORANGEPI_PATCH_PROFILE.sha256,LEGACY_AP6275P_PATCH_PROFILE.sha256);
+    }
+    #[test]
+    fn unordered_records_validate(){
+        let mut h=Vec::new();wr(&mut h,0x1002,&[3,4]);wr(&mut h,0x3000,&[7,8]);wr(&mut h,0x1000,&[1,2]);wr(&mut h,0x2000,&[5,6]);h.extend_from_slice(&HCI_LAUNCH_RAM.to_le_bytes());h.push(4);h.extend_from_slice(&u32::MAX.to_le_bytes());
+        let p=PatchReferenceProfile{sha256:"test",hcd_size:h.len()as u32,writes:4,bytes:8,sentinel_launches:1,explicit_launches:0,region_writes:[2,1,1],regions:[PatchRegion{start:0x1000,end:0x1004},PatchRegion{start:0x2000,end:0x2002},PatchRegion{start:0x3000,end:0x3002}]};
+        assert!(validate_patch_profile_unordered(&h,&p).is_ok());
+    }
+}

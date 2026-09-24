@@ -7,6 +7,8 @@
 
 Originalai `fw_bcm43752a2_pcie_ag.bin` be `BCM4362A2.hcd` ni ast en šisse `main` greiwā. CLM, NVRAM be kitāi upstream dātai palīkstan ni etwerptai.
 
+**Stage 18 etwerpsnā:** senesnāi Stage 6–17 rekonstrukcijans twērai sen aldāks reference-bildans. Nāuns Orange Pi reference ast Wi-Fi `6a2dbe01…` be Bluetooth `f7adf144…`; šisse stage stawīdi tikkan provenance be strukturin profilin, en tēisan nāun IDA semantikan ni mazēi ast perkelta.
+
 `upstream-master` ast tikka spīgelis `orangepi-xunlong/firmware:master`; `main` ast StableKite greiwa sen brīwai rekonstrukcijans.
 
 Tehniskai dokumentāi ast en `docs/`.

@@ -1,8 +1,8 @@
 # AP6275P reconstruction documentation
 
-StableKite manages two source reconstructions in this directory while leaving unrelated Orange Pi firmware unchanged:
+- `provenance.md` — exact current and legacy reference identities and the Stage-18 correction.
+- `bcm43752-wifi.md` — Wi-Fi status and current-image rebaseline boundary.
+- `bcm4362a2-bluetooth.md` — HCD profile correction and current PatchRAM layout.
+- `upstream-sync.md` — upstream tracking policy (unchanged from centralization).
 
-- BCM43752A2 Wi-Fi runtime firmware
-- BCM4362A2 Bluetooth PatchRAM
-
-See `provenance.md`, `bcm43752-wifi.md`, `bcm4362a2-bluetooth.md`, and `upstream-sync.md`.
+Stage 18 deliberately prioritizes provenance correctness over new semantic claims.

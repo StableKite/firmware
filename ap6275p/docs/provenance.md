@@ -1,25 +1,21 @@
-# Provenance
+# Provenance and Stage-18 reference correction
 
-Generated from the exact Orange Pi upstream checkout used to initialize the StableKite reconstruction branch.
+The StableKite fork is based on `orangepi-xunlong/firmware`. `upstream-master` remains the unmodified tracking branch; proprietary target blobs are absent from StableKite `main`.
 
-## Upstream
+## Current Orange Pi references
 
-- Repository: `https://github.com/orangepi-xunlong/firmware.git`
-- Branch: `master`
-- Upstream commit: `db5e86200ae592c467c4cfa50ec0c66cbc40b158`
+| Component | Upstream path | Size | SHA-256 | Upstream commit touching file |
+| --- | --- | ---: | --- | --- |
+| BCM43752A2 Wi-Fi | `ap6275p/fw_bcm43752a2_pcie_ag.bin` | 936074 | `6a2dbe01e72221defba91a52e158768d973a3c85ca2d881c924379e35ad36b23` | `44e2dfea2e1e6b1af6900b33246b424760b756c3` |
+| BCM4362A2 Bluetooth | `ap6275p/BCM4362A2.hcd` | 91900 | `f7adf14413063f14b0204684fb67ddcd2ae6bca3120343cb9a5cab86a1a545c3` | `75ea6fc5f3c454861b39b33823cb6876f3eca598` |
 
-## BCM43752A2 Wi-Fi
+## Legacy references used by Stages 6–17
 
-- Original path: `ap6275p/fw_bcm43752a2_pcie_ag.bin`
-- Size: `936074` bytes
-- SHA-256: `6a2dbe01e72221defba91a52e158768d973a3c85ca2d881c924379e35ad36b23`
-- Last upstream commit touching file: `44e2dfea2e1e6b1af6900b33246b424760b756c3`
+The semantic reconstruction imported during repository centralization was built from an older evidence bundle. Those binaries are different and must not be treated as address-equivalent to the current Orange Pi package.
 
-## BCM4362A2 Bluetooth
+| Component | Legacy size | Legacy SHA-256 | Current status |
+| --- | ---: | --- | --- |
+| BCM43752A2 Wi-Fi | 857142 | `bfcdc3ecb5274745f3c3551abd0d9b11ede89b305837241364a055fefbf09de7` | Stage 6–17 ROM addresses/closure are legacy evidence pending current-image IDA rebaseline |
+| BCM4362A2 Bluetooth | 73136 | `3e4a1eddaf80f3e45f99e9c77b3cd84c85f605540da5f4f92300b80bca6d67ec` | Stage 6–17 patch semantics are legacy evidence; Stage 18 freezes the current structural layout and starts current-image IDA rebaseline |
 
-- Original path: `ap6275p/BCM4362A2.hcd`
-- Size: `91900` bytes
-- SHA-256: `f7adf14413063f14b0204684fb67ddcd2ae6bca3120343cb9a5cab86a1a545c3`
-- Last upstream commit touching file: `75ea6fc5f3c454861b39b33823cb6876f3eca598`
-
-The original executable/patch blobs are absent from StableKite `main`; hashes are retained for target identity only.
+This distinction is intentional and fail-safe: source is retained as useful evidence, but no claim of binary equivalence is made.

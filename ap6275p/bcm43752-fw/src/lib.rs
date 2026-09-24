@@ -192,3 +192,55 @@ pub const fn rom_dependency_status(address:u32)->RomDependencyStatus{match addre
 pub fn audit_stage7_rom_dependencies()->RomDependencyAudit{let mut a=RomDependencyAudit::default();for&(addr,w)in STAGE7_NEXT_ROM_TARGETS{a.total_weight+=w;match rom_dependency_status(addr){RomDependencyStatus::LibreSource=>a.libre_source_weight+=w,RomDependencyStatus::HardwareTrait=>a.hardware_trait_weight+=w,RomDependencyStatus::HeapBoundary=>a.heap_boundary_weight+=w,RomDependencyStatus::TerminalSink=>a.terminal_sink_weight+=w,RomDependencyStatus::Unresolved=>{a.unresolved_weight+=w;a.unresolved_targets+=1}}}a}
 pub fn highest_unresolved_stage7_target()->Option<(u32,u32)>{for&(addr,w)in STAGE7_NEXT_ROM_TARGETS{if rom_dependency_status(addr)==RomDependencyStatus::Unresolved{return Some((addr,w))}}None}
 #[cfg(test)]mod stage17_tests{use super::*;#[test]fn weighted_closure(){let a=audit_stage7_rom_dependencies();assert_eq!(a.total_weight,5219);assert_eq!(a.libre_source_weight,505);assert_eq!(a.hardware_trait_weight,1014);assert_eq!(a.heap_boundary_weight,0);assert_eq!(a.terminal_sink_weight,668);assert_eq!(a.unresolved_weight,3032);assert_eq!(a.unresolved_targets,21);assert_eq!(highest_unresolved_stage7_target(),Some((0xF030,628)));}}
+
+
+/// Stage 18: reference identity correction after centralizing the Orange Pi
+/// firmware tree. Stage 6-17 addresses and closure weights above were recovered
+/// from the legacy 2021 image, not from the current Orange Pi reference.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct Bcm43752ReferenceIdentity {
+    pub sha256: &'static str,
+    pub size: u32,
+    pub version: &'static str,
+    pub build_date: &'static str,
+    pub fwid: &'static str,
+}
+
+pub const LEGACY_RECOVERED_WIFI_REFERENCE: Bcm43752ReferenceIdentity = Bcm43752ReferenceIdentity {
+    sha256: "bfcdc3ecb5274745f3c3551abd0d9b11ede89b305837241364a055fefbf09de7",
+    size: 857_142,
+    version: "18.35.387.23.57",
+    build_date: "2021-08-03T09:39:42Z",
+    fwid: "01-ea656a70",
+};
+
+pub const CURRENT_ORANGEPI_WIFI_REFERENCE: Bcm43752ReferenceIdentity = Bcm43752ReferenceIdentity {
+    sha256: "6a2dbe01e72221defba91a52e158768d973a3c85ca2d881c924379e35ad36b23",
+    size: 936_074,
+    version: "18.35.387.23.146",
+    build_date: "2022-07-12T10:55:29Z",
+    fwid: "01-93c53be6",
+};
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum Bcm43752ReconstructionReferenceStatus {
+    LegacyRecovered,
+    CurrentOrangePiPendingDisassembly,
+}
+
+/// The semantic recovery through Stage 17 is retained as useful legacy
+/// evidence, but must not be treated as address-equivalent to the current image.
+pub const STAGE18_WIFI_REFERENCE_STATUS: Bcm43752ReconstructionReferenceStatus =
+    Bcm43752ReconstructionReferenceStatus::CurrentOrangePiPendingDisassembly;
+
+#[cfg(test)]
+mod stage18_tests {
+    use super::*;
+    #[test]
+    fn references_are_distinct() {
+        assert_ne!(LEGACY_RECOVERED_WIFI_REFERENCE.sha256, CURRENT_ORANGEPI_WIFI_REFERENCE.sha256);
+        assert_ne!(LEGACY_RECOVERED_WIFI_REFERENCE.size, CURRENT_ORANGEPI_WIFI_REFERENCE.size);
+        assert_eq!(CURRENT_ORANGEPI_WIFI_REFERENCE.version, "18.35.387.23.146");
+        assert_eq!(STAGE18_WIFI_REFERENCE_STATUS, Bcm43752ReconstructionReferenceStatus::CurrentOrangePiPendingDisassembly);
+    }
+}
