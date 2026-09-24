@@ -141,3 +141,12 @@ Stage 29 extends the Stage-28 MMIO helpers with five complete current functions.
 - Current `0x171ff8` (legacy `sub_16DF48`) decrements byte `0x223065`, interprets the new byte as signed, and when it is `<= 0` and current mode `0x223064` is exactly 1 or 2, passes a pointer to local u16 value `58` to still-opaque boundary `0x2ce90`. Otherwise the incoming R0 value is preserved.
 
 The larger legacy `sub_16DE54` remains deliberately unpromoted: although adjacent helpers are now verified, its wider copy/program contract needs additional current evidence. The ROM boundaries `0xbac58` and `0x2ce90` remain unnamed traits. Compiler stack-canary plumbing to stable terminal boundary `0x94c0` is not reproduced by safe Rust.
+## Stage 30 — current byte-program transaction
+
+Stage 30 closes the low-level programming path around the Stage-29 primitives. Legacy `sub_16DE54` has exactly one relocation-normalized complete-body match in the current PatchRAM code: current `0x171f04`, 206 bytes. All nine direct branch sites retain the same instruction kind and offset. RAM-side calls relocate coherently to current `0x171e9c`, `0x171e1c`, `0x171ed0`, and `0x171e8c`; ROM `memcpy` (`0x3db4`) and stack-guard (`0x94c0`) remain at the same absolute addresses. The guard/context literal remains `0x200890`.
+
+An independent whole-current-code scan finds no second normalized match. The larger current caller corresponding to legacy `sub_169548` is likewise unique at `0x16be1c`; its direct calls at function offsets `+0xb4` and `+0x10a` both target current `0x171f04`. The legacy/current-normalized caller supplies the two observed shapes: a 46-byte record update at offset `46*index+128`, and a 1-byte update at `46*index+129`.
+
+The Rust reconstruction now models the complete transaction while composing the already recovered Stage-28/29 MMIO primitives. It clears the output byte count, gates on mode bits equal to 2, begins source-word programming, handles a leading unaligned fragment by shifting bytes into the correct 32-bit lanes, programs subsequent chunks in at most four bytes, preserves the firmware's 8-bit wrapping written count, and clears control bit 3 on both success and the first programming failure. Safe Rust intentionally omits compiler stack-canary plumbing. No vendor name is assigned to the routine.
+
+Two Wi-Fi allocation wrappers (`0x1a6408` and `0x1a645c`) were also reverified as globally unique relocation-normalized current bodies during Stage 30, but remain structural-only because their `0x703c0`/`0x705a4` contracts are still opaque.

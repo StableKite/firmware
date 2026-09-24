@@ -1193,3 +1193,118 @@ mod stage29_tests{
         assert_eq!(STAGE29_CURRENT_BT_PROGRAM_SOURCE_WORD_ADDR,0x171E1C);
     }
 }
+
+/// Stage 30: current byte-program transaction lifted from the unique
+/// relocation-normalized body at `0x171F04` (legacy `sub_16DE54`).  The
+/// current caller at `0x16BE1C` reaches it twice for 46-byte and 1-byte
+/// record updates.  Low-level MMIO programming remains composed from the
+/// already verified Stage-28/29 primitives.
+pub const STAGE30_CURRENT_BT_PROGRAM_BYTES_ADDR:u32=0x0017_1F04;
+pub const STAGE30_CURRENT_BT_PROGRAM_BYTES_CALLER_ADDR:u32=0x0016_BE1C;
+pub const STAGE30_BT_PROGRAM_OFFSET_BIAS:u32=0x0000_03C4;
+pub const STAGE30_BT_PROGRAM_CALLER_RECORD_BYTES:u32=46;
+pub const STAGE30_BT_PROGRAM_CALLER_SINGLE_BYTE:u32=1;
+
+/// Abstracts only the already recovered lower-level programming primitives so
+/// the transaction/chunking behavior can be tested without a physical MMIO bus.
+pub trait BtStage30ProgramBackend{
+    fn mode_bits(&mut self)->u32;
+    fn begin_source_word(&mut self,source_word:u32);
+    fn program_mask(&mut self,offset:u32,mask:u32)->u32;
+    fn clear_control_bit3(&mut self);
+}
+
+pub struct BtStage30MmioBackend<'a,I:BtMmio32>{pub io:&'a mut I}
+impl<I:BtMmio32> BtStage30ProgramBackend for BtStage30MmioBackend<'_,I>{
+    fn mode_bits(&mut self)->u32{bt_stage28_read_bits16_18(self.io)}
+    fn begin_source_word(&mut self,source_word:u32){let _=bt_stage29_program_source_word(self.io,source_word);}
+    fn program_mask(&mut self,offset:u32,mask:u32)->u32{bt_stage29_program_mask_retry32(self.io,offset,mask)}
+    fn clear_control_bit3(&mut self){bt_stage28_clear_bit3(self.io)}
+}
+
+fn bt_stage30_pack_word(bytes:&[u8],shift_bytes:u32)->u32{
+    let mut word=0u32;let mut i=0usize;
+    while i<bytes.len(){word|=(bytes[i] as u32)<<(8*i);i+=1;}
+    word.wrapping_shl(8*shift_bytes)
+}
+
+/// Safe source-level model of current `0x171F04`.
+///
+/// `src` represents exactly the byte count supplied in R1 by the firmware
+/// caller.  The current routine clears `written` first, requires mode 2,
+/// begins the existing source-word programming sequence, and then programs
+/// naturally aligned 32-bit masks.  A leading unaligned fragment is shifted
+/// into its byte lanes; final short fragments remain zero-padded.  On the
+/// first failed mask-program attempt it clears control bit 3 and returns 0.
+/// Success also clears bit 3 and returns 1.  The byte counter is an 8-bit
+/// firmware field and therefore wraps modulo 256.
+pub fn bt_stage30_program_bytes<B:BtStage30ProgramBackend>(
+    backend:&mut B,source_word:u32,offset:u32,src:&[u8],written:&mut u8,
+)->u32{
+    *written=0;
+    if backend.mode_bits()!=2{return 0;}
+    backend.begin_source_word(source_word);
+    let mut address=offset.wrapping_add(STAGE30_BT_PROGRAM_OFFSET_BIAS);
+    let mut pos=0usize;
+    let lane=(address&3) as usize;
+    if lane!=0 && pos<src.len(){
+        let take=core::cmp::min(4-lane,src.len()-pos);
+        let word=bt_stage30_pack_word(&src[pos..pos+take],lane as u32);
+        if backend.program_mask(address&!3,word)==0{
+            backend.clear_control_bit3();
+            return 0;
+        }
+        address=address.wrapping_add(take as u32);
+        pos+=take;
+        *written=written.wrapping_add(take as u8);
+    }
+    while pos<src.len(){
+        let take=core::cmp::min(4,src.len()-pos);
+        let word=bt_stage30_pack_word(&src[pos..pos+take],0);
+        if backend.program_mask(address&!3,word)==0{
+            backend.clear_control_bit3();
+            return 0;
+        }
+        pos+=take;
+        *written=written.wrapping_add(take as u8);
+        address=address.wrapping_add(4);
+    }
+    backend.clear_control_bit3();
+    1
+}
+
+pub fn bt_stage30_program_bytes_mmio<I:BtMmio32>(
+    io:&mut I,source_word:u32,offset:u32,src:&[u8],written:&mut u8,
+)->u32{
+    let mut backend=BtStage30MmioBackend{io};
+    bt_stage30_program_bytes(&mut backend,source_word,offset,src,written)
+}
+
+#[cfg(test)]
+mod stage30_tests{
+    use super::*;use std::vec::Vec;
+    #[derive(Default)]
+    struct B{mode:u32,begins:Vec<u32>,programs:Vec<(u32,u32)>,results:Vec<u32>,ri:usize,clears:u32}
+    impl BtStage30ProgramBackend for B{
+        fn mode_bits(&mut self)->u32{self.mode}
+        fn begin_source_word(&mut self,w:u32){self.begins.push(w)}
+        fn program_mask(&mut self,o:u32,m:u32)->u32{self.programs.push((o,m));let r=self.results.get(self.ri).copied().unwrap_or(1);self.ri+=1;r}
+        fn clear_control_bit3(&mut self){self.clears+=1}
+    }
+    #[test]fn program_bytes_preserves_alignment_count_and_failure_cleanup(){
+        let mut b=B{mode:2,..B::default()};let mut written=0xAA;
+        assert_eq!(bt_stage30_program_bytes(&mut b,0x4433_2211,1,&[0x11,0x22,0x33,0x44,0x55],&mut written),1);
+        assert_eq!(written,5);assert_eq!(b.begins,[0x4433_2211]);
+        assert_eq!(b.programs,[(0x3C4,0x3322_1100),(0x3C8,0x0000_5544)]);assert_eq!(b.clears,1);
+        let mut f=B{mode:2,results:std::vec![1,0],..B::default()};written=99;
+        assert_eq!(bt_stage30_program_bytes(&mut f,7,1,&[1,2,3,4,5],&mut written),0);
+        assert_eq!(written,3);assert_eq!(f.programs.len(),2);assert_eq!(f.clears,1);
+    }
+    #[test]fn mode_gate_empty_input_and_wrapping_written_are_exact(){
+        let mut b=B{mode:1,..B::default()};let mut written=9;
+        assert_eq!(bt_stage30_program_bytes(&mut b,1,0,&[1,2],&mut written),0);assert_eq!(written,0);assert!(b.begins.is_empty());assert_eq!(b.clears,0);
+        let mut e=B{mode:2,..B::default()};assert_eq!(bt_stage30_program_bytes(&mut e,2,0,&[],&mut written),1);assert_eq!(written,0);assert_eq!(e.begins,[2]);assert_eq!(e.clears,1);
+        let src=[0u8;260];let mut w=B{mode:2,..B::default()};assert_eq!(bt_stage30_program_bytes(&mut w,3,0,&src,&mut written),1);assert_eq!(written,4);assert_eq!(w.programs.len(),65);
+        assert_eq!(STAGE30_CURRENT_BT_PROGRAM_BYTES_ADDR,0x171F04);assert_eq!(STAGE30_CURRENT_BT_PROGRAM_BYTES_CALLER_ADDR,0x16BE1C);
+    }
+}
