@@ -1714,3 +1714,96 @@ mod stage33_tests{
         assert_eq!(STAGE33_CURRENT_BT_CLASS1_ADAPTER_ADDR,0x16BFF4);assert_eq!(STAGE33_CURRENT_BT_INDEXED_TOGGLE_ADDR,0x16C828);
     }
 }
+
+/// Stage 34: dispatch-facing wrappers around the already recovered current
+/// Bluetooth slot lifecycle, plus one call-free configuration setter.
+pub const STAGE34_CURRENT_BT_CLEAR_WRAPPER_ADDR:u32=0x0016_CB28;
+pub const STAGE34_CURRENT_BT_INSERT_WRAPPER_ADDR:u32=0x0016_CB3E;
+pub const STAGE34_CURRENT_BT_REMOVE_WRAPPER_ADDR:u32=0x0016_CB5A;
+pub const STAGE34_CURRENT_BT_CONFIG_SETTER_ADDR:u32=0x0016_C978;
+pub const STAGE34_BT_CLEAR_PRECHECK_BOUNDARY:u32=0x0009_B03C;
+pub const STAGE34_BT_INSERT_PRECHECK_BOUNDARY:u32=0x0009_B070;
+pub const STAGE34_BT_REMOVE_PRECHECK_BOUNDARY:u32=0x0009_B110;
+pub const STAGE34_BT_CONFIG_WORDS_ADDR:u32=0x0022_2790;
+pub const STAGE34_BT_CONFIG_BYTES_CONTEXT_ADDR:u32=0x0020_CEC4;
+
+pub trait BtStage34LifecyclePrecheck{
+    fn clear_precheck(&mut self)->u32;
+    fn insert_precheck(&mut self)->u32;
+    fn remove_precheck(&mut self)->u32;
+}
+
+/// Current `0x16CB28`: run opaque clear precheck and clear all slot records only
+/// when the caller-owned response status byte remains zero.
+pub fn bt_stage34_clear_wrapper<B:BtStage34LifecyclePrecheck>(
+    records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    response_status:u8,b:&mut B,
+)->u32{
+    let r=b.clear_precheck();
+    if response_status==0{bt_clear_slot_table(records);}
+    r
+}
+
+/// Current `0x16CB3E`: run opaque insert precheck; when status remains zero,
+/// insert request tag + six-byte payload and copy the firmware insert result to
+/// response status.
+pub fn bt_stage34_insert_wrapper<B:BtStage34LifecyclePrecheck>(
+    tag:u8,payload:&[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    response_status:&mut u8,b:&mut B,
+)->u32{
+    let r=b.insert_precheck();
+    if *response_status==0{
+        let s=bt_insert_slot_if_absent(records,tag,payload);
+        *response_status=s;
+        s as u32
+    }else{r}
+}
+
+/// Current `0x16CB5A`: run opaque remove precheck and, only on zero response
+/// status, tail into the already recovered current remove operation. Unlike the
+/// insert wrapper, the remove result is not copied into response status here.
+pub fn bt_stage34_remove_wrapper<B:BtStage34LifecyclePrecheck>(
+    tag:u8,payload:&[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    response_status:u8,b:&mut B,
+)->u32{
+    let r=b.remove_precheck();
+    if response_status==0{bt_remove_slot(records,tag,payload) as u32}else{r}
+}
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage34ConfigState{pub word0:u16,pub word1:u16,pub byte31:u8,pub byte32:u8}
+/// Exact call-free model of current `0x16C978` / legacy `sub_169E38`.
+/// Request bytes +13..+16 become two little-endian words; +12 and +17 become
+/// two independent bytes in the second current context object.
+pub fn bt_stage34_set_config(state:&mut BtStage34ConfigState,request:&[u8;18]){
+    state.word0=u16::from_le_bytes([request[13],request[14]]);
+    state.word1=u16::from_le_bytes([request[15],request[16]]);
+    state.byte31=request[12];
+    state.byte32=request[17];
+}
+
+#[cfg(test)]
+mod stage34_tests{
+    use super::*;use std::vec::Vec;
+    struct B{ret:[u32;3],calls:Vec<u8>}
+    impl BtStage34LifecyclePrecheck for B{
+        fn clear_precheck(&mut self)->u32{self.calls.push(0);self.ret[0]}
+        fn insert_precheck(&mut self)->u32{self.calls.push(1);self.ret[1]}
+        fn remove_precheck(&mut self)->u32{self.calls.push(2);self.ret[2]}
+    }
+    #[test]fn lifecycle_wrappers_preserve_status_gates_and_return_shapes(){
+        let mut b=B{ret:[10,11,12],calls:Vec::new()};let mut records=[[1u8;7];8];
+        assert_eq!(bt_stage34_clear_wrapper(&mut records,1,&mut b),10);assert_eq!(records,[[1;7];8]);
+        assert_eq!(bt_stage34_clear_wrapper(&mut records,0,&mut b),10);assert_eq!(records,[[0;7];8]);
+        let p=[1,2,3,4,5,6];let mut s=0u8;assert_eq!(bt_stage34_insert_wrapper(7,&p,&mut records,&mut s,&mut b),0);assert_eq!(s,0);assert_eq!(records[0],[7,1,2,3,4,5,6]);
+        s=18;assert_eq!(bt_stage34_insert_wrapper(8,&p,&mut records,&mut s,&mut b),11);assert_eq!(s,18);
+        assert_eq!(bt_stage34_remove_wrapper(7,&p,&mut records,0,&mut b),1);assert_eq!(bt_stage34_remove_wrapper(7,&p,&mut records,9,&mut b),12);
+        assert_eq!(b.calls,[0,0,1,1,2,2]);
+    }
+    #[test]fn config_setter_preserves_exact_byte_layout(){
+        let mut req=[0u8;18];req[12]=0xAA;req[13]=0x34;req[14]=0x12;req[15]=0x78;req[16]=0x56;req[17]=0xBB;
+        let mut s=BtStage34ConfigState::default();bt_stage34_set_config(&mut s,&req);
+        assert_eq!(s,BtStage34ConfigState{word0:0x1234,word1:0x5678,byte31:0xAA,byte32:0xBB});
+        assert_eq!(STAGE34_CURRENT_BT_CLEAR_WRAPPER_ADDR,0x16CB28);assert_eq!(STAGE34_CURRENT_BT_CONFIG_SETTER_ADDR,0x16C978);
+    }
+}
