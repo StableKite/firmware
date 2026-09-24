@@ -1807,3 +1807,180 @@ mod stage34_tests{
         assert_eq!(STAGE34_CURRENT_BT_CLEAR_WRAPPER_ADDR,0x16CB28);assert_eq!(STAGE34_CURRENT_BT_CONFIG_SETTER_ADDR,0x16C978);
     }
 }
+
+/// Stage 35: current local eligibility/mask helpers around `0x16D3B8..0x16D4D4`.
+///
+/// All four functions are globally unique relocation-normalized matches. The
+/// last two are byte-identical legacy/current bodies. Unresolved external
+/// calls stay explicit traits rather than receiving guessed vendor names.
+pub const STAGE35_CURRENT_BT_MASK_LOOKUP_ADDR:u32=0x0016_D3B8;
+pub const STAGE35_CURRENT_BT_ELIGIBILITY_GATE_ADDR:u32=0x0016_D3D8;
+pub const STAGE35_CURRENT_BT_CLEAR_MASK_BIT_ADDR:u32=0x0016_D450;
+pub const STAGE35_CURRENT_BT_MATCH_RECORD_ADDR:u32=0x0016_D490;
+pub const STAGE35_BT_MASK_LOOKUP_TABLE_ADDR:u32=0x0022_1EBC;
+pub const STAGE35_BT_ENABLED_MASK_ADDR:u32=0x0022_1EC4;
+pub const STAGE35_BT_INDEX_MASK_TABLE_ADDR:u32=0x0022_1EC6;
+pub const STAGE35_BT_MATCH_TABLE_ADDR:u32=0x0020_9D68;
+pub const STAGE35_BT_GLOBAL_FEATURE_CONTEXT_ADDR:u32=0x0020_8338;
+pub const STAGE35_BT_CONTEXT_PROBE_ADDR:u32=0x0020_91FC;
+pub const STAGE35_BT_RESET_CONTEXT_ADDR:u32=0x0020_9454;
+pub const STAGE35_BT_SPECIAL_CONTEXT_ADDR:u32=0x0020_8194;
+pub const STAGE35_BT_MAP_INDEX_BOUNDARY:u32=0x0003_2DD4;
+pub const STAGE35_BT_CONTEXT_BUSY_BOUNDARY:u32=0x0002_1F42;
+pub const STAGE35_BT_ZERO_PROBE_BOUNDARY:u32=0x0002_A428;
+pub const STAGE35_BT_POST_ZERO_BOUNDARY:u32=0x0002_A2B8;
+
+pub trait BtStage35MaskLookupBackend{
+    fn map_index(&mut self,selector:u32)->u32;
+    fn mapped_value(&mut self,index:u32)->u8;
+}
+
+/// Current `0x16D3B8`: call the opaque index mapper unconditionally, then
+/// return the mapped byte only when object word `+36` contains mask `0x110`.
+/// Otherwise return zero. The unconditional mapper call is intentional.
+pub fn bt_stage35_mask_lookup<B:BtStage35MaskLookupBackend>(
+    mask_word36:u16,selector:u32,b:&mut B,
+)->u32{
+    let index=b.map_index(selector);
+    if mask_word36&0x0110!=0{b.mapped_value(index) as u32}else{0}
+}
+
+pub trait BtStage35EligibilityBackend:BtStage35MaskLookupBackend{
+    fn context_busy(&mut self,context_addr:u32)->u32;
+    fn zero_probe(&mut self)->u32;
+    fn post_zero(&mut self);
+}
+
+/// Safe control-flow model of current `0x16D3D8` / legacy `sub_16A65C`.
+///
+/// The four external runtime contracts remain opaque. This function preserves
+/// their ordering, all early exits, the 24-bit object-word check, the current
+/// reset-latch zero store, and the final three-way special-object predicate.
+pub fn bt_stage35_eligibility_gate<B:BtStage35EligibilityBackend>(
+    global_feature:u8,object_word12:u32,mask_word36:u16,selector:u32,
+    reset_gate:u8,reset_latch:&mut u32,special_enabled:u8,
+    object_identity:u32,peer_code:u16,special_object_a:u32,special_object_b:u32,
+    b:&mut B,
+)->u32{
+    if global_feature&0x80!=0{return 1;}
+    if object_word12&0x00FF_FFFF!=0{return 1;}
+    if bt_stage35_mask_lookup(mask_word36,selector,b)!=0{return 1;}
+    if b.context_busy(STAGE35_BT_CONTEXT_PROBE_ADDR)!=0{return 1;}
+    let probe=b.zero_probe();
+    if probe!=0{return 1;}
+    if reset_gate!=0{return 1;}
+    *reset_latch=0;
+    b.post_zero();
+    if special_enabled!=0 &&
+        (peer_code==0x080B || object_identity==special_object_a || object_identity==special_object_b)
+    {return 1;}
+    probe
+}
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage35BitObject{
+    pub word12:u16,
+    pub index14:u8,
+    pub mask36:u16,
+}
+pub trait BtStage35IndexMaskTable{fn index_mask(&mut self,index:u8)->u16;}
+
+fn bt_stage35_arm_register_lsl_one(shift:u32)->u32{
+    let amount=shift&0xFF;
+    if amount<32{1u32<<amount}else{0}
+}
+fn bt_stage35_arm_register_shift_positive_u16(value:u16,shift:u32)->u32{
+    let amount=shift&0xFF;
+    if amount<32{(value as u32)>>amount}else{0}
+}
+
+/// Exact call-free model of current `0x16D450` / legacy `sub_16A6D4`.
+///
+/// It computes `1 << bit_index` with Thumb register-shift semantics, requires
+/// that low-16 bit in the current enabled mask, optionally preserves the bit
+/// when either the shifted object word has bit zero set or the indexed mask
+/// equals it, and otherwise clears the bit in object word `+36`.
+pub fn bt_stage35_clear_mask_bit<T:BtStage35IndexMaskTable>(
+    passthrough:u32,object:&mut BtStage35BitObject,mode_nonzero:bool,
+    guard_shift:u32,bit_index:u32,enabled_mask:u16,table:&mut T,
+)->u32{
+    let full=bt_stage35_arm_register_lsl_one(bit_index);
+    let bit=full as u16;
+    if bit&enabled_mask!=0{
+        if guard_shift!=0{
+            if mode_nonzero{
+                if bt_stage35_arm_register_shift_positive_u16(object.word12,guard_shift)&1!=0{
+                    return passthrough;
+                }
+            }else if table.index_mask(object.index14)==bit{
+                return passthrough;
+            }
+        }
+        object.mask36&=!bit;
+    }
+    passthrough
+}
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage35MatchRecord{
+    pub byte209:u8,
+    pub byte215:u8,
+    pub byte229:u8,
+}
+
+/// Exact call-free model of current `0x16D490` / legacy `sub_16A714`.
+/// The firmware scans exactly three 400-byte-stride records and succeeds when
+/// byte +209 has bit `0x10`, wrapped `(byte+229 + 29) & 31` is at most three,
+/// and byte +215 equals the full 32-bit key value.
+pub fn bt_stage35_any_matching_record(key:u32,records:&[BtStage35MatchRecord;3])->u32{
+    let mut i=0usize;
+    while i<3{
+        let r=records[i];
+        if r.byte209&0x10!=0 && (r.byte229.wrapping_add(29)&0x1F)<=3 && r.byte215 as u32==key{
+            return 1;
+        }
+        i+=1;
+    }
+    0
+}
+
+#[cfg(test)]
+mod stage35_tests{
+    use super::*;use std::vec::Vec;
+    struct B{map:u32,mapped:u8,busy:u32,probe:u32,calls:Vec<u8>}
+    impl BtStage35MaskLookupBackend for B{
+        fn map_index(&mut self,_:u32)->u32{self.calls.push(1);self.map}
+        fn mapped_value(&mut self,_:u32)->u8{self.calls.push(2);self.mapped}
+    }
+    impl BtStage35EligibilityBackend for B{
+        fn context_busy(&mut self,a:u32)->u32{assert_eq!(a,STAGE35_BT_CONTEXT_PROBE_ADDR);self.calls.push(3);self.busy}
+        fn zero_probe(&mut self)->u32{self.calls.push(4);self.probe}
+        fn post_zero(&mut self){self.calls.push(5)}
+    }
+    struct T{values:[u16;4],calls:Vec<u8>}
+    impl BtStage35IndexMaskTable for T{fn index_mask(&mut self,i:u8)->u16{self.calls.push(i);self.values[i as usize]}}
+    #[test]fn lookup_and_eligibility_preserve_order_and_early_exits(){
+        let mut b=B{map:2,mapped:7,busy:0,probe:0,calls:Vec::new()};
+        assert_eq!(bt_stage35_mask_lookup(0,9,&mut b),0);assert_eq!(b.calls,[1]);
+        b.calls.clear();assert_eq!(bt_stage35_mask_lookup(0x10,9,&mut b),7);assert_eq!(b.calls,[1,2]);
+        let mut latch=0xAAAAu32;b.mapped=0;b.calls.clear();
+        assert_eq!(bt_stage35_eligibility_gate(0,0,0,3,0,&mut latch,0,10,7,11,12,&mut b),0);
+        assert_eq!(latch,0);assert_eq!(b.calls,[1,3,4,5]);
+        latch=9;b.calls.clear();assert_eq!(bt_stage35_eligibility_gate(0x80,0,0,0,0,&mut latch,0,0,0,0,0,&mut b),1);assert_eq!(latch,9);assert!(b.calls.is_empty());
+        b.calls.clear();assert_eq!(bt_stage35_eligibility_gate(0,1,0,0,0,&mut latch,0,0,0,0,0,&mut b),1);assert!(b.calls.is_empty());
+        b.calls.clear();b.mapped=1;assert_eq!(bt_stage35_eligibility_gate(0,0,0x100,0,0,&mut latch,0,0,0,0,0,&mut b),1);assert_eq!(b.calls,[1,2]);
+        b.mapped=0;b.calls.clear();assert_eq!(bt_stage35_eligibility_gate(0,0,0,0,0,&mut latch,1,11,0x080B,1,2,&mut b),1);assert_eq!(b.calls,[1,3,4,5]);
+    }
+    #[test]fn bit_clear_and_three_record_match_preserve_machine_edges(){
+        let mut o=BtStage35BitObject{word12:1,index14:2,mask36:0xFFFF};let mut t=T{values:[0,0,2,0],calls:Vec::new()};
+        assert_eq!(bt_stage35_clear_mask_bit(0x55,&mut o,true,256,1,2,&mut t),0x55);assert_eq!(o.mask36,0xFFFF);assert!(t.calls.is_empty());
+        // shift 256 is nonzero to the branch but has ARM register-shift amount zero.
+        o.word12=0;o.mask36=0xFFFF;bt_stage35_clear_mask_bit(0,&mut o,false,1,1,2,&mut t);assert_eq!(o.mask36,0xFFFF);assert_eq!(t.calls,[2]);
+        t.values[2]=0;o.mask36=0xFFFF;bt_stage35_clear_mask_bit(0,&mut o,false,1,1,2,&mut t);assert_eq!(o.mask36,0xFFFD);
+        o.mask36=0xFFFF;bt_stage35_clear_mask_bit(0,&mut o,false,0,40,0xFFFF,&mut t);assert_eq!(o.mask36,0xFFFF);
+        let mut rs=[BtStage35MatchRecord::default();3];rs[1]=BtStage35MatchRecord{byte209:0x10,byte215:7,byte229:3};
+        assert_eq!(bt_stage35_any_matching_record(7,&rs),1);assert_eq!(bt_stage35_any_matching_record(0x107,&rs),0);
+        rs[1].byte229=7;assert_eq!(bt_stage35_any_matching_record(7,&rs),0);
+        assert_eq!(STAGE35_CURRENT_BT_MASK_LOOKUP_ADDR,0x16D3B8);assert_eq!(STAGE35_CURRENT_BT_MATCH_RECORD_ADDR,0x16D490);
+    }
+}
