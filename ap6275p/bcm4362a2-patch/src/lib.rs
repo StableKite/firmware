@@ -1492,3 +1492,112 @@ mod stage31_tests{
         assert_eq!(r.status,18);assert_eq!(b.critical_args,[1,0x55]);assert_eq!(b.clears,1);
     }
 }
+
+/// Stage 32: current record-window replay and command-class-5 adapter.
+///
+/// Both functions are promoted only after globally unique relocation-normalized
+/// body identity plus current branch/literal re-reading. The active-record
+/// callback at `0xA5D24` remains an opaque runtime boundary.
+pub const STAGE32_CURRENT_BT_REPLAY_ACTIVE_RECORDS_ADDR:u32=0x0016_BF80;
+pub const STAGE32_CURRENT_BT_COMMAND5_ADAPTER_ADDR:u32=0x0016_C02C;
+pub const STAGE32_BT_ACTIVE_RECORD_CALLBACK_BOUNDARY:u32=0x000A_5D24;
+pub const STAGE32_BT_COMMAND5_DISPATCH_TARGET:u32=STAGE25_CURRENT_BT_COMMAND_DISPATCH_ADDR;
+
+pub trait BtStage32ReplayBackend{
+    fn critical(&mut self,arg:u32)->u32;
+    fn status_mmio(&mut self)->u32;
+    fn prepare_record_window(&mut self);
+    fn read_record_window(&mut self,offset:u32,out:&mut[u8;STAGE31_BT_RECORD_WINDOW_BYTES],shifted_status:u32);
+    fn clear_active_bit0(&mut self);
+    /// Current opaque `0xA5D24(0, record+4)` call shape.
+    fn dispatch_active_payload(&mut self,selector:u32,payload:&[u8])->u32;
+}
+
+/// Safe source-level model of current `0x16BF80` / legacy `sub_1696AC`.
+///
+/// The routine snapshots the same 8x46-byte record window used by Stage 31,
+/// clears the active-register bit before leaving the critical section, then
+/// invokes the opaque callback for every record whose state byte (+1) is 1.
+/// The callback receives selector 0 and a pointer to record byte +4 (42 bytes
+/// remain in the record). The function returns the restore result when no
+/// record is active, otherwise the result from the last callback.
+pub fn bt_stage32_replay_active_records<B:BtStage32ReplayBackend>(b:&mut B)->u32{
+    let token=b.critical(1);
+    let status=b.status_mmio();
+    if status&0x1000==0{b.prepare_record_window();}
+    let mut records=[0u8;STAGE31_BT_RECORD_WINDOW_BYTES];
+    b.read_record_window(STAGE31_BT_RECORD_WINDOW_OFFSET,&mut records,status.wrapping_shl(19));
+    b.clear_active_bit0();
+    let mut result=b.critical(token);
+    let mut i=0usize;
+    while i<STAGE31_BT_RECORD_COUNT{
+        let o=i*STAGE31_BT_RECORD_BYTES;
+        if records[o+1]==1{
+            result=b.dispatch_active_payload(0,&records[o+4..o+STAGE31_BT_RECORD_BYTES]);
+        }
+        i+=1;
+    }
+    result
+}
+
+pub trait BtStage32Command5Dispatch{
+    fn dispatch(&mut self,frame_len:u8,frame:&[u8])->u8;
+}
+
+/// Safe control-flow model of current `0x16C02C` / legacy `sub_169758`.
+///
+/// Request class byte +12 must equal 5. On that path byte +11 is decremented
+/// with 8-bit wrap semantics and forwarded as the frame length to the already
+/// recovered current command dispatcher at `0x172594`, with payload starting
+/// at request byte +13. A non-class-5 request writes status 1 and preserves the
+/// incoming pointer-shaped return value.
+pub fn bt_stage32_command5_adapter<D:BtStage32Command5Dispatch>(
+    request_passthrough:u32,parameter_len:u8,class:u8,frame:&[u8],
+    response_status:&mut u8,dispatch:&mut D,
+)->u32{
+    if class==5{
+        let result=dispatch.dispatch(parameter_len.wrapping_sub(1),frame) as u32;
+        *response_status=result as u8;
+        result
+    }else{
+        *response_status=1;
+        request_passthrough
+    }
+}
+
+#[cfg(test)]
+mod stage32_tests{
+    use super::*;use std::vec::Vec;
+    struct R{
+        status:u32,records:[u8;STAGE31_BT_RECORD_WINDOW_BYTES],critical_args:Vec<u32>,
+        prepared:u8,read_offset:u32,shifted:u32,clears:u8,dispatches:Vec<(u32,Vec<u8>)>,next:u32,
+    }
+    impl Default for R{
+        fn default()->Self{Self{status:0,records:[0;STAGE31_BT_RECORD_WINDOW_BYTES],critical_args:Vec::new(),prepared:0,read_offset:0,shifted:0,clears:0,dispatches:Vec::new(),next:0x9000}}
+    }
+    impl BtStage32ReplayBackend for R{
+        fn critical(&mut self,a:u32)->u32{self.critical_args.push(a);if a==1{0x55}else{0x7777}}
+        fn status_mmio(&mut self)->u32{self.status}
+        fn prepare_record_window(&mut self){self.prepared+=1}
+        fn read_record_window(&mut self,o:u32,out:&mut[u8;STAGE31_BT_RECORD_WINDOW_BYTES],s:u32){self.read_offset=o;self.shifted=s;*out=self.records}
+        fn clear_active_bit0(&mut self){self.clears+=1}
+        fn dispatch_active_payload(&mut self,sel:u32,p:&[u8])->u32{self.dispatches.push((sel,p.to_vec()));self.next+=1;self.next}
+    }
+    struct D{calls:Vec<(u8,Vec<u8>)>,ret:u8}
+    impl BtStage32Command5Dispatch for D{fn dispatch(&mut self,n:u8,f:&[u8])->u8{self.calls.push((n,f.to_vec()));self.ret}}
+    #[test]fn replay_scans_only_state_one_and_preserves_order(){
+        let mut b=R::default();
+        for (i,state) in [(0usize,1u8),(2,2),(5,1)]{let o=i*46;b.records[o+1]=state;b.records[o+4..o+46].fill((i+1) as u8);}
+        let r=bt_stage32_replay_active_records(&mut b);
+        assert_eq!(b.critical_args,[1,0x55]);assert_eq!((b.prepared,b.read_offset,b.shifted,b.clears),(1,128,0,1));
+        assert_eq!(b.dispatches.len(),2);assert_eq!(b.dispatches[0],(0,std::vec![1;42]));assert_eq!(b.dispatches[1],(0,std::vec![6;42]));assert_eq!(r,0x9002);
+        let mut b=R{status:0x1000,..R::default()};assert_eq!(bt_stage32_replay_active_records(&mut b),0x7777);assert_eq!(b.prepared,0);assert!(b.dispatches.is_empty());
+    }
+    #[test]fn command5_adapter_preserves_wrap_status_and_passthrough(){
+        let frame=[9u8,8,7];let mut d=D{calls:Vec::new(),ret:3};let mut status=0xAA;
+        assert_eq!(bt_stage32_command5_adapter(0x1234,4,5,&frame,&mut status,&mut d),3);assert_eq!(status,3);assert_eq!(d.calls,[(3,frame.to_vec())]);
+        d.ret=7;assert_eq!(bt_stage32_command5_adapter(0x1234,0,5,&frame,&mut status,&mut d),7);assert_eq!(d.calls[1].0,255);
+        let n=d.calls.len();assert_eq!(bt_stage32_command5_adapter(0xDEAD_BEEF,9,4,&frame,&mut status,&mut d),0xDEAD_BEEF);assert_eq!(status,1);assert_eq!(d.calls.len(),n);
+        assert_eq!(STAGE32_CURRENT_BT_REPLAY_ACTIVE_RECORDS_ADDR,0x16BF80);assert_eq!(STAGE32_CURRENT_BT_COMMAND5_ADAPTER_ADDR,0x16C02C);assert_eq!(STAGE32_BT_COMMAND5_DISPATCH_TARGET,0x172594);
+    }
+}
