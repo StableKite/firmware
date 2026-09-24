@@ -96,3 +96,20 @@ Two Stage-21 relocation-normalized functions are now lifted to source while thei
 - Current `0x1a5a88` (legacy `sub_1A36D0`) increments an 8-bit wrapping counter. The callback path executes only when the incremented value is 0 or 1. If a callback is present it queries `0x7616c`; a nonzero result is replaced by a current literal fallback before the pair callback. `0x7616c` remains an unresolved one-argument return boundary.
 
 Rust models both ROM entries through traits. No vendor symbol or stronger behavior is assigned.
+
+## Stage-25 current deadman control
+
+Four legacy functions around the deadman state machine have exactly one relocation-normalized current match:
+
+| Legacy | Current | Role |
+| --- | --- | --- |
+| `sub_1A3718` `0x1a3718` | `0x1a5ad0` | terminal/fatal wrapper; structural only |
+| `sub_1A375C` `0x1a375c` | `0x1a5b14` | elapsed-threshold rearm wrapper |
+| `sub_1A378C` `0x1a378c` | `0x1a5b44` | mode-to-boundary argument wrapper |
+| `sub_1A37A8` `0x1a37a8` | `0x1a5b60` | deadman state machine; structural/control-flow anchor |
+
+The current image independently contains `deadman_state_machine` at `0x202344` and `%s: Unexpected event [%d] in state [%d]!!!\n` at `0x20235a`.
+
+Current `0x1a5b14` preserves the strict unsigned test `threshold < now-last`; on success it stores `now` before calling stable `0x12d10(handle,configured_value)`. Current `0x1a5b44` calls the same boundary with the stored value only when mode is 1, otherwise with zero. Rust models `0x12d10` as an opaque two-argument trait. `0x6fdac`, reached twice by current `0x1a5ad0`, also remains opaque.
+
+No vendor symbol is assigned to either ROM boundary.

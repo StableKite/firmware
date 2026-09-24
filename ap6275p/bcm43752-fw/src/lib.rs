@@ -557,3 +557,63 @@ mod stage24_tests{
         assert_eq!((ctr,p.n,p.v),(0,2,99));
     }
 }
+/// Stage 25: current deadman-control wrappers, verified by unique
+/// relocation-normalized complete-body identity and current string/literal
+/// re-reading.  The two ROM entry points remain intentionally opaque.
+pub const STAGE25_CURRENT_WIFI_DEADMAN_FATAL_ADDR:u32=0x001A_5AD0;
+pub const STAGE25_CURRENT_WIFI_DEADMAN_REARM_ADDR:u32=0x001A_5B14;
+pub const STAGE25_CURRENT_WIFI_DEADMAN_APPLY_ADDR:u32=0x001A_5B44;
+pub const STAGE25_CURRENT_WIFI_DEADMAN_STATE_MACHINE_ADDR:u32=0x001A_5B60;
+pub const STAGE25_WIFI_DEADMAN_BOUNDARY_ADDR:u32=0x0001_2D10;
+pub const STAGE25_WIFI_DEADMAN_ZERO_ARG_BOUNDARY_ADDR:u32=0x0006_FDAC;
+pub const STAGE25_WIFI_DEADMAN_STRING_ADDR:u32=0x0020_2344;
+pub const STAGE25_WIFI_DEADMAN_FORMAT_ADDR:u32=0x0020_235A;
+
+pub trait CurrentWifiDeadmanBoundary {
+    fn apply(&mut self,handle:u32,value:u32);
+}
+
+/// Semantic replacement for current `0x1A5B44`: the opaque two-argument ROM
+/// boundary receives the stored value only for mode 1; every other mode passes
+/// zero.  The ROM routine itself is deliberately not named.
+pub fn current_wifi_deadman_apply<B:CurrentWifiDeadmanBoundary>(
+    mode:u32,handle:u32,stored_value:u32,boundary:&mut B,
+){
+    boundary.apply(handle,if mode==1{stored_value}else{0});
+}
+
+/// Semantic replacement for current `0x1A5B14`. The firmware performs unsigned
+/// wrapping subtraction and rearms only when `threshold < now-last` (strict,
+/// not <=).  On rearm it stores `now` before invoking the opaque boundary.
+pub fn current_wifi_deadman_rearm_if_elapsed<B:CurrentWifiDeadmanBoundary>(
+    enabled:u32,threshold:u32,now:u32,last:&mut u32,handle:u32,configured_value:u32,boundary:&mut B,
+)->bool{
+    if enabled!=0 && threshold<now.wrapping_sub(*last){
+        *last=now;
+        boundary.apply(handle,configured_value);
+        true
+    }else{false}
+}
+
+#[cfg(test)]
+mod stage25_tests{
+    use super::*;
+    #[derive(Default)]struct D{n:u8,h:u32,v:u32}
+    impl CurrentWifiDeadmanBoundary for D{fn apply(&mut self,h:u32,v:u32){self.n+=1;self.h=h;self.v=v}}
+    #[test]fn deadman_boundary_argument_and_threshold_semantics(){
+        assert_eq!(STAGE25_CURRENT_WIFI_DEADMAN_REARM_ADDR,0x1A5B14);
+        assert_eq!(STAGE25_CURRENT_WIFI_DEADMAN_APPLY_ADDR,0x1A5B44);
+        assert_eq!(STAGE25_WIFI_DEADMAN_BOUNDARY_ADDR,0x12D10);
+        let mut d=D::default();
+        current_wifi_deadman_apply(1,7,99,&mut d);assert_eq!((d.n,d.h,d.v),(1,7,99));
+        current_wifi_deadman_apply(2,8,77,&mut d);assert_eq!((d.n,d.h,d.v),(2,8,0));
+        let mut last=100u32;
+        assert!(!current_wifi_deadman_rearm_if_elapsed(1,10,110,&mut last,5,6,&mut d));
+        assert_eq!(last,100);
+        assert!(current_wifi_deadman_rearm_if_elapsed(1,10,111,&mut last,5,6,&mut d));
+        assert_eq!((last,d.h,d.v),(111,5,6));
+        last=u32::MAX-2;
+        assert!(current_wifi_deadman_rearm_if_elapsed(1,2,1,&mut last,9,10,&mut d));
+        assert_eq!(last,1);
+    }
+}

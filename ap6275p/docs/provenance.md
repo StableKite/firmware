@@ -58,3 +58,9 @@ No proprietary firmware bytes are committed. The Stage-23 tools carry hashes/nor
 Stage 24 promotes wrapper/control-plane source only when a complete legacy function has exactly one relocation-normalized current match and all current literals/direct targets are independently re-read. Opaque ROM boundaries remain traits or structural addresses.
 
 This adds no IDA-derived current claims and does not identify Wi-Fi `0x11d54`/`0x7616c` or Bluetooth `0x151bc` by vendor symbol.
+
+## Stage-25 evidence class
+
+Stage 25 extends relocation-normalized identity with current control-plane composition. Each promoted wrapper/dispatcher must have one complete normalized match in the current image, and all current literal words, direct targets, and relevant embedded strings are independently re-read.
+
+Source promotion stops at unresolved ROM exits. Wi-Fi `0x12d10`/`0x6fdac` and Bluetooth `0x8d34c`/`0x6e4b4`/`0x11ea8` remain unnamed boundaries even though their call shapes and order are now frozen by current callers.

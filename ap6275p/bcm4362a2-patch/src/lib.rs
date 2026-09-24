@@ -640,3 +640,176 @@ mod stage24_tests{
         bt_prepare_capped_payload(100,&src,&mut out);assert_eq!(out[0],50);assert_eq!(&out[1..],&src);
     }
 }
+/// Stage 25: current Bluetooth pair configuration and event/control dispatch
+/// recovered from unique relocation-normalized bodies plus current literals and
+/// direct targets. Unnamed ROM exits remain explicit boundaries/routes.
+pub const STAGE25_CURRENT_BT_PAIR_CONFIG_WRITE_ADDR:u32=0x0017_21EC;
+pub const STAGE25_CURRENT_BT_PAIR_CONFIG_LOOKUP_ADDR:u32=0x0017_2220;
+pub const STAGE25_CURRENT_BT_EVENT_INSERT_ADAPTER_ADDR:u32=0x0017_2408;
+pub const STAGE25_CURRENT_BT_EVENT_STATE_DISPATCH_ADDR:u32=0x0017_2430;
+pub const STAGE25_CURRENT_BT_MODE_MACHINE_ADDR:u32=0x0017_2518;
+pub const STAGE25_CURRENT_BT_COMMAND_DISPATCH_ADDR:u32=0x0017_2594;
+pub const STAGE25_CURRENT_BT_MODE_EDGE_DISPATCH_ADDR:u32=0x0017_25DC;
+pub const STAGE25_CURRENT_BT_INIT_WRAPPER_ADDR:u32=0x0017_25F8;
+
+pub const STAGE25_BT_PAIR_DIRTY_ADDR:u32=0x0022_2FD0;
+pub const STAGE25_BT_COMMAND_BYTE_ADDR:u32=0x0022_2FD1;
+pub const STAGE25_BT_PAIR_CONFIG_ADDR:u32=0x0022_2FD2;
+pub const STAGE25_BT_PAIR_DEFAULT_ADDR:u32=0x0022_207C;
+pub const STAGE25_BT_EVENT_LOOKUP_BOUNDARY_ADDR:u32=0x0008_D34C;
+pub const STAGE25_BT_EVENT_OTHER_EXIT_ADDR:u32=0x0006_E4B4;
+pub const STAGE25_BT_EVENT_MODE23_EXIT_ADDR:u32=0x0001_1EA8;
+pub const STAGE25_BT_MODE1_TARGET_ADDR:u32=0x0017_218C;
+pub const STAGE25_BT_MODE2_TARGET_ADDR:u32=0x0017_20E8;
+
+/// Semantic replacement for current `0x1721EC` / legacy `sub_16E13C`.
+/// `triple` is selector,key,value. Only selectors 0..1 and nonzero values are
+/// accepted. Firmware status 18 is preserved for rejected input.
+pub fn bt_pair_config_write(
+    pairs:&mut[[u8;2];2],dirty:&mut u8,triple:[u8;3],
+)->u8{
+    let selector=triple[0] as usize;
+    if selector>1 || triple[2]==0{return 18}
+    pairs[selector]=[triple[1],triple[2]];
+    *dirty=1;0
+}
+
+/// Semantic replacement for current `0x172220` / legacy `sub_16E170`.
+pub fn bt_pair_config_lookup(dirty:u8,pairs:&[[u8;2];2],fallback:u8,key:u8)->u8{
+    if dirty!=0{
+        if pairs[0][0]==key{return pairs[0][1]}
+        if pairs[1][0]==key{return pairs[1][1]}
+    }
+    fallback
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtEventLookupRecord{
+    pub tag:u8,
+    pub payload:[u8;STAGE23_BT_SLOT_PAYLOAD_BYTES],
+}
+pub trait BtEventObjectLookup{
+    fn lookup(&mut self,key:u16)->Option<BtEventLookupRecord>;
+}
+
+/// Semantic replacement for current `0x172408`. The integer return preserves
+/// the pointer-shaped firmware result: a guard miss returns `event_address`, a
+/// lookup miss returns zero, and a found object returns the slot-insert status.
+pub fn bt_event_insert_adapter<L:BtEventObjectLookup>(
+    event_address:u32,event:&[u8;14],
+    records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    lookup:&mut L,
+)->u32{
+    if event[8]!=8 || event[13]==0{return event_address}
+    let key=u16::from_le_bytes([event[11],event[12]]);
+    let Some(object)=lookup.lookup(key) else{return 0};
+    bt_insert_slot_if_absent(records,object.tag,&object.payload) as u32
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum BtEventStateRoute{OtherMode,Mode2Or3}
+pub const fn bt_event_state_route(mode:u8)->BtEventStateRoute{
+    if mode==2||mode==3{BtEventStateRoute::Mode2Or3}else{BtEventStateRoute::OtherMode}
+}
+pub trait BtEventStateExit{
+    fn other_mode(&mut self,event_address:u32);
+    fn mode_2_or_3(&mut self,event_address:u32);
+}
+
+/// Semantic control-flow model of current `0x172430`. For modes other than
+/// 2/3 the event adapter runs first, but the tail boundary receives the
+/// original event pointer exactly as in the current instruction sequence.
+pub fn bt_event_state_dispatch<L:BtEventObjectLookup,E:BtEventStateExit>(
+    mode:u8,event_address:u32,event:&[u8;14],
+    records:&mut[[u8;STAGE22_BT_SLOT_RECORD_BYTES];STAGE22_BT_SLOT_COUNT],
+    lookup:&mut L,exit:&mut E,
+){
+    match bt_event_state_route(mode){
+        BtEventStateRoute::Mode2Or3=>exit.mode_2_or_3(event_address),
+        BtEventStateRoute::OtherMode=>{
+            let _=bt_event_insert_adapter(event_address,event,records,lookup);
+            exit.other_mode(event_address);
+        }
+    }
+}
+
+pub trait BtModeMachineBoundary{fn run(&mut self)->u8;}
+
+/// Semantic command switch of current `0x172594`. `frame` is fixed at 59 bytes
+/// so opcode 1 can reproduce the firmware's maximum 58-byte tail copy without
+/// adding a host-only truncation rule.
+pub fn bt_control_command_dispatch<M:BtModeMachineBoundary>(
+    frame_len:u8,frame:&[u8;STAGE24_BT_SCRATCH_BYTES],
+    scratch:&mut[u8;STAGE24_BT_SCRATCH_BYTES],command_byte:&mut u8,
+    pairs:&mut[[u8;2];2],dirty:&mut u8,mode_machine:&mut M,
+)->u8{
+    match frame[0]{
+        1=>{
+            let n=frame_len.wrapping_sub(1) as usize;
+            *scratch=[0;STAGE24_BT_SCRATCH_BYTES];
+            scratch[0]=((n as u32)>>1) as u8;
+            let copy=core::cmp::min(n,STAGE24_BT_SCRATCH_PAYLOAD_MAX);
+            let mut i=0usize;while i<copy{scratch[i+1]=frame[i+1];i+=1}
+            0
+        }
+        2=>{*command_byte=frame[1];0}
+        3=>bt_pair_config_write(pairs,dirty,[frame[1],frame[2],frame[3]]),
+        4=>mode_machine.run(),
+        _=>18,
+    }
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum BtModeEdgeRoute{Mode1,Mode2,None}
+pub const fn bt_mode_edge_route(mode:u8)->BtModeEdgeRoute{
+    match mode{1=>BtModeEdgeRoute::Mode1,2=>BtModeEdgeRoute::Mode2,_=>BtModeEdgeRoute::None}
+}
+
+#[cfg(test)]
+mod stage25_tests{
+    use super::*;
+    struct L{key:u16,record:Option<BtEventLookupRecord>,calls:u8}
+    impl BtEventObjectLookup for L{fn lookup(&mut self,k:u16)->Option<BtEventLookupRecord>{self.calls+=1;if k==self.key{self.record}else{None}}}
+    #[derive(Default)]struct E{other:u8,m23:u8,last:u32}
+    impl BtEventStateExit for E{
+        fn other_mode(&mut self,a:u32){self.other+=1;self.last=a}
+        fn mode_2_or_3(&mut self,a:u32){self.m23+=1;self.last=a}
+    }
+    struct M{v:u8,n:u8}impl BtModeMachineBoundary for M{fn run(&mut self)->u8{self.n+=1;self.v}}
+    #[test]fn pair_config_semantics(){
+        assert_eq!(STAGE25_CURRENT_BT_PAIR_CONFIG_WRITE_ADDR,0x1721EC);
+        assert_eq!(STAGE25_CURRENT_BT_PAIR_CONFIG_LOOKUP_ADDR,0x172220);
+        let mut p=[[0u8;2];2];let mut d=0u8;
+        assert_eq!(bt_pair_config_write(&mut p,&mut d,[0,7,9]),0);
+        assert_eq!((p,d),([[7,9],[0,0]],1));
+        assert_eq!(bt_pair_config_write(&mut p,&mut d,[2,1,2]),18);
+        assert_eq!(bt_pair_config_write(&mut p,&mut d,[1,3,0]),18);
+        assert_eq!(bt_pair_config_lookup(d,&p,55,7),9);
+        assert_eq!(bt_pair_config_lookup(d,&p,55,8),55);
+        assert_eq!(bt_pair_config_lookup(0,&p,55,7),55);
+    }
+    #[test]fn event_adapter_and_state_route(){
+        let rec=BtEventLookupRecord{tag:4,payload:[1,2,3,4,5,6]};
+        let mut l=L{key:0x1234,record:Some(rec),calls:0};let mut records=[[0u8;7];8];
+        let mut ev=[0u8;14];ev[8]=8;ev[11]=0x34;ev[12]=0x12;ev[13]=1;
+        assert_eq!(bt_event_insert_adapter(0x1000,&ev,&mut records,&mut l),0);
+        assert_eq!(records[0],[4,1,2,3,4,5,6]);assert_eq!(l.calls,1);
+        ev[8]=7;assert_eq!(bt_event_insert_adapter(0x12345678,&ev,&mut records,&mut l),0x12345678);
+        let mut e=E::default();ev[8]=8;
+        bt_event_state_dispatch(2,9,&ev,&mut records,&mut l,&mut e);assert_eq!((e.other,e.m23,e.last),(0,1,9));
+        bt_event_state_dispatch(4,10,&ev,&mut records,&mut l,&mut e);assert_eq!((e.other,e.m23,e.last),(1,1,10));
+        assert_eq!(bt_event_state_route(3),BtEventStateRoute::Mode2Or3);
+        assert_eq!(bt_event_state_route(255),BtEventStateRoute::OtherMode);
+    }
+    #[test]fn command_and_mode_edge_dispatch(){
+        let mut frame=[0u8;59];let mut scratch=[0xAAu8;59];let mut cmd=0u8;let mut p=[[0u8;2];2];let mut d=0u8;let mut m=M{v:3,n:0};
+        frame[0]=1;frame[1]=10;frame[2]=11;frame[3]=12;
+        assert_eq!(bt_control_command_dispatch(4,&frame,&mut scratch,&mut cmd,&mut p,&mut d,&mut m),0);
+        assert_eq!((scratch[0],scratch[1],scratch[2],scratch[3]),(1,10,11,12));
+        frame[0]=2;frame[1]=77;assert_eq!(bt_control_command_dispatch(2,&frame,&mut scratch,&mut cmd,&mut p,&mut d,&mut m),0);assert_eq!(cmd,77);
+        frame[0]=3;frame[1]=1;frame[2]=5;frame[3]=6;assert_eq!(bt_control_command_dispatch(4,&frame,&mut scratch,&mut cmd,&mut p,&mut d,&mut m),0);assert_eq!(p[1],[5,6]);
+        frame[0]=4;assert_eq!(bt_control_command_dispatch(1,&frame,&mut scratch,&mut cmd,&mut p,&mut d,&mut m),3);assert_eq!(m.n,1);
+        frame[0]=9;assert_eq!(bt_control_command_dispatch(1,&frame,&mut scratch,&mut cmd,&mut p,&mut d,&mut m),18);
+        assert_eq!(bt_mode_edge_route(1),BtModeEdgeRoute::Mode1);assert_eq!(bt_mode_edge_route(2),BtModeEdgeRoute::Mode2);assert_eq!(bt_mode_edge_route(0),BtModeEdgeRoute::None);
+    }
+}

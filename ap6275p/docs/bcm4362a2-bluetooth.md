@@ -94,3 +94,18 @@ Current `0x1724c8` removes a six-byte payload under tag 0, retrying tag 1 only w
 Current `0x1724e4` clears a 59-byte scratch buffer at `0x22300e`, stores the low byte of `input_len >> 1` in byte 0, and copies `min(input_len,58)` source bytes into bytes 1.. using the stable memset/memcpy boundaries.
 
 Two adjacent functions are retained as structural seeds only: current `0x172408` (legacy `sub_16E2F8`) calls stable `0x8d34c` then current insert `0x1723d0`; current `0x172430` dispatches by mode through `0x172408`, `0x6e4b4`, and `0x11ea8`. Their external ROM contracts are not yet promoted.
+
+## Stage-25 pair configuration and event/control dispatch
+
+Stage 25 follows the Stage-24 structural seeds and verifies a larger current control-plane cluster by unique relocation-normalized complete-body identity.
+
+Current pair configuration is now source-level:
+
+- `0x1721ec` (legacy `sub_16E13C`) accepts selector 0 or 1 plus a nonzero value byte, writes the selected two-byte `{key,value}` pair at `0x222fd2`, marks shared dirty/aux byte `0x222fd0`, and returns 0; invalid selector/value returns 18.
+- `0x172220` (legacy `sub_16E170`) searches those two pairs when the dirty byte is set and otherwise returns fallback byte `0x22207c`.
+
+The event path is also lifted conservatively. Current `0x172408` checks event byte `+8 == 8` and byte `+13 != 0`, calls stable-but-unnamed `0x8d34c` with the event u16 at `+11`, then feeds object tag `+130` and six-byte payload `+124` to current slot insertion `0x1723d0`. A failed guard returns the original event pointer-shaped value; a lookup miss returns zero. Current `0x172430` routes modes 2/3 directly to opaque `0x11ea8`; all other modes run the adapter first and then tail to opaque `0x6e4b4` with the original event pointer restored.
+
+Current `0x172594` implements command opcodes 1..4: capped payload preparation, byte store at `0x222fd1`, pair-config update, and current mode-machine invocation `0x172518`. Unknown opcode returns 18. Current `0x1725dc` routes mode 1 to current `0x17218c`, mode 2 to `0x1720e8`, and otherwise returns.
+
+Current `0x172518` and init wrapper `0x1725f8` are verified normalized matches but remain structural seeds because several external ROM contracts are still unresolved.
