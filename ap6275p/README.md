@@ -14,3 +14,5 @@ Originalai `fw_bcm43752a2_pcie_ag.bin` be `BCM4362A2.hcd` ni ast en šisse `main
 Tehniskai dokumentāi ast en `docs/`.
 
 > Prūsiskan teksts ast rekreaciōnin/atgīwinātas Prūsiskan; tehniskai nāmmai palīkstan en originalin formā.
+
+**Stage 19A:** legacy→current exact-byte relocation anchors are recorded separately from heuristic/IDA semantics. The Stage-18 batch IDA claim was invalidated after inspection: both Stage-18 IDA logs only reported an unaccepted batch-mode license, so no Stage-18 current disassembly is treated as evidence.

@@ -19,3 +19,7 @@ The semantic reconstruction imported during repository centralization was built 
 | BCM4362A2 Bluetooth | 73136 | `3e4a1eddaf80f3e45f99e9c77b3cd84c85f605540da5f4f92300b80bca6d67ec` | Stage 6–17 patch semantics are legacy evidence; Stage 18 freezes the current structural layout and starts current-image IDA rebaseline |
 
 This distinction is intentional and fail-safe: source is retained as useful evidence, but no claim of binary equivalence is made.
+
+## Stage-19 evidence correction
+
+The Stage-18 result package was re-audited before semantic porting. Both current-image `ida.log` files contain only `License not yet accepted, cannot run in batch mode`, and no `report.json`, call graph, assembly export, or decompiler output exists. Stage 19 therefore invalidates the earlier "IDA evidence generated" status. Exact-byte relocation metadata is derived independently from the legacy evidence images and current Orange Pi references; fresh IDA output is accepted only when the runner verifies non-empty exported reports.

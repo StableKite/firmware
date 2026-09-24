@@ -244,3 +244,43 @@ mod stage18_tests {
         assert_eq!(STAGE18_WIFI_REFERENCE_STATUS, Bcm43752ReconstructionReferenceStatus::CurrentOrangePiPendingDisassembly);
     }
 }
+
+/// Stage 19: exact-byte relocation anchors from the legacy 2021 evidence image
+/// into the current Orange Pi reference.  These mappings are stronger than
+/// heuristic similarity: the complete legacy function/thunk byte sequence was
+/// found exactly once in the current image.  They do not imply that unrelated
+/// legacy addresses or the legacy call-closure remain valid.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ExactRelocationKind { FunctionBody, ThumbThunk }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ExactFunctionRelocation {
+    pub legacy_address:u32,
+    pub current_address:u32,
+    pub byte_len:u16,
+    pub name:&'static str,
+    pub kind:ExactRelocationKind,
+}
+pub const STAGE19_WIFI_EXACT_RELOCATIONS:&[ExactFunctionRelocation]=&[
+    ExactFunctionRelocation{legacy_address:0x0018_4528,current_address:0x0018_5920,byte_len:32,name:"dngl_getdev_by_ifidx",kind:ExactRelocationKind::FunctionBody},
+    ExactFunctionRelocation{legacy_address:0x0018_47F4,current_address:0x0018_5BEC,byte_len:4,name:"j_dngl_sendwl",kind:ExactRelocationKind::ThumbThunk},
+    ExactFunctionRelocation{legacy_address:0x001A_390E,current_address:0x001A_5CC6,byte_len:4,name:"j_hnd_free",kind:ExactRelocationKind::ThumbThunk},
+    ExactFunctionRelocation{legacy_address:0x001A_45A8,current_address:0x001A_6960,byte_len:4,name:"j_nullsub_56",kind:ExactRelocationKind::ThumbThunk},
+];
+pub const STAGE19_WIFI_FUNCTIONS_GE8_COMPARED:u32=3_045;
+pub const STAGE19_WIFI_FUNCTIONS_GE8_UNIQUE_EXACT:u32=609;
+pub const STAGE19_WIFI_FUNCTIONS_GE8_MULTI_EXACT:u32=37;
+pub const STAGE19_WIFI_FUNCTIONS_GE8_NO_EXACT:u32=2_399;
+pub fn current_exact_address_for_legacy(legacy:u32)->Option<u32>{
+    for r in STAGE19_WIFI_EXACT_RELOCATIONS{if r.legacy_address==legacy{return Some(r.current_address)}}
+    None
+}
+#[cfg(test)]
+mod stage19_tests {
+    use super::*;
+    #[test]fn exact_relocation_anchors(){
+        assert_eq!(current_exact_address_for_legacy(0x0018_4528),Some(0x0018_5920));
+        assert_eq!(STAGE19_WIFI_EXACT_RELOCATIONS[0].name,"dngl_getdev_by_ifidx");
+        assert_eq!(STAGE19_WIFI_FUNCTIONS_GE8_UNIQUE_EXACT+STAGE19_WIFI_FUNCTIONS_GE8_MULTI_EXACT+STAGE19_WIFI_FUNCTIONS_GE8_NO_EXACT,STAGE19_WIFI_FUNCTIONS_GE8_COMPARED);
+        assert_eq!(STAGE18_WIFI_REFERENCE_STATUS,Bcm43752ReconstructionReferenceStatus::CurrentOrangePiPendingDisassembly);
+    }
+}

@@ -310,3 +310,42 @@ mod stage18_tests {
         assert!(validate_patch_profile_unordered(&h,&p).is_ok());
     }
 }
+
+/// Stage 19: exact-byte relocation anchors from the legacy AP6275P PatchRAM
+/// program into the current Orange Pi HCD.  Full function bytes are identical
+/// at each pair below; the addresses are therefore safe structural/semantic
+/// anchors.  PC-relative targets still belong to the current image and must be
+/// followed there rather than copied from legacy absolute addresses.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ExactPatchFunctionRelocation {
+    pub legacy_address:u32,
+    pub current_address:u32,
+    pub byte_len:u16,
+    pub name:&'static str,
+}
+pub const STAGE19_BT_EXACT_RELOCATIONS:&[ExactPatchFunctionRelocation]=&[
+    ExactPatchFunctionRelocation{legacy_address:0x0016_0800,current_address:0x0016_0800,byte_len:368,name:"stage19_patch_anchor_160800"},
+    ExactPatchFunctionRelocation{legacy_address:0x0016_2F4C,current_address:0x0016_3668,byte_len:12,name:"bt_index_stride20"},
+    ExactPatchFunctionRelocation{legacy_address:0x0016_9104,current_address:0x0016_B7A4,byte_len:10,name:"bt_set_global_60"},
+    ExactPatchFunctionRelocation{legacy_address:0x0016_CC80,current_address:0x0017_0178,byte_len:10,name:"bt_u32_gt_2"},
+    ExactPatchFunctionRelocation{legacy_address:0x0016_E010,current_address:0x0017_20C0,byte_len:24,name:"bt_find_first_slot_state1"},
+];
+pub const STAGE19_BT_FUNCTIONS_GE8_COMPARED:u32=266;
+pub const STAGE19_BT_FUNCTIONS_GE8_UNIQUE_EXACT:u32=44;
+pub const STAGE19_BT_FUNCTIONS_GE8_MULTI_EXACT:u32=9;
+pub const STAGE19_BT_FUNCTIONS_GE8_NO_EXACT:u32=213;
+pub fn current_patch_address_for_legacy(legacy:u32)->Option<u32>{
+    for r in STAGE19_BT_EXACT_RELOCATIONS{if r.legacy_address==legacy{return Some(r.current_address)}}
+    None
+}
+#[cfg(test)]
+mod stage19_tests {
+    use super::*;
+    #[test]fn exact_patch_relocations(){
+        assert_eq!(current_patch_address_for_legacy(0x0016_2F4C),Some(0x0016_3668));
+        assert_eq!(current_patch_address_for_legacy(0x0016_9104),Some(0x0016_B7A4));
+        assert_eq!(current_patch_address_for_legacy(0x0016_CC80),Some(0x0017_0178));
+        assert_eq!(current_patch_address_for_legacy(0x0016_E010),Some(0x0017_20C0));
+        assert_eq!(STAGE19_BT_FUNCTIONS_GE8_UNIQUE_EXACT+STAGE19_BT_FUNCTIONS_GE8_MULTI_EXACT+STAGE19_BT_FUNCTIONS_GE8_NO_EXACT,STAGE19_BT_FUNCTIONS_GE8_COMPARED);
+    }
+}
