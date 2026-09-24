@@ -972,3 +972,90 @@ mod stage26_tests{
         assert_eq!(r.v[3],(STAGE26_BT_MMIO_MASK_F8_ADDR,(0x1234_5678&!0xF8)|0xE8));
     }
 }
+
+/// Stage 28: small current Bluetooth state/MMIO primitives proven by globally
+/// unique relocation-normalized complete-body identity and current literal re-read.
+pub const STAGE28_CURRENT_BT_INDEX_STRIDE20_ADDR:u32=0x0016_3668;
+pub const STAGE28_CURRENT_BT_OBJECT_RESET_FIELDS_ADDR:u32=0x0016_5252;
+pub const STAGE28_CURRENT_BT_OBJECT_BYTE18_LE_LIMIT_ADDR:u32=0x0016_53B4;
+pub const STAGE28_CURRENT_BT_ENTRY_SPAN_LEN_ADDR:u32=0x0016_AA04;
+pub const STAGE28_CURRENT_BT_SET_GLOBAL_60_ADDR:u32=0x0016_B7A4;
+pub const STAGE28_CURRENT_BT_U32_GT_2_ADDR:u32=0x0017_0178;
+pub const STAGE28_CURRENT_BT_SET_FIELD5_TO_12_ADDR:u32=0x0017_14D4;
+pub const STAGE28_CURRENT_BT_POLL_SIGNED_NONNEGATIVE_100_ADDR:u32=0x0017_1DEC;
+pub const STAGE28_CURRENT_BT_POLL_BIT30_SET_100_ADDR:u32=0x0017_1E04;
+pub const STAGE28_CURRENT_BT_CLEAR_BIT3_ADDR:u32=0x0017_1E8C;
+pub const STAGE28_CURRENT_BT_READ_BITS16_18_ADDR:u32=0x0017_1E9C;
+
+pub const STAGE28_BT_INDEX_GLOBAL_ADDR:u32=0x0020_3160;
+pub const STAGE28_BT_OBJECT_LIMIT_ADDR:u32=0x0020_3034;
+pub const STAGE28_BT_ENTRY_TABLE_BASE_ADDR:u32=0x0020_D770;
+pub const STAGE28_BT_GLOBAL60_ADDR:u32=0x0020_2C6D;
+pub const STAGE28_BT_POLL_SIGNED_MMIO_ADDR:u32=0x0065_0318;
+pub const STAGE28_BT_POLL_BIT30_MMIO_ADDR:u32=0x0065_0310;
+pub const STAGE28_BT_CLEAR_BIT3_MMIO_ADDR:u32=0x0065_0314;
+pub const STAGE28_BT_BITS16_18_MMIO_ADDR:u32=0x0065_031C;
+pub const STAGE28_BT_ENTRY_STRIDE:usize=78;
+
+pub const fn bt_stage28_index_stride20(index:u8)->u32{20u32*(index as u32)}
+pub fn bt_stage28_set_global_60(global:&mut u8)->u32{*global=60;0}
+pub const fn bt_stage28_u32_gt_2(value:u32)->bool{value>2}
+pub fn bt_stage28_set_field5_to_12(field_prefix:&mut[u8;6]){field_prefix[5]=12;}
+
+#[repr(C)]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage28ObjectPrefix{
+    _pad00:[u8;18],
+    pub byte18:u8,
+    pub state19:u8,
+    _pad20:[u8;8],
+    pub word28:u32,
+    _pad32:[u8;97],
+    pub byte129:u8,
+}
+impl Default for BtStage28ObjectPrefix{
+    fn default()->Self{Self{_pad00:[0;18],byte18:0,state19:0,_pad20:[0;8],word28:0,_pad32:[0;97],byte129:0}}
+}
+pub fn bt_stage28_object_reset_fields(object:&mut BtStage28ObjectPrefix,value:u32){object.byte129=0;object.state19=2;object.word28=value;}
+pub const fn bt_stage28_object_byte18_le_limit(byte18:u8,limit:u8)->bool{byte18<=limit}
+pub const fn bt_stage28_entry_span_len(entry:&[u8;STAGE28_BT_ENTRY_STRIDE])->u32{entry[11] as u32+entry[12] as u32+13}
+
+/// Exact bounded poll: at most 100 reads; success on the first signed-nonnegative value.
+pub fn bt_stage28_poll_signed_nonnegative_100<I:BtMmio32>(io:&mut I)->u32{
+    let mut remaining=100u32;
+    loop{
+        if (io.read32(STAGE28_BT_POLL_SIGNED_MMIO_ADDR) as i32)>=0{return 1;}
+        remaining-=1;if remaining==0{return 0;}
+    }
+}
+/// Exact bounded poll: at most 100 reads; success when bit 30 becomes set.
+pub fn bt_stage28_poll_bit30_set_100<I:BtMmio32>(io:&mut I)->u32{
+    let mut remaining=100u32;
+    loop{
+        if io.read32(STAGE28_BT_POLL_BIT30_MMIO_ADDR)&0x4000_0000!=0{return 1;}
+        remaining-=1;if remaining==0{return 0;}
+    }
+}
+pub fn bt_stage28_clear_bit3<I:BtMmio32>(io:&mut I){let v=io.read32(STAGE28_BT_CLEAR_BIT3_MMIO_ADDR);io.write32(STAGE28_BT_CLEAR_BIT3_MMIO_ADDR,v&!8);}
+pub fn bt_stage28_read_bits16_18<I:BtMmio32>(io:&mut I)->u32{(io.read32(STAGE28_BT_BITS16_18_MMIO_ADDR)>>16)&7}
+
+#[cfg(test)]
+mod stage28_tests{
+    use super::*;use core::mem::{offset_of,size_of};
+    #[test]fn pure_helpers_and_layout(){
+        assert_eq!(bt_stage28_index_stride20(7),140);let mut g=0u8;assert_eq!(bt_stage28_set_global_60(&mut g),0);assert_eq!(g,60);assert!(bt_stage28_u32_gt_2(3));assert!(!bt_stage28_u32_gt_2(2));
+        let mut f=[0u8;6];bt_stage28_set_field5_to_12(&mut f);assert_eq!(f[5],12);
+        assert_eq!(offset_of!(BtStage28ObjectPrefix,byte18),18);assert_eq!(offset_of!(BtStage28ObjectPrefix,state19),19);assert_eq!(offset_of!(BtStage28ObjectPrefix,word28),28);assert_eq!(offset_of!(BtStage28ObjectPrefix,byte129),129);assert_eq!(size_of::<BtStage28ObjectPrefix>(),132);
+        let mut o=BtStage28ObjectPrefix::default();o.byte129=9;bt_stage28_object_reset_fields(&mut o,0x11223344);assert_eq!((o.byte129,o.state19,o.word28),(0,2,0x11223344));assert!(bt_stage28_object_byte18_le_limit(4,4));assert!(!bt_stage28_object_byte18_le_limit(5,4));
+        let mut e=[0u8;STAGE28_BT_ENTRY_STRIDE];e[11]=5;e[12]=7;assert_eq!(bt_stage28_entry_span_len(&e),25);
+    }
+    struct R{seq:[u32;100],n:usize,writes:[(u32,u32);2],wn:usize}
+    impl BtMmio32 for R{fn read32(&mut self,_:u32)->u32{let v=self.seq[self.n];self.n+=1;v}fn write32(&mut self,a:u32,v:u32){self.writes[self.wn]=(a,v);self.wn+=1}}
+    #[test]fn mmio_helpers_preserve_bounds_and_masks(){
+        let mut r=R{seq:[0;100],n:0,writes:[(0,0);2],wn:0};r.seq[0]=0x8000_0000;r.seq[1]=7;assert_eq!(bt_stage28_poll_signed_nonnegative_100(&mut r),1);assert_eq!(r.n,2);
+        let mut r=R{seq:[0x8000_0000;100],n:0,writes:[(0,0);2],wn:0};assert_eq!(bt_stage28_poll_signed_nonnegative_100(&mut r),0);assert_eq!(r.n,100);
+        let mut r=R{seq:[0;100],n:0,writes:[(0,0);2],wn:0};r.seq[99]=0x4000_0000;assert_eq!(bt_stage28_poll_bit30_set_100(&mut r),1);assert_eq!(r.n,100);
+        let mut r=R{seq:[0xFFFF_FFFF;100],n:0,writes:[(0,0);2],wn:0};bt_stage28_clear_bit3(&mut r);assert_eq!(r.writes[0],(STAGE28_BT_CLEAR_BIT3_MMIO_ADDR,0xFFFF_FFF7));
+        let mut r=R{seq:[0x0005_0000;100],n:0,writes:[(0,0);2],wn:0};assert_eq!(bt_stage28_read_bits16_18(&mut r),5);
+    }
+}

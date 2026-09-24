@@ -119,3 +119,13 @@ The source model preserves the exact switch: mode 0 performs the `0x72b24(0)` pr
 Current `0x1725f8` uniquely matches legacy `sub_16E4E8`. It zeroes 268 bytes at `0x217c8c`, calls `0xbfad0(0)`, conditionally feeds that result to `0xbf9f4` when bit 2 of word `0x320180` is clear, then invokes stable boundaries with contexts `0x217d48` and `0x217d6c`. The final seven-argument boundary `0x144bc` receives workspace `0x217c8c`, config `0x222570`, kind 23, callback Thumb address `0xbfc11`, two zero arguments, and the current u16 value from `0x204bc8`. The Rust model preserves this sequence while keeping the five unresolved ROM calls behind a trait.
 
 Stage 26 also recovers current `0x17294c`, the sole relocation-normalized match of legacy `sub_16E768`. It has no external calls and directly programs four 32-bit MMIO operations: write 10 to `0x423758`; OR `0x800` into `0x64085c`; replace bits `0xF80` with `0x100` at `0x640834`; and replace bits `0xF8` with `0xE8` at `0x420be0`. These operations are exposed through a hardware-register trait rather than raw host memory access.
+
+## Stage 28 — current state/MMIO primitives
+
+Stage 28 promotes a set of small BCM4362A2 helpers only where complete current function bodies are globally unique relocation-normalized matches and their literal targets were re-read in the current PatchRAM image.
+
+Verified current addresses include index-stride helper `0x163668` (global `0x203160`), object field reset `0x165252`, byte-18 limit check `0x1653b4` (limit `0x203034`), entry-span helper `0x16aa04` (table base `0x20d770`, stride 78), global-60 setter `0x16b7a4` (global `0x202c6d`), unsigned `>2` helper `0x170178`, field-5 setter `0x1714d4`, and four MMIO helpers at `0x171dec`, `0x171e04`, `0x171e8c`, and `0x171e9c`.
+
+The two polling routines preserve their exact bounded behavior: at most 100 reads, returning 1 on the first signed-nonnegative value at `0x650318` or first bit-30-set value at `0x650310`, otherwise 0 after the 100th failing read. The register helpers clear bit 3 at `0x650314` by read-modify-write and return bits 16..18 of `0x65031c`.
+
+The object reset writes byte `+129 = 0`, byte `+19 = 2`, and the caller value at `+28`. The entry-span helper returns `entry[11] + entry[12] + 13` for 78-byte records. The large legacy routine `sub_16E550` has no current normalized complete-body match and is explicitly not promoted by Stage 28.

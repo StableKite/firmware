@@ -126,3 +126,15 @@ The state-machine source model preserves the exact 32-bit wrapping transitions. 
 Current `0x1a5c08` performs wrapping sample subtraction, returns zero when unchanged, otherwise stores the new sample and tail-dispatches an opaque change handler. Current `0x1a5c28` additionally implements the ARM register-shift threshold `1 << (shift & 0xff)` with shifts >=32 producing zero; its one-byte flag is cleared on zero delta and made sticky when already set or when delta exceeds the shifted threshold. The final `(delta,flag)` evaluator remains opaque.
 
 Current `0x1a5ca6` calls stable ROM `0x703c0` with its third and fourth register arguments forced to zero. Its two output words are updated only for a nonzero result. No vendor name is assigned to `0x703c0`.
+
+## Stage 28 — current heap/control front-end
+
+Stage 28 extends the current-image closure without IDA. Globally unique relocation-normalized complete-body matches plus current literal/string re-reading identify the heap/control front-end at `0x1a5ccc..0x1a5f1c`. The allocator core at `0x1a5dac` is recorded as a structural anchor only; its internal free-list policy is deliberately not promoted to source semantics.
+
+Verified current functions are `heap_store_context` `0x1a5cd8`, flag setters `0x1a5ce4`/`0x1a5d10`, status-report wrapper `0x1a5cf8`, record-address helper `0x1a5d64`, handle selector `0x1a5d74`, allocator core `0x1a5dac`, and allocation front-end `0x1a5f1c`. The tiny context/list-head getters at `0x1a5ccc` and `0x1a5d5c` are accepted only because unique normalized callers branch to them and their current literals re-read as `0x20a584` and `0x209268`.
+
+Current data evidence fixes context `0x20a584`, record base `0x20a6b0`, default-handle object `0x20a6a8`, status format `0x2024d2` (`"\nFWID 01-%x\nflags %x\n"`), and bad-handle diagnostic `0x2025ac` (`"Handle is greater than max supported value\n"`). The context prefix has flags at `+0`, a word at `+4`, diagnostic word at `+0x1c`, and the `0x200000` setter word at `+0x60`.
+
+The handle selector preserves the terminal invalid-handle path: when record selection is enabled and `handle > 2`, the firmware emits the diagnostic then enters the Stage-25 deadman-fatal routine. It is therefore represented as `FatalInvalid`, not as a successful pointer result. Valid selected handles map to `0x20a6b0 + 24*handle + 16`; selection disabled returns the default object at `0x20a6a8`.
+
+The allocation front-end preserves only proven routing: ARM register-shift `1 << class` (register-shift semantics) above 4 goes to opaque ROM `0x703c0`; size above `0xfffffc` is rejected; otherwise size is aligned upward to four bytes before entering structural allocator core `0x1a5dac`. Later list manipulation remains outside the Stage-28 source claim.

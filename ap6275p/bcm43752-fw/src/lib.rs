@@ -814,3 +814,107 @@ mod stage27_tests{
         assert_eq!(STAGE27_CURRENT_WIFI_DEADMAN_SAMPLE_CHANGE_ADDR,0x1A5C08);assert_eq!(STAGE27_WIFI_OPAQUE_LOOKUP_ROM_ADDR,0x703C0);
     }
 }
+
+/// Stage 28: current Wi-Fi heap/control front-end recovered from globally
+/// unique relocation-normalized bodies plus current literal/string re-reading.
+/// The allocator core itself remains structural-only and is not source-lifted.
+pub const STAGE28_CURRENT_WIFI_HEAP_CONTEXT_GETTER_ADDR:u32=0x001A_5CCC;
+pub const STAGE28_CURRENT_WIFI_HEAP_STORE_CONTEXT_ADDR:u32=0x001A_5CD8;
+pub const STAGE28_CURRENT_WIFI_HEAP_SET_FLAG_200000_ADDR:u32=0x001A_5CE4;
+pub const STAGE28_CURRENT_WIFI_HEAP_STATUS_REPORT_ADDR:u32=0x001A_5CF8;
+pub const STAGE28_CURRENT_WIFI_HEAP_SET_FLAG_400_ADDR:u32=0x001A_5D10;
+pub const STAGE28_CURRENT_WIFI_HEAP_LIST_HEAD_GETTER_ADDR:u32=0x001A_5D5C;
+pub const STAGE28_CURRENT_WIFI_HEAP_RECORD_ADDRESS_ADDR:u32=0x001A_5D64;
+pub const STAGE28_CURRENT_WIFI_HEAP_HANDLE_SELECT_ADDR:u32=0x001A_5D74;
+pub const STAGE28_CURRENT_WIFI_HEAP_ALLOCATOR_CORE_ADDR:u32=0x001A_5DAC;
+pub const STAGE28_CURRENT_WIFI_HEAP_ALLOC_FRONT_ADDR:u32=0x001A_5F1C;
+
+pub const STAGE28_WIFI_HEAP_CONTEXT_ADDR:u32=0x0020_A584;
+pub const STAGE28_WIFI_HEAP_LIST_HEAD_ADDR:u32=0x0020_9268;
+pub const STAGE28_WIFI_HEAP_RECORD_BASE_ADDR:u32=0x0020_A6B0;
+pub const STAGE28_WIFI_HEAP_DEFAULT_HANDLE_ADDR:u32=0x0020_A6A8;
+pub const STAGE28_WIFI_HEAP_STATUS_FORMAT_ADDR:u32=0x0020_24D2;
+pub const STAGE28_WIFI_HEAP_BAD_HANDLE_FORMAT_ADDR:u32=0x0020_25AC;
+pub const STAGE28_WIFI_HEAP_ALLOC_SIZE_MAX:u32=0x00FF_FFFC;
+pub const STAGE28_WIFI_HEAP_ALLOC_COUNTER_ADDR:u32=0x0017_0224;
+pub const STAGE28_WIFI_HEAP_RECORD_STRIDE:u32=24;
+
+#[repr(C)]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct CurrentWifiHeapContextPrefix{
+    pub flags:u32,
+    pub word_04:u32,
+    _pad08:[u8;0x14],
+    pub diagnostic_word_1c:u32,
+    _pad20:[u8;0x40],
+    pub word_60:u32,
+}
+impl Default for CurrentWifiHeapContextPrefix{
+    fn default()->Self{Self{flags:0,word_04:0,_pad08:[0;0x14],diagnostic_word_1c:0,_pad20:[0;0x40],word_60:0}}
+}
+
+pub const fn current_wifi_heap_context_address()->u32{STAGE28_WIFI_HEAP_CONTEXT_ADDR}
+pub fn current_wifi_heap_store_context(out:&mut u32)->u32{let p=current_wifi_heap_context_address();*out=p;p}
+pub fn current_wifi_heap_set_flag_200000(ctx:&mut CurrentWifiHeapContextPrefix,value:u32)->u32{
+    ctx.word_60=value;ctx.flags|=0x0020_0000;STAGE28_WIFI_HEAP_CONTEXT_ADDR
+}
+pub fn current_wifi_heap_set_flag_400(ctx:&mut CurrentWifiHeapContextPrefix,value:u32)->u32{
+    ctx.flags|=0x400;ctx.word_04=value;STAGE28_WIFI_HEAP_CONTEXT_ADDR
+}
+
+pub trait CurrentWifiHeapStatusSink{fn report(&mut self,format_addr:u32,diagnostic_word:u32,flags:u32)->u32;}
+pub fn current_wifi_heap_status_report<S:CurrentWifiHeapStatusSink>(ctx:&CurrentWifiHeapContextPrefix,sink:&mut S)->u32{
+    sink.report(STAGE28_WIFI_HEAP_STATUS_FORMAT_ADDR,ctx.diagnostic_word_1c,ctx.flags)
+}
+
+pub const fn current_wifi_heap_record_address(index:u32)->u32{
+    STAGE28_WIFI_HEAP_RECORD_BASE_ADDR.wrapping_add(index.wrapping_mul(STAGE28_WIFI_HEAP_RECORD_STRIDE))
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CurrentWifiHeapHandleRoute{DefaultHandle,Record(u32),FatalInvalid}
+pub const fn current_wifi_heap_handle_route(handle:u32,select_record:bool)->CurrentWifiHeapHandleRoute{
+    if !select_record{CurrentWifiHeapHandleRoute::DefaultHandle}
+    else if handle>2{CurrentWifiHeapHandleRoute::FatalInvalid}
+    else{CurrentWifiHeapHandleRoute::Record(current_wifi_heap_record_address(handle).wrapping_add(16))}
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum CurrentWifiHeapAllocFrontRoute{FallbackOpaque{size:u32,class:u32},RejectTooLarge,InternalAllocator{requested:u32,aligned:u32}}
+/// Front-end decision logic of current `0x1A5F1C`. For the internal route the
+/// later allocator/list manipulation stays opaque; only routing and alignment
+/// are reconstructed here.
+pub const fn current_wifi_heap_alloc_front_route(size:u32,class:u32)->CurrentWifiHeapAllocFrontRoute{
+    if current_wifi_lsl_one_register(class)>4{
+        CurrentWifiHeapAllocFrontRoute::FallbackOpaque{size,class}
+    }else if size>STAGE28_WIFI_HEAP_ALLOC_SIZE_MAX{
+        CurrentWifiHeapAllocFrontRoute::RejectTooLarge
+    }else{
+        CurrentWifiHeapAllocFrontRoute::InternalAllocator{requested:size,aligned:size.wrapping_add(3)&!3}
+    }
+}
+
+#[cfg(test)]
+mod stage28_tests{
+    use super::*;use core::mem::{offset_of,size_of};
+    #[derive(Default)]struct S{args:[u32;3],ret:u32}impl CurrentWifiHeapStatusSink for S{fn report(&mut self,a:u32,b:u32,c:u32)->u32{self.args=[a,b,c];self.ret}}
+    #[test]fn heap_context_layout_flags_and_status(){
+        assert_eq!(offset_of!(CurrentWifiHeapContextPrefix,flags),0);assert_eq!(offset_of!(CurrentWifiHeapContextPrefix,word_04),4);
+        assert_eq!(offset_of!(CurrentWifiHeapContextPrefix,diagnostic_word_1c),0x1c);assert_eq!(offset_of!(CurrentWifiHeapContextPrefix,word_60),0x60);assert_eq!(size_of::<CurrentWifiHeapContextPrefix>(),0x64);
+        let mut c=CurrentWifiHeapContextPrefix::default();let mut out=0;assert_eq!(current_wifi_heap_store_context(&mut out),STAGE28_WIFI_HEAP_CONTEXT_ADDR);assert_eq!(out,STAGE28_WIFI_HEAP_CONTEXT_ADDR);
+        assert_eq!(current_wifi_heap_set_flag_200000(&mut c,0x55),STAGE28_WIFI_HEAP_CONTEXT_ADDR);assert_eq!((c.flags,c.word_60),(0x20_0000,0x55));
+        assert_eq!(current_wifi_heap_set_flag_400(&mut c,0x66),STAGE28_WIFI_HEAP_CONTEXT_ADDR);assert_eq!((c.flags,c.word_04),(0x20_0400,0x66));
+        c.diagnostic_word_1c=0x77;let mut s=S{ret:9,..S::default()};assert_eq!(current_wifi_heap_status_report(&c,&mut s),9);assert_eq!(s.args,[STAGE28_WIFI_HEAP_STATUS_FORMAT_ADDR,0x77,0x20_0400]);
+    }
+    #[test]fn handle_and_alloc_front_routes_preserve_weird_edges(){
+        assert_eq!(current_wifi_heap_record_address(2),STAGE28_WIFI_HEAP_RECORD_BASE_ADDR+48);
+        assert_eq!(current_wifi_heap_handle_route(99,false),CurrentWifiHeapHandleRoute::DefaultHandle);
+        assert_eq!(current_wifi_heap_handle_route(2,true),CurrentWifiHeapHandleRoute::Record(STAGE28_WIFI_HEAP_RECORD_BASE_ADDR+64));
+        assert_eq!(current_wifi_heap_handle_route(3,true),CurrentWifiHeapHandleRoute::FatalInvalid);
+        assert_eq!(current_wifi_heap_alloc_front_route(7,0),CurrentWifiHeapAllocFrontRoute::InternalAllocator{requested:7,aligned:8});
+        assert_eq!(current_wifi_heap_alloc_front_route(STAGE28_WIFI_HEAP_ALLOC_SIZE_MAX+1,0),CurrentWifiHeapAllocFrontRoute::RejectTooLarge);
+        assert_eq!(current_wifi_heap_alloc_front_route(7,3),CurrentWifiHeapAllocFrontRoute::FallbackOpaque{size:7,class:3});
+        // ARM register shift uses only low byte: 256 behaves like shift zero.
+        assert_eq!(current_wifi_heap_alloc_front_route(7,256),CurrentWifiHeapAllocFrontRoute::InternalAllocator{requested:7,aligned:8});
+        assert_eq!(STAGE28_CURRENT_WIFI_HEAP_ALLOCATOR_CORE_ADDR,0x1A5DAC);
+    }
+}
