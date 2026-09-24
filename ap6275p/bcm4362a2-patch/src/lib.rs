@@ -2384,3 +2384,175 @@ mod stage37_tests{
         assert_eq!(STAGE37_CURRENT_BT_INDEXED_CONFIG_ADDR,0x16C870);assert_eq!(STAGE37_CURRENT_BT_FIELD_UPDATE_ADDR,0x16C942);
     }
 }
+
+/// Stage 38: two current object-control routines recovered from globally unique
+/// relocation-normalized complete-body matches. All unresolved runtime entries
+/// remain explicit traits; no vendor names are inferred.
+pub const STAGE38_CURRENT_BT_COMPARE_UPDATE_ADDR:u32=0x0016_C9A8;
+pub const STAGE38_CURRENT_BT_FLAG_UPDATE_ADDR:u32=0x0016_CA4C;
+pub const STAGE38_BT_LOOKUP_BOUNDARY:u32=0x0008_D34C;
+pub const STAGE38_BT_PARSE_BOUNDARY:u32=0x0009_D3DC;
+pub const STAGE38_BT_NOTIFY_BOUNDARY:u32=0x0008_6984;
+pub const STAGE38_BT_FINALIZE_BOUNDARY:u32=0x0006_E774;
+pub const STAGE38_BT_EQUAL_TAIL_BOUNDARY:u32=0x0008_4458;
+pub const STAGE38_BT_FLAG_TAIL_BOUNDARY:u32=0x0008_4256;
+pub const STAGE38_BT_GLOBAL_FLAGS_ADDR:u32=0x0020_30BC;
+pub const STAGE38_BT_CONTROL_ADDR:u32=0x0020_807D;
+pub const STAGE38_BT_CONTROL_PLUS29_ADDR:u32=0x0020_809A;
+pub const STAGE38_BT_FALLBACK_ADDR:u32=0x0020_CE9C;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage38CompareRequest<'a>{
+    pub key:u16,
+    pub completion_id:u16,
+    pub parse_payload:&'a[u8],
+    pub mode_a:u8,
+    pub mode_b:u8,
+    pub replacement_word:u16,
+}
+
+pub trait BtStage38CompareBackend{
+    type Handle:Copy;
+    fn lookup(&mut self,key:u16)->Option<Self::Handle>;
+    fn flags68(&mut self,h:Self::Handle)->u32;
+    fn flags72(&mut self,h:Self::Handle)->u32;
+    fn parse(&mut self,h:Self::Handle,payload:&[u8])->u32;
+    fn write_word442(&mut self,h:Self::Handle,value:u16);
+    fn word440(&mut self,h:Self::Handle)->u16;
+    fn word444(&mut self,h:Self::Handle)->u16;
+    fn mark_mismatch(&mut self,h:Self::Handle);
+    fn notify_mismatch(&mut self,h:Self::Handle);
+    fn finalize(&mut self,completion_id:u16,status:u32)->u32;
+    fn equal_tail(&mut self,finalize_result:u32)->u32;
+}
+
+/// Safe control-flow model of current `0x16C9A8` / legacy `sub_169E68`.
+///
+/// The routine looks up an object by request key. Missing objects finalize with
+/// status 2; either object bit `0x2000` gate finalizes with status 35. Otherwise
+/// an opaque parser receives the request payload and the object field beginning
+/// at firmware offset +440. When either request mode byte equals 4, the request
+/// replacement word is stored at object +442 even when the parser later returns
+/// an error. On parser success, unequal object words +440/+444 set the exact
+/// local mismatch bits (+460|=2, +62|=8, +72|=0x2000), invoke the opaque update
+/// boundary, and finalize with status zero. Equal words finalize with status zero
+/// and then tail through the separate current boundary at `0x84458`.
+pub fn bt_stage38_compare_update<B:BtStage38CompareBackend>(
+    req:&BtStage38CompareRequest<'_>,b:&mut B,
+)->u32{
+    let Some(h)=b.lookup(req.key) else{return b.finalize(req.completion_id,2)};
+    if b.flags68(h)&0x2000!=0 || b.flags72(h)&0x2000!=0{
+        return b.finalize(req.completion_id,35);
+    }
+    let status=b.parse(h,req.parse_payload);
+    if req.mode_a==4 || req.mode_b==4{b.write_word442(h,req.replacement_word);}
+    if status!=0{return b.finalize(req.completion_id,status);}
+    if b.word440(h)!=b.word444(h){
+        b.mark_mismatch(h);
+        b.notify_mismatch(h);
+        return b.finalize(req.completion_id,0);
+    }
+    let result=b.finalize(req.completion_id,0);
+    b.equal_tail(result)
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage38FlagRequest{pub key:u16,pub completion_id:u16}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum BtStage38EarlyTail{MissingObject,DeferredByObjectByte253}
+
+pub trait BtStage38FlagBackend{
+    type Handle:Copy;
+    fn lookup(&mut self,key:u16)->Option<Self::Handle>;
+    fn byte61(&mut self,h:Self::Handle)->u8;
+    fn or_byte61(&mut self,h:Self::Handle,mask:u8);
+    fn or_word72(&mut self,h:Self::Handle,mask:u32);
+    fn byte253(&mut self,h:Self::Handle)->u8;
+    fn global_flags(&mut self)->u16;
+    fn control_byte(&mut self)->u8;
+    fn control_plus29_byte(&mut self)->u8;
+    fn fallback_byte(&mut self)->u8;
+    fn notify_flags(&mut self,h:Self::Handle,control_hi:u32,selected_hi:u32);
+    /// Models the two direct jump-outs to current `0x6E774` whose transient
+    /// register ABI is intentionally not assigned a stronger source contract.
+    fn early_finalize_tail(&mut self,req:BtStage38FlagRequest,reason:BtStage38EarlyTail)->u32;
+    fn finalize(&mut self,completion_id:u16,status:u32)->u32;
+    fn flag_tail(&mut self,finalize_result:u32)->u32;
+}
+
+/// Safe local-semantics model of current `0x16CA4C` / legacy `sub_169F0C`.
+///
+/// The runtime object lookup and both early jump-out ABI shapes remain opaque.
+/// For a present object, byte +61 bit `0x20` skips directly to normal finalize.
+/// Global flags `0x1010` force byte +61 bit 2. Otherwise the control byte at
+/// current `0x20807D` chooses either current `0x20809A` (when bit 3 is set) or
+/// fallback `0x20CE9C`. If the selected byte lacks bit 3 while object byte +253
+/// is nonzero, firmware takes the opaque early finalize tail. The update path
+/// sets object byte +61 bit 2 and word +72 bit 3, then calls the opaque notify
+/// boundary with the control/selected bytes shifted into bits 28..31. Normal
+/// finalize uses status zero; if object byte +61 bit `0x20` is set afterwards,
+/// the finalize result tail-dispatches to current `0x84256`.
+pub fn bt_stage38_flag_update<B:BtStage38FlagBackend>(
+    req:BtStage38FlagRequest,b:&mut B,
+)->u32{
+    let Some(h)=b.lookup(req.key) else{
+        return b.early_finalize_tail(req,BtStage38EarlyTail::MissingObject);
+    };
+    if b.byte61(h)&0x20==0{
+        if b.global_flags()&0x1010==0x1010{
+            b.or_byte61(h,4);
+        }else{
+            let control=b.control_byte();
+            let selected=if control&8!=0{b.control_plus29_byte()}else{b.fallback_byte()};
+            if selected&8==0 && b.byte253(h)!=0{
+                return b.early_finalize_tail(req,BtStage38EarlyTail::DeferredByObjectByte253);
+            }
+            b.or_byte61(h,4);
+            b.or_word72(h,8);
+            b.notify_flags(h,(control as u32)<<28,(selected as u32)<<28);
+        }
+    }
+    let result=b.finalize(req.completion_id,0);
+    if b.byte61(h)&0x20!=0{b.flag_tail(result)}else{result}
+}
+
+#[cfg(test)]
+mod stage38_tests{
+    use super::*;use std::vec::Vec;
+    #[derive(Clone,Copy)]struct Obj{f68:u32,f72:u32,b61:u8,b62:u8,b253:u8,b460:u8,w440:u16,w442:u16,w444:u16}
+    impl Default for Obj{fn default()->Self{Self{f68:0,f72:0,b61:0,b62:0,b253:0,b460:0,w440:7,w442:0,w444:7}}}
+    struct C{obj:Option<Obj>,parse:u32,events:Vec<u32>}
+    impl BtStage38CompareBackend for C{
+        type Handle=u8;fn lookup(&mut self,_:u16)->Option<u8>{self.obj.map(|_|0)}
+        fn flags68(&mut self,_:u8)->u32{self.obj.unwrap().f68}fn flags72(&mut self,_:u8)->u32{self.obj.unwrap().f72}
+        fn parse(&mut self,_:u8,_:&[u8])->u32{self.events.push(1);self.parse}
+        fn write_word442(&mut self,_:u8,v:u16){self.obj.as_mut().unwrap().w442=v;self.events.push(2)}
+        fn word440(&mut self,_:u8)->u16{self.obj.unwrap().w440}fn word444(&mut self,_:u8)->u16{self.obj.unwrap().w444}
+        fn mark_mismatch(&mut self,_:u8){let o=self.obj.as_mut().unwrap();o.b460|=2;o.b62|=8;o.f72|=0x2000;self.events.push(3)}
+        fn notify_mismatch(&mut self,_:u8){self.events.push(4)}
+        fn finalize(&mut self,id:u16,s:u32)->u32{self.events.push(0x10000|s);id as u32+s}
+        fn equal_tail(&mut self,r:u32)->u32{self.events.push(5);r+1000}
+    }
+    #[test]fn compare_update_preserves_gates_store_order_and_equal_tail(){
+        let req=BtStage38CompareRequest{key:1,completion_id:9,parse_payload:&[1,2],mode_a:4,mode_b:0,replacement_word:0x1234};
+        let mut c=C{obj:Some(Obj::default()),parse:0,events:Vec::new()};assert_eq!(bt_stage38_compare_update(&req,&mut c),1009);assert_eq!(c.obj.unwrap().w442,0x1234);assert_eq!(c.events,[1,2,0x10000,5]);
+        let mut o=Obj::default();o.w444=8;let mut c=C{obj:Some(o),parse:0,events:Vec::new()};assert_eq!(bt_stage38_compare_update(&req,&mut c),9);let o=c.obj.unwrap();assert_eq!((o.b460,o.b62,o.f72),(2,8,0x2000));assert_eq!(c.events,[1,2,3,4,0x10000]);
+        let mut o=Obj::default();o.f68=0x2000;let mut c=C{obj:Some(o),parse:0,events:Vec::new()};assert_eq!(bt_stage38_compare_update(&req,&mut c),44);assert_eq!(c.events,[0x10000|35]);
+    }
+    struct F{obj:Option<Obj>,g:u16,ctl:u8,p29:u8,fb:u8,events:Vec<u32>}
+    impl BtStage38FlagBackend for F{
+        type Handle=u8;fn lookup(&mut self,_:u16)->Option<u8>{self.obj.map(|_|0)}fn byte61(&mut self,_:u8)->u8{self.obj.unwrap().b61}
+        fn or_byte61(&mut self,_:u8,m:u8){self.obj.as_mut().unwrap().b61|=m;self.events.push(1)}fn or_word72(&mut self,_:u8,m:u32){self.obj.as_mut().unwrap().f72|=m;self.events.push(2)}
+        fn byte253(&mut self,_:u8)->u8{self.obj.unwrap().b253}fn global_flags(&mut self)->u16{self.g}fn control_byte(&mut self)->u8{self.ctl}
+        fn control_plus29_byte(&mut self)->u8{self.p29}fn fallback_byte(&mut self)->u8{self.fb}
+        fn notify_flags(&mut self,_:u8,a:u32,b:u32){self.events.push(0x30000000|((a>>28)<<8)|(b>>28))}
+        fn early_finalize_tail(&mut self,_:BtStage38FlagRequest,r:BtStage38EarlyTail)->u32{self.events.push(match r{BtStage38EarlyTail::MissingObject=>6,BtStage38EarlyTail::DeferredByObjectByte253=>7});77}
+        fn finalize(&mut self,id:u16,_:u32)->u32{self.events.push(8);id as u32}fn flag_tail(&mut self,r:u32)->u32{self.events.push(9);r+100}
+    }
+    #[test]fn flag_update_preserves_selection_defer_and_post_finalize_tail(){
+        let req=BtStage38FlagRequest{key:2,completion_id:11};let mut f=F{obj:Some(Obj::default()),g:0,ctl:8,p29:8,fb:0,events:Vec::new()};assert_eq!(bt_stage38_flag_update(req,&mut f),11);assert_eq!((f.obj.unwrap().b61,f.obj.unwrap().f72),(4,8));assert_eq!(f.events,[1,2,0x30000808,8]);
+        let mut o=Obj::default();o.b253=1;let mut f=F{obj:Some(o),g:0,ctl:0,p29:8,fb:0,events:Vec::new()};assert_eq!(bt_stage38_flag_update(req,&mut f),77);assert_eq!(f.events,[7]);
+        let mut o=Obj::default();o.b61=0x20;let mut f=F{obj:Some(o),g:0,ctl:0,p29:0,fb:0,events:Vec::new()};assert_eq!(bt_stage38_flag_update(req,&mut f),111);assert_eq!(f.events,[8,9]);
+        let mut f=F{obj:None,g:0,ctl:0,p29:0,fb:0,events:Vec::new()};assert_eq!(bt_stage38_flag_update(req,&mut f),77);assert_eq!(f.events,[6]);
+    }
+}
