@@ -2556,3 +2556,136 @@ mod stage38_tests{
         let mut f=F{obj:None,g:0,ctl:0,p29:0,fb:0,events:Vec::new()};assert_eq!(bt_stage38_flag_update(req,&mut f),77);assert_eq!(f.events,[6]);
     }
 }
+
+/// Stage 39: current request helper plus gated lookup/dispatch routine recovered
+/// from globally unique relocation-normalized complete-body matches.
+pub const STAGE39_CURRENT_BT_ENTRY_HELPER_ADDR:u32=0x0016_CAF0;
+pub const STAGE39_CURRENT_BT_GATED_DISPATCH_ADDR:u32=0x0016_CB78;
+pub const STAGE39_BT_ENTRY_STRIDE:u32=676;
+pub const STAGE39_BT_ENTRY_BASE_PTR_ADDR:u32=0x0020_BE7C;
+pub const STAGE39_BT_STACK_GUARD_WORD_ADDR:u32=0x0020_0890;
+pub const STAGE39_BT_GATE_GLOBAL_ADDR:u32=0x0020_B0F0;
+pub const STAGE39_BT_CALLBACK_THUMB:u32=0x0016_D05D;
+pub const STAGE39_BT_ENTRY_PRECHECK_BOUNDARY:u32=0x0009_D58C;
+pub const STAGE39_BT_INDEX_BOUNDARY:u32=0x0008_E450;
+pub const STAGE39_BT_ENTRY_UPDATE_BOUNDARY:u32=0x0016_4444;
+pub const STAGE39_BT_LOOKUP_BOUNDARY:u32=0x0003_3730;
+pub const STAGE39_BT_GATE_BOUNDARY:u32=0x0004_F99C;
+pub const STAGE39_BT_VALIDATE_BOUNDARY:u32=0x0006_595C;
+pub const STAGE39_BT_FINALIZE_BOUNDARY:u32=0x0006_E774;
+pub const STAGE39_BT_SUCCESS_BOUNDARY:u32=0x0003_2EA4;
+pub const STAGE39_BT_STACK_GUARD_FAIL:u32=0x0000_94C0;
+pub const STAGE39_BT_STAGE35_MATCH_ADDR:u32=0x0016_D490;
+
+pub trait BtStage39EntryBackend{
+    fn precheck(&mut self)->u32;
+    fn map_index(&mut self,selector:u8)->u32;
+    fn entry_base(&mut self)->u32;
+    fn update_entry(&mut self,entry_plus40:u32,signed_value:i8)->u32;
+    fn entry_byte83(&mut self,entry:u32)->u8;
+}
+
+/// Current `0x16CAF0` / legacy `sub_169FB0`.
+/// The opaque precheck always runs. Only a zero caller-owned status byte enters
+/// the indexed entry path: current entry address is `base + 676*map(selector)`,
+/// the opaque update receives entry+40 and request byte +31 as signed i8, and
+/// response byte +6 is then copied from entry byte +83.
+pub fn bt_stage39_entry_helper<B:BtStage39EntryBackend>(
+    selector:u8,signed_byte31:i8,response_status:u8,response_byte6:&mut u8,b:&mut B,
+)->u32{
+    let mut result=b.precheck();
+    if response_status==0{
+        let index=b.map_index(selector);
+        let entry=b.entry_base().wrapping_add(STAGE39_BT_ENTRY_STRIDE.wrapping_mul(index));
+        result=b.update_entry(entry.wrapping_add(40),signed_byte31);
+        *response_byte6=b.entry_byte83(entry);
+    }
+    result
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage39DispatchRequest<'a>{
+    pub key:u16,
+    pub completion_id:u16,
+    /// Bytes beginning at the firmware request field corresponding to `a1+9`.
+    /// They remain opaque because current `0x6595C` consumes the original pointer.
+    pub request_tail:&'a[u8],
+}
+
+pub trait BtStage39DispatchBackend{
+    type Handle:Copy;
+    fn lookup_kind3(&mut self,key:u16)->Option<Self::Handle>;
+    /// Represents the exact short-circuit conjunction `*0x20B0F0 != 0 && 0x4F99C(...) != 0`
+    /// without strengthening the still-opaque call ABI.
+    fn global_gate_rejects(&mut self,h:Self::Handle)->bool;
+    fn object_byte28(&mut self,h:Self::Handle)->u8;
+    /// Existing Stage-35 current predicate at `0x16D490`.
+    fn stage35_three_record_match(&mut self,h:Self::Handle)->bool;
+    /// Current `0x6595C`, which receives the request pointer at +9 and a pointer
+    /// to the local handle slot; returning the possibly replaced handle preserves
+    /// that observable in/out behavior without naming the runtime contract.
+    fn validate(&mut self,req:&BtStage39DispatchRequest<'_>,h:Self::Handle)->(u32,Self::Handle);
+    fn finalize(&mut self,completion_id:u16,status:u32)->u32;
+    fn success_followup(&mut self,h:Self::Handle,req:&BtStage39DispatchRequest<'_>,callback_thumb:u32)->u32;
+}
+
+/// Safe local-semantics model of current `0x16CB78` / legacy `sub_16A038`.
+/// Missing lookup returns status 2. Present objects return status 12 when the
+/// global/runtime gate rejects, object byte +28 masked by `0xF8` equals `0x68`,
+/// or the already recovered Stage-35 three-record predicate matches. Otherwise
+/// current `0x6595C` supplies status and may replace the local handle. Firmware
+/// always calls the normal finalizer with the request completion id and status;
+/// only status zero then calls current `0x32EA4` with the resulting handle,
+/// original request pointer +9, and exact callback Thumb address `0x16D05D`.
+/// Compiler stack-canary plumbing to `0x94C0` is intentionally omitted.
+pub fn bt_stage39_gated_dispatch<B:BtStage39DispatchBackend>(
+    req:&BtStage39DispatchRequest<'_>,b:&mut B,
+)->u32{
+    let (status,h)=match b.lookup_kind3(req.key){
+        None=>(2,None),
+        Some(h)=>{
+            if b.global_gate_rejects(h) || b.object_byte28(h)&0xF8==0x68 || b.stage35_three_record_match(h){
+                (12,Some(h))
+            }else{
+                let (s,new_h)=b.validate(req,h);
+                (s,Some(new_h))
+            }
+        }
+    };
+    let result=b.finalize(req.completion_id,status);
+    if status==0{
+        b.success_followup(h.expect("status zero requires a validated handle"),req,STAGE39_BT_CALLBACK_THUMB)
+    }else{result}
+}
+
+#[cfg(test)]
+mod stage39_tests{
+    use super::*;use std::vec::Vec;
+    struct E{pre:u32,index:u32,base:u32,byte83:u8,calls:Vec<(u32,i32)>}
+    impl BtStage39EntryBackend for E{
+        fn precheck(&mut self)->u32{self.calls.push((1,0));self.pre}fn map_index(&mut self,_:u8)->u32{self.index}
+        fn entry_base(&mut self)->u32{self.base}fn update_entry(&mut self,a:u32,v:i8)->u32{self.calls.push((a,v as i32));0x55}
+        fn entry_byte83(&mut self,_:u32)->u8{self.byte83}
+    }
+    #[test]fn entry_helper_preserves_status_gate_stride_and_signed_byte(){
+        let mut e=E{pre:7,index:2,base:0x1000,byte83:0xA5,calls:Vec::new()};let mut out=0;
+        assert_eq!(bt_stage39_entry_helper(3,-2,0,&mut out,&mut e),0x55);assert_eq!(out,0xA5);assert_eq!(e.calls,[(1,0),(0x1000+2*676+40,-2)]);
+        let mut e=E{pre:9,index:5,base:0x2000,byte83:1,calls:Vec::new()};out=4;assert_eq!(bt_stage39_entry_helper(2,127,18,&mut out,&mut e),9);assert_eq!(out,4);assert_eq!(e.calls,[(1,0)]);
+    }
+    struct D{lookup:bool,gate:bool,b28:u8,matches:bool,validate_status:u32,calls:Vec<u32>}
+    impl BtStage39DispatchBackend for D{
+        type Handle=u32;fn lookup_kind3(&mut self,_:u16)->Option<u32>{self.calls.push(1);if self.lookup{Some(10)}else{None}}
+        fn global_gate_rejects(&mut self,_:u32)->bool{self.calls.push(2);self.gate}fn object_byte28(&mut self,_:u32)->u8{self.calls.push(3);self.b28}
+        fn stage35_three_record_match(&mut self,_:u32)->bool{self.calls.push(4);self.matches}
+        fn validate(&mut self,_:&BtStage39DispatchRequest<'_>,_:u32)->(u32,u32){self.calls.push(5);(self.validate_status,20)}
+        fn finalize(&mut self,id:u16,s:u32)->u32{self.calls.push(0x100+s);id as u32+s}
+        fn success_followup(&mut self,h:u32,_:&BtStage39DispatchRequest<'_>,cb:u32)->u32{self.calls.push(6);assert_eq!((h,cb),(20,0x16D05D));0x9999}
+    }
+    #[test]fn gated_dispatch_preserves_short_circuit_statuses_and_zero_followup(){
+        let req=BtStage39DispatchRequest{key:3,completion_id:9,request_tail:&[1,2,3]};
+        let mut d=D{lookup:false,gate:false,b28:0,matches:false,validate_status:0,calls:Vec::new()};assert_eq!(bt_stage39_gated_dispatch(&req,&mut d),11);assert_eq!(d.calls,[1,0x102]);
+        let mut d=D{lookup:true,gate:true,b28:0,matches:false,validate_status:0,calls:Vec::new()};assert_eq!(bt_stage39_gated_dispatch(&req,&mut d),21);assert_eq!(d.calls,[1,2,0x10C]);
+        let mut d=D{lookup:true,gate:false,b28:0x68,matches:false,validate_status:0,calls:Vec::new()};assert_eq!(bt_stage39_gated_dispatch(&req,&mut d),21);assert_eq!(d.calls,[1,2,3,0x10C]);
+        let mut d=D{lookup:true,gate:false,b28:0,matches:false,validate_status:0,calls:Vec::new()};assert_eq!(bt_stage39_gated_dispatch(&req,&mut d),0x9999);assert_eq!(d.calls,[1,2,3,4,5,0x100,6]);
+    }
+}
