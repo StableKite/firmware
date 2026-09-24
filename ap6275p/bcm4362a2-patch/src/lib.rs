@@ -3113,3 +3113,105 @@ mod stage42_tests{
         assert_eq!(STAGE42_CURRENT_BT_REQUEST_MODE_ADDR,0x16CDC4);assert_eq!(STAGE42_CURRENT_BT_MODE1_POST_ADDR,0x16D90C);
     }
 }
+
+/// Stage 43: close the current Stage-42 mode-1 continuation at `0x16D90C`.
+/// The body is the globally unique relocation-normalized current match of
+/// legacy `sub_16AA10`. Runtime entries remain opaque trait boundaries.
+pub const STAGE43_CURRENT_BT_MODE1_POST_ADDR:u32=0x0016_D90C;
+pub const STAGE43_BT_PROBE_BOUNDARY:u32=0x0003_CCDC;
+pub const STAGE43_BT_TRANSITION_BOUNDARY:u32=0x0003_CC9E;
+pub const STAGE43_BT_UPDATE_BOUNDARY:u32=0x0004_BC44;
+pub const STAGE43_BT_NOTIFY_BOUNDARY:u32=0x0006_F246;
+pub const STAGE43_BT_FINAL_TAIL_BOUNDARY:u32=0x0004_14A0;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage43ObjectState{
+    pub byte31:u8,
+    pub word100:u16,
+    pub word104:u16,
+    pub byte167:u8,
+    pub byte235:u8,
+    pub word236:u16,
+}
+
+/// Register-level result of current `0x3CCDC`.
+/// `r1_after` is intentionally exposed because one binary edge forwards the
+/// caller-volatile R1 value produced by this call directly into `0x4BC44`.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage43ProbeResult{pub r0:u32,pub r1_after:u32}
+
+pub trait BtStage43Backend{
+    fn probe(&mut self,object:u32,word236:u16)->BtStage43ProbeResult;
+    fn transition(&mut self,object:u32,arg1:u32)->u32;
+    fn update(&mut self,object:u32,forwarded_r1:u32);
+    fn notify(&mut self,zero:u32,word100:u16,delta:u16);
+    fn final_tail(&mut self,object:u32,one:u32,zero:u32)->u32;
+}
+
+fn bt_stage43_commit<B:BtStage43Backend>(
+    object:u32,state:&mut BtStage43ObjectState,forwarded_r1:u32,b:&mut B,
+)->u32{
+    state.word104=state.word236;
+    b.update(object,forwarded_r1);
+    b.notify(0,state.word100,state.word236^0x3306);
+    b.final_tail(object,1,0)
+}
+
+/// Safe local-semantics model of current `0x16D90C` / legacy `sub_16AA10`.
+///
+/// The exact local masks and field transitions are preserved. The unusual
+/// probe-zero path deliberately forwards the post-call R1 value from opaque
+/// `0x3CCDC` into opaque `0x4BC44`; it is not reconstructed from `word236`.
+pub fn bt_stage43_mode1_post<B:BtStage43Backend>(
+    object:u32,state:&mut BtStage43ObjectState,b:&mut B,
+)->u32{
+    let word236=state.word236;
+    let high=state.byte167&0xE0;
+    if word236&0x3306==0{
+        if high==0{
+            state.byte31|=8;
+            if state.byte235&0x30==0{return object;}
+            return b.transition(object,0);
+        }
+        return bt_stage43_commit(object,state,high as u32,b);
+    }
+    if high==0{
+        return bt_stage43_commit(object,state,word236 as u32,b);
+    }
+    let probe=b.probe(object,word236);
+    if probe.r0==0{
+        return bt_stage43_commit(object,state,probe.r1_after,b);
+    }
+    state.byte31|=8;
+    if state.byte235&0x30==0x10{return probe.r0;}
+    b.transition(object,1)
+}
+
+#[cfg(test)]
+mod stage43_tests{
+    use super::*;use std::vec::Vec;
+    struct B{probe:BtStage43ProbeResult,events:Vec<(u8,u32,u32)>,transition_ret:u32,tail_ret:u32}
+    impl BtStage43Backend for B{
+        fn probe(&mut self,o:u32,w:u16)->BtStage43ProbeResult{self.events.push((1,o,w as u32));self.probe}
+        fn transition(&mut self,o:u32,a:u32)->u32{self.events.push((2,o,a));self.transition_ret}
+        fn update(&mut self,o:u32,r1:u32){self.events.push((3,o,r1))}
+        fn notify(&mut self,z:u32,w:u16,d:u16){self.events.push((4,z,((w as u32)<<16)|d as u32))}
+        fn final_tail(&mut self,o:u32,one:u32,zero:u32)->u32{self.events.push((5,o,(one<<16)|zero));self.tail_ret}
+    }
+    fn backend()->B{B{probe:BtStage43ProbeResult{r0:1,r1_after:0},events:Vec::new(),transition_ret:0x2222,tail_ret:0x3333}}
+    fn state()->BtStage43ObjectState{BtStage43ObjectState{byte31:0x40,word100:0x1234,word104:0,byte167:0,byte235:0,word236:0}}
+    #[test]fn zero_mask_paths_preserve_return_transition_and_forwarded_high_bits(){
+        let mut b=backend();let mut s=state();assert_eq!(bt_stage43_mode1_post(0x55,&mut s,&mut b),0x55);assert_eq!(s.byte31,0x48);assert!(b.events.is_empty());
+        let mut b=backend();let mut s=state();s.byte235=0x20;assert_eq!(bt_stage43_mode1_post(0x55,&mut s,&mut b),0x2222);assert_eq!(b.events,[(2,0x55,0)]);
+        let mut b=backend();let mut s=state();s.byte167=0xA5;assert_eq!(bt_stage43_mode1_post(0x55,&mut s,&mut b),0x3333);assert_eq!(s.word104,0);assert_eq!(b.events[0],(3,0x55,0xA0));
+    }
+    #[test]fn nonzero_word_without_high_bits_forwards_original_word236(){
+        let mut b=backend();let mut s=state();s.word236=0x3306;s.word100=0xBEEF;assert_eq!(bt_stage43_mode1_post(7,&mut s,&mut b),0x3333);assert_eq!(s.word104,0x3306);assert_eq!(b.events[0],(3,7,0x3306));assert_eq!(b.events[1],(4,0,0xBEEF0000));
+    }
+    #[test]fn probe_paths_preserve_volatile_r1_return_and_transition_gate(){
+        let mut b=backend();b.probe=BtStage43ProbeResult{r0:0,r1_after:0xDEAD_BEEF};let mut s=state();s.word236=2;s.byte167=0xE0;assert_eq!(bt_stage43_mode1_post(9,&mut s,&mut b),0x3333);assert_eq!(b.events[0],(1,9,2));assert_eq!(b.events[1],(3,9,0xDEAD_BEEF));
+        let mut b=backend();b.probe=BtStage43ProbeResult{r0:0x77,r1_after:0x11};let mut s=state();s.word236=2;s.byte167=0x20;s.byte235=0x10;assert_eq!(bt_stage43_mode1_post(9,&mut s,&mut b),0x77);assert_eq!(s.byte31,0x48);assert_eq!(b.events,[(1,9,2)]);
+        let mut b=backend();b.probe=BtStage43ProbeResult{r0:0x77,r1_after:0x11};let mut s=state();s.word236=2;s.byte167=0x20;s.byte235=0x20;assert_eq!(bt_stage43_mode1_post(9,&mut s,&mut b),0x2222);assert_eq!(b.events,[(1,9,2),(2,9,1)]);
+        assert_eq!(STAGE43_CURRENT_BT_MODE1_POST_ADDR,0x16D90C);
+    }
+}
