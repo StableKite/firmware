@@ -129,3 +129,15 @@ Verified current addresses include index-stride helper `0x163668` (global `0x203
 The two polling routines preserve their exact bounded behavior: at most 100 reads, returning 1 on the first signed-nonnegative value at `0x650318` or first bit-30-set value at `0x650310`, otherwise 0 after the 100th failing read. The register helpers clear bit 3 at `0x650314` by read-modify-write and return bits 16..18 of `0x65031c`.
 
 The object reset writes byte `+129 = 0`, byte `+19 = 2`, and the caller value at `+28`. The entry-span helper returns `entry[11] + entry[12] + 13` for 78-byte records. The large legacy routine `sub_16E550` has no current normalized complete-body match and is explicitly not promoted by Stage 28.
+
+## Stage-29 low-level programming/countdown closure
+
+Stage 29 extends the Stage-28 MMIO helpers with five complete current functions. Each has exactly one relocation-normalized match in the current PatchRAM code, and every literal/direct branch used below is re-read from the current bytes rather than inferred from a global delta.
+
+- Current `0x171e1c` (legacy `sub_16DD6C`) first rejects when bit 4 of `0x650310` is set. Otherwise it writes the four little-endian bytes of current source word `0x222554` to `0x650328`, writes `0x81000000` to `0x650318` for each byte, invokes the existing bounded signed-status poll after each write, invokes the existing bit-30 poll once after all four bytes, then sets bit 3 of `0x650314`. The poll return values are ignored exactly as in the firmware.
+- Current `0x171eac` (legacy `sub_16DDFC`) writes a program value to `0x650328`, encodes `(index << 8) & 0x1ff00 | 0x85000000` into `0x650318`, and tail-dispatches the existing signed-status bounded poll.
+- Current `0x171ed0` (legacy `sub_16DE20`) computes a stable pending mask as `requested & ~MMIO[0x651000+offset]`, returns success immediately when it is zero, and otherwise retries the program-word helper at most 32 times. The pending mask is intentionally not recomputed; only the status word is re-read after each attempt.
+- Current `0x171fdc` (legacy `sub_16DF2C`) toggles current command byte `0x222fd1` to boolean 0/1 and tail-dispatches the independent byte from `0x202fd4` to still-opaque boundary `0xbac58`.
+- Current `0x171ff8` (legacy `sub_16DF48`) decrements byte `0x223065`, interprets the new byte as signed, and when it is `<= 0` and current mode `0x223064` is exactly 1 or 2, passes a pointer to local u16 value `58` to still-opaque boundary `0x2ce90`. Otherwise the incoming R0 value is preserved.
+
+The larger legacy `sub_16DE54` remains deliberately unpromoted: although adjacent helpers are now verified, its wider copy/program contract needs additional current evidence. The ROM boundaries `0xbac58` and `0x2ce90` remain unnamed traits. Compiler stack-canary plumbing to stable terminal boundary `0x94c0` is not reproduced by safe Rust.

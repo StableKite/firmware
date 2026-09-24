@@ -1059,3 +1059,137 @@ mod stage28_tests{
         let mut r=R{seq:[0x0005_0000;100],n:0,writes:[(0,0);2],wn:0};assert_eq!(bt_stage28_read_bits16_18(&mut r),5);
     }
 }
+
+/// Stage 29: current low-level Bluetooth programming/countdown primitives,
+/// promoted only after unique relocation-normalized body identity plus current
+/// literal/direct-target re-reading. Opaque ROM exits stay explicit traits.
+pub const STAGE29_CURRENT_BT_PROGRAM_SOURCE_WORD_ADDR:u32=0x0017_1E1C;
+pub const STAGE29_CURRENT_BT_ISSUE_PROGRAM_WORD_ADDR:u32=0x0017_1EAC;
+pub const STAGE29_CURRENT_BT_PROGRAM_MASK_RETRY32_ADDR:u32=0x0017_1ED0;
+pub const STAGE29_CURRENT_BT_TOGGLE_COMMAND_DISPATCH_ADDR:u32=0x0017_1FDC;
+pub const STAGE29_CURRENT_BT_COUNTDOWN_DISPATCH58_ADDR:u32=0x0017_1FF8;
+pub const STAGE29_BT_SOURCE_WORD_ADDR:u32=0x0022_2554;
+pub const STAGE29_BT_COMMAND_BYTE_ADDR:u32=0x0022_2FD1;
+pub const STAGE29_BT_TOGGLE_SOURCE_ADDR:u32=0x0020_2FD4;
+pub const STAGE29_BT_MODE_ADDR:u32=0x0022_3064;
+pub const STAGE29_BT_COUNTDOWN_ADDR:u32=0x0022_3065;
+pub const STAGE29_BT_MMIO_STATUS_ADDR:u32=0x0065_0310;
+pub const STAGE29_BT_MMIO_DATA_ADDR:u32=0x0065_0328;
+pub const STAGE29_BT_MMIO_COMMAND_ADDR:u32=0x0065_0318;
+pub const STAGE29_BT_MMIO_CONTROL_ADDR:u32=0x0065_0314;
+pub const STAGE29_BT_MMIO_WINDOW_BASE:u32=0x0065_1000;
+pub const STAGE29_BT_PROGRAM_COMMAND_MASK:u32=0x0001_FF00;
+pub const STAGE29_BT_PROGRAM_COMMAND_BASE:u32=0x8500_0000;
+pub const STAGE29_BT_STREAM_COMMAND:u32=0x8100_0000;
+pub const STAGE29_BT_TOGGLE_TAIL_BOUNDARY:u32=0x000B_AC58;
+pub const STAGE29_BT_NOTIFY58_BOUNDARY:u32=0x0002_CE90;
+
+/// Current `0x171E1C`: if status bit 4 is clear, stream the four little-endian
+/// bytes of the source word through DATA/COMMAND, polling after each byte, then
+/// wait for status bit 30 and set control bit 3. Poll return values are ignored.
+pub fn bt_stage29_program_source_word<I:BtMmio32>(io:&mut I,source_word:u32)->u32{
+    if io.read32(STAGE29_BT_MMIO_STATUS_ADDR)&0x10!=0{return 0;}
+    let mut i=0u32;
+    while i<4{
+        io.write32(STAGE29_BT_MMIO_DATA_ADDR,(source_word>>(i*8))&0xff);
+        io.write32(STAGE29_BT_MMIO_COMMAND_ADDR,STAGE29_BT_STREAM_COMMAND);
+        let _=bt_stage28_poll_signed_nonnegative_100(io);
+        i+=1;
+    }
+    let _=bt_stage28_poll_bit30_set_100(io);
+    let v=io.read32(STAGE29_BT_MMIO_CONTROL_ADDR);
+    io.write32(STAGE29_BT_MMIO_CONTROL_ADDR,v|8);
+    1
+}
+
+/// Current `0x171EAC`: write one value plus its encoded word index and tail
+/// into the existing signed-nonnegative bounded poll.
+pub fn bt_stage29_issue_program_word<I:BtMmio32>(io:&mut I,value:u32,index:u32)->u32{
+    io.write32(STAGE29_BT_MMIO_DATA_ADDR,value);
+    io.write32(
+        STAGE29_BT_MMIO_COMMAND_ADDR,
+        (index.wrapping_shl(8)&STAGE29_BT_PROGRAM_COMMAND_MASK)|STAGE29_BT_PROGRAM_COMMAND_BASE,
+    );
+    bt_stage28_poll_signed_nonnegative_100(io)
+}
+
+/// Current `0x171ED0`: program only bits not already present at
+/// `0x651000+offset`, with at most 32 issue attempts. The original firmware
+/// keeps the initially computed pending mask stable across retries.
+pub fn bt_stage29_program_mask_retry32<I:BtMmio32>(io:&mut I,offset:u32,requested_mask:u32)->u32{
+    let status_addr=STAGE29_BT_MMIO_WINDOW_BASE.wrapping_add(offset);
+    let pending=requested_mask&!io.read32(status_addr);
+    if pending==0{return 1;}
+    let index=offset>>2;
+    let mut remaining=32u32;
+    while remaining!=0{
+        let _=bt_stage29_issue_program_word(io,pending,index);
+        if pending&!io.read32(status_addr)==0{return 1;}
+        remaining-=1;
+    }
+    0
+}
+
+pub trait BtStage29ToggleTail{fn tail(&mut self,source:u8)->u32;}
+/// Current `0x171FDC`: boolean-toggle the command byte, then tail-dispatch the
+/// independent byte loaded from current address `0x202FD4` to opaque `0xBAC58`.
+pub fn bt_stage29_toggle_command_dispatch<B:BtStage29ToggleTail>(command_byte:&mut u8,source_byte:u8,b:&mut B)->u32{
+    *command_byte=if *command_byte==0{1}else{0};
+    b.tail(source_byte)
+}
+
+pub trait BtStage29Notify58Boundary{fn notify(&mut self,code:&u16)->u32;}
+/// Current `0x171FF8`: decrement an 8-bit counter, interpret the new byte as
+/// signed, and notify opaque `0x2CE90` with a local u16 value 58 only when the
+/// signed result is <=0 and mode is exactly 1 or 2. Otherwise preserve R0.
+pub fn bt_stage29_countdown_dispatch58<B:BtStage29Notify58Boundary>(
+    passthrough:u32,countdown:&mut u8,mode:u8,b:&mut B,
+)->u32{
+    let next=countdown.wrapping_sub(1);*countdown=next;
+    if (next as i8)<=0 && (mode==1||mode==2){let code=58u16;b.notify(&code)}else{passthrough}
+}
+
+#[cfg(test)]
+mod stage29_tests{
+    use super::*;use std::vec;use std::vec::Vec;
+    #[derive(Default)]struct M{reads:Vec<(u32,u32)>,ri:usize,writes:Vec<(u32,u32)>}
+    impl BtMmio32 for M{
+        fn read32(&mut self,a:u32)->u32{let (ea,v)=self.reads[self.ri];assert_eq!(ea,a);self.ri+=1;v}
+        fn write32(&mut self,a:u32,v:u32){self.writes.push((a,v));}
+    }
+    #[test]fn program_source_word_exact_order_and_gate(){
+        let mut blocked=M{reads:vec![(STAGE29_BT_MMIO_STATUS_ADDR,0x10)],..M::default()};
+        assert_eq!(bt_stage29_program_source_word(&mut blocked,0x44332211),0);assert!(blocked.writes.is_empty());
+        let mut reads=vec![(STAGE29_BT_MMIO_STATUS_ADDR,0)];for _ in 0..4{reads.push((STAGE28_BT_POLL_SIGNED_MMIO_ADDR,0));}
+        reads.push((STAGE28_BT_POLL_BIT30_MMIO_ADDR,0x4000_0000));reads.push((STAGE29_BT_MMIO_CONTROL_ADDR,0x20));
+        let mut m=M{reads,..M::default()};assert_eq!(bt_stage29_program_source_word(&mut m,0x44332211),1);
+        assert_eq!(m.writes,vec![
+            (STAGE29_BT_MMIO_DATA_ADDR,0x11),(STAGE29_BT_MMIO_COMMAND_ADDR,STAGE29_BT_STREAM_COMMAND),
+            (STAGE29_BT_MMIO_DATA_ADDR,0x22),(STAGE29_BT_MMIO_COMMAND_ADDR,STAGE29_BT_STREAM_COMMAND),
+            (STAGE29_BT_MMIO_DATA_ADDR,0x33),(STAGE29_BT_MMIO_COMMAND_ADDR,STAGE29_BT_STREAM_COMMAND),
+            (STAGE29_BT_MMIO_DATA_ADDR,0x44),(STAGE29_BT_MMIO_COMMAND_ADDR,STAGE29_BT_STREAM_COMMAND),
+            (STAGE29_BT_MMIO_CONTROL_ADDR,0x28),
+        ]);
+    }
+    #[test]fn program_word_and_retry32(){
+        let mut m=M{reads:vec![(STAGE28_BT_POLL_SIGNED_MMIO_ADDR,0)],..M::default()};
+        assert_eq!(bt_stage29_issue_program_word(&mut m,0x55,3),1);
+        assert_eq!(m.writes,vec![(STAGE29_BT_MMIO_DATA_ADDR,0x55),(STAGE29_BT_MMIO_COMMAND_ADDR,0x8500_0300)]);
+        let status=STAGE29_BT_MMIO_WINDOW_BASE+8;
+        let mut m=M{reads:vec![(status,0),(STAGE28_BT_POLL_SIGNED_MMIO_ADDR,0),(status,0x0f)],..M::default()};
+        assert_eq!(bt_stage29_program_mask_retry32(&mut m,8,0x0f),1);
+        let mut reads=vec![(status,0)];for _ in 0..32{reads.push((STAGE28_BT_POLL_SIGNED_MMIO_ADDR,0));reads.push((status,0));}
+        let mut m=M{reads,..M::default()};assert_eq!(bt_stage29_program_mask_retry32(&mut m,8,1),0);assert_eq!(m.writes.len(),64);
+    }
+    struct T{seen:u8}impl BtStage29ToggleTail for T{fn tail(&mut self,s:u8)->u32{self.seen=s;0x1234}}
+    struct N{seen:u16,n:u8}impl BtStage29Notify58Boundary for N{fn notify(&mut self,c:&u16)->u32{self.seen=*c;self.n+=1;0x5678}}
+    #[test]fn toggle_and_signed_countdown(){
+        let mut c=0u8;let mut t=T{seen:0};assert_eq!(bt_stage29_toggle_command_dispatch(&mut c,7,&mut t),0x1234);assert_eq!((c,t.seen),(1,7));
+        let _=bt_stage29_toggle_command_dispatch(&mut c,8,&mut t);assert_eq!(c,0);
+        let mut n=N{seen:0,n:0};let mut count=1u8;
+        assert_eq!(bt_stage29_countdown_dispatch58(9,&mut count,1,&mut n),0x5678);assert_eq!((count,n.seen,n.n),(0,58,1));
+        count=0;assert_eq!(bt_stage29_countdown_dispatch58(9,&mut count,2,&mut n),0x5678);assert_eq!(count,255);assert_eq!(n.n,2);
+        count=2;assert_eq!(bt_stage29_countdown_dispatch58(9,&mut count,3,&mut n),9);assert_eq!(count,1);
+        assert_eq!(STAGE29_CURRENT_BT_PROGRAM_SOURCE_WORD_ADDR,0x171E1C);
+    }
+}
