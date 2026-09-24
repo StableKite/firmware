@@ -1308,3 +1308,187 @@ mod stage30_tests{
         assert_eq!(STAGE30_CURRENT_BT_PROGRAM_BYTES_ADDR,0x171F04);assert_eq!(STAGE30_CURRENT_BT_PROGRAM_BYTES_CALLER_ADDR,0x16BE1C);
     }
 }
+
+/// Stage 31: current 8x46-byte record command handler at `0x16BE1C`,
+/// proven by the Stage-30 unique relocation-normalized caller identity plus
+/// current literal/direct-target re-reading. Opaque ROM/runtime boundaries
+/// remain explicit traits instead of receiving guessed vendor names.
+pub const STAGE31_CURRENT_BT_RECORD_COMMAND_ADDR:u32=0x0016_BE1C;
+pub const STAGE31_BT_RECORD_COUNT:usize=8;
+pub const STAGE31_BT_RECORD_BYTES:usize=46;
+pub const STAGE31_BT_PAYLOAD_BYTES:usize=42;
+pub const STAGE31_BT_RECORD_WINDOW_OFFSET:u32=128;
+pub const STAGE31_BT_RECORD_WINDOW_BYTES:usize=368;
+pub const STAGE31_BT_STATUS_MMIO_ADDR:u32=0x0065_0310;
+pub const STAGE31_BT_ACTIVE_MMIO_ADDR:u32=0x0064_08D8;
+pub const STAGE31_BT_GUARD_WORD_ADDR:u32=0x0020_0890;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage31Request{
+    pub command:u8,
+    pub index:u8,
+    pub payload:[u8;STAGE31_BT_PAYLOAD_BYTES],
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage31Response{
+    pub status:u8,
+    pub bitmap:u8,
+    pub index:u8,
+    pub state:u8,
+    pub payload:[u8;STAGE31_BT_PAYLOAD_BYTES],
+}
+impl Default for BtStage31Response{
+    fn default()->Self{Self{status:0,bitmap:0,index:0,state:0,payload:[0;STAGE31_BT_PAYLOAD_BYTES]}}
+}
+
+pub trait BtStage31RecordCommandBackend{
+    /// Current `0x780` call shape. The same boundary is used to leave with the token.
+    fn critical(&mut self,arg:u32)->u32;
+    fn status_mmio(&mut self)->u32;
+    /// Current `0xF620`, called only when status bit 12 is clear.
+    fn prepare_record_window(&mut self);
+    /// Current `0xF614`: read offset 128 / 368 bytes into the local record window.
+    fn read_record_window(&mut self,offset:u32,out:&mut[u8;STAGE31_BT_RECORD_WINDOW_BYTES],shifted_status:u32);
+    /// Current Stage-30 transaction at `0x171F04`.
+    fn program_bytes(&mut self,offset:u32,src:&[u8],written:&mut u8)->u32;
+    fn clear_active_bit0(&mut self);
+}
+
+fn bt_stage31_record_offset(index:usize)->usize{index*STAGE31_BT_RECORD_BYTES}
+
+/// Safe source-level model of current `0x16BE1C` / legacy `sub_169548`.
+///
+/// Command 0 reads one record. Command 1 inserts a 46-byte record only when
+/// its current state byte is zero. Command 2 programs only the state byte
+/// (`0x0F`) when the current state is one. Command 3 ORs free slots into the
+/// caller-provided bitmap; it intentionally does not clear pre-existing bits.
+/// Unsupported commands (>3) set status 18 and return before entering the
+/// opaque critical/read path, matching the firmware.
+pub fn bt_stage31_record_command<B:BtStage31RecordCommandBackend>(
+    req:&BtStage31Request,response:&mut BtStage31Response,b:&mut B,
+){
+    if req.command>3{response.status=18;return;}
+    response.status=0;
+    let token=b.critical(1);
+    let status=b.status_mmio();
+    if status&0x1000==0{b.prepare_record_window();}
+    let mut records=[0u8;STAGE31_BT_RECORD_WINDOW_BYTES];
+    b.read_record_window(
+        STAGE31_BT_RECORD_WINDOW_OFFSET,&mut records,status.wrapping_shl(19),
+    );
+
+    let idx=req.index as usize;
+    match req.command{
+        0=>{
+            if idx>=STAGE31_BT_RECORD_COUNT{response.status=18;}
+            else{
+                let o=bt_stage31_record_offset(idx);
+                response.index=req.index;
+                response.state=records[o+1];
+                response.payload.copy_from_slice(&records[o+4..o+46]);
+            }
+        }
+        1=>{
+            if idx>=STAGE31_BT_RECORD_COUNT || records[bt_stage31_record_offset(idx)+1]!=0{
+                response.status=18;
+            }else{
+                let mut rec=[0u8;STAGE31_BT_RECORD_BYTES];
+                rec[0]=req.index;rec[1]=1;
+                rec[4..].copy_from_slice(&req.payload);
+                let mut written=0u8;
+                let _=b.program_bytes(
+                    STAGE31_BT_RECORD_WINDOW_OFFSET
+                        .wrapping_add((STAGE31_BT_RECORD_BYTES*idx) as u32),
+                    &rec,&mut written,
+                );
+                if written!=STAGE31_BT_RECORD_BYTES as u8{response.status=3;}
+                response.index=req.index;
+                response.state=1;
+                response.payload.copy_from_slice(&req.payload);
+            }
+        }
+        2=>{
+            if idx>=STAGE31_BT_RECORD_COUNT || records[bt_stage31_record_offset(idx)+1]!=1{
+                response.status=18;
+            }else{
+                let state=0x0Fu8;
+                let mut ignored_written=0u8;
+                let _=b.program_bytes(
+                    STAGE31_BT_RECORD_WINDOW_OFFSET
+                        .wrapping_add((STAGE31_BT_RECORD_BYTES*idx) as u32)
+                        .wrapping_add(1),
+                    core::slice::from_ref(&state),&mut ignored_written,
+                );
+            }
+        }
+        3=>{
+            let mut i=0usize;
+            while i<STAGE31_BT_RECORD_COUNT{
+                if records[bt_stage31_record_offset(i)+1]==0{
+                    response.bitmap|=1u8<<i;
+                }
+                i+=1;
+            }
+        }
+        _=>unreachable!(),
+    }
+    b.clear_active_bit0();
+    let _=b.critical(token);
+}
+
+#[cfg(test)]
+mod stage31_tests{
+    use super::*;use std::vec::Vec;
+    struct B{
+        status:u32,records:[u8;STAGE31_BT_RECORD_WINDOW_BYTES],critical_args:Vec<u32>,
+        prepared:u32,reads:u32,programs:Vec<(u32,Vec<u8>)>,written_override:Option<u8>,clears:u32,
+    }
+    impl Default for B{
+        fn default()->Self{Self{
+            status:0,records:[0;STAGE31_BT_RECORD_WINDOW_BYTES],critical_args:Vec::new(),
+            prepared:0,reads:0,programs:Vec::new(),written_override:None,clears:0,
+        }}
+    }
+    impl BtStage31RecordCommandBackend for B{
+        fn critical(&mut self,a:u32)->u32{self.critical_args.push(a);if a==1{0x55}else{0}}
+        fn status_mmio(&mut self)->u32{self.status}
+        fn prepare_record_window(&mut self){self.prepared+=1}
+        fn read_record_window(&mut self,o:u32,out:&mut[u8;STAGE31_BT_RECORD_WINDOW_BYTES],s:u32){
+            assert_eq!(o,128);assert_eq!(s,self.status.wrapping_shl(19));*out=self.records;self.reads+=1;
+        }
+        fn program_bytes(&mut self,o:u32,src:&[u8],written:&mut u8)->u32{
+            self.programs.push((o,src.to_vec()));
+            *written=self.written_override.unwrap_or(src.len() as u8);1
+        }
+        fn clear_active_bit0(&mut self){self.clears+=1}
+    }
+    fn req(c:u8,i:u8)->BtStage31Request{BtStage31Request{command:c,index:i,payload:[0xA5;42]}}
+    #[test]fn read_and_invalid_command_preserve_control_flow(){
+        let mut b=B::default();let o=2*46;b.records[o+1]=7;b.records[o+4..o+46].fill(0x33);
+        let mut r=BtStage31Response::default();bt_stage31_record_command(&req(0,2),&mut r,&mut b);
+        assert_eq!((r.status,r.index,r.state),(0,2,7));assert_eq!(r.payload,[0x33;42]);
+        assert_eq!(b.critical_args,[1,0x55]);assert_eq!((b.prepared,b.reads,b.clears),(1,1,1));
+        let mut b=B::default();let mut r=BtStage31Response{bitmap:0x80,..BtStage31Response::default()};
+        bt_stage31_record_command(&req(4,0),&mut r,&mut b);
+        assert_eq!(r.status,18);assert_eq!(r.bitmap,0x80);assert!(b.critical_args.is_empty());assert_eq!(b.reads,0);
+    }
+    #[test]fn insert_and_deactivate_match_record_offsets_and_status(){
+        let mut b=B{status:0x1000,written_override:Some(45),..B::default()};
+        let mut r=BtStage31Response::default();bt_stage31_record_command(&req(1,3),&mut r,&mut b);
+        assert_eq!(r.status,3);assert_eq!((r.index,r.state),(3,1));assert_eq!(r.payload,[0xA5;42]);
+        assert_eq!(b.prepared,0);assert_eq!(b.programs.len(),1);assert_eq!(b.programs[0].0,128+46*3);
+        assert_eq!(b.programs[0].1[0],3);assert_eq!(b.programs[0].1[1],1);assert_eq!(&b.programs[0].1[4..],&[0xA5;42]);
+        let mut b=B::default();b.records[5*46+1]=1;let mut r=BtStage31Response::default();
+        bt_stage31_record_command(&req(2,5),&mut r,&mut b);
+        assert_eq!(r.status,0);assert_eq!(b.programs,[(128+46*5+1,std::vec![0x0f])]);
+    }
+    #[test]fn free_bitmap_ors_existing_bits_and_invalid_index_cleans_up(){
+        let mut b=B::default();for i in [0usize,2,7]{b.records[i*46+1]=1;}
+        let mut r=BtStage31Response{bitmap:0x40,..BtStage31Response::default()};
+        bt_stage31_record_command(&req(3,0),&mut r,&mut b);
+        assert_eq!(r.bitmap,0x7A); // existing bit6 plus free slots 1,3,4,5,6
+        let mut b=B::default();let mut r=BtStage31Response::default();
+        bt_stage31_record_command(&req(0,8),&mut r,&mut b);
+        assert_eq!(r.status,18);assert_eq!(b.critical_args,[1,0x55]);assert_eq!(b.clears,1);
+    }
+}
