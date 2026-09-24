@@ -2689,3 +2689,157 @@ mod stage39_tests{
         let mut d=D{lookup:true,gate:false,b28:0,matches:false,validate_status:0,calls:Vec::new()};assert_eq!(bt_stage39_gated_dispatch(&req,&mut d),0x9999);assert_eq!(d.calls,[1,2,3,4,5,0x100,6]);
     }
 }
+
+/// Stage 40: current 442-byte request-selection transaction at `0x16CC00`,
+/// recovered from a globally unique relocation-normalized complete-body match.
+pub const STAGE40_CURRENT_BT_REQUEST_SELECT_ADDR:u32=0x0016_CC00;
+pub const STAGE40_BT_LOOKUP_BOUNDARY:u32=0x0003_3730;
+pub const STAGE40_BT_NULL_OUTPUT_BOUNDARY:u32=0x000B_DDBC;
+pub const STAGE40_BT_GLOBAL_GATE_BOUNDARY:u32=0x0004_F99C;
+pub const STAGE40_BT_STAGE35_MATCH_ADDR:u32=0x0016_D490;
+pub const STAGE40_BT_MODE_BOUNDARY:u32=0x0003_3B8C;
+pub const STAGE40_BT_TRANSFORM_BOUNDARY:u32=0x000B_0630;
+pub const STAGE40_BT_OBJECT_PREDICATE_BOUNDARY:u32=0x0003_3D28;
+pub const STAGE40_BT_SECONDARY_LOOKUP_BOUNDARY:u32=0x0003_35AC;
+pub const STAGE40_BT_STACK_GUARD_FAIL:u32=0x0000_94C0;
+pub const STAGE40_BT_STACK_GUARD_WORD_ADDR:u32=0x0020_0890;
+pub const STAGE40_BT_GATE_GLOBAL_ADDR:u32=0x0020_B0F0;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage40Request{
+    pub lookup_key:u16,
+    pub field5:u32,
+    pub field9:u32,
+    pub field13:u16,
+    pub field15:u16,
+    pub field17:u8,
+    pub field18:u16,
+}
+
+pub trait BtStage40Backend{
+    type Handle:Copy+core::fmt::Debug+PartialEq+Eq;
+    fn lookup_kind3(&mut self,key:u16)->Option<Self::Handle>;
+    /// Exact short-circuit conjunction rooted at current global `0x20B0F0`
+    /// and opaque current `0x4F99C`, without strengthening its ABI.
+    fn global_gate_rejects(&mut self,h:Self::Handle)->bool;
+    fn stage35_three_record_match(&mut self,h:Self::Handle)->bool;
+    fn object_word0(&mut self,h:Self::Handle)->u32;
+    fn object_byte256(&mut self,h:Self::Handle)->u8;
+    fn object_byte167(&mut self,h:Self::Handle)->u8;
+    fn object_byte215(&mut self,h:Self::Handle)->u8;
+    fn object_word208(&mut self,h:Self::Handle)->u16;
+    fn object_dword324(&mut self,h:Self::Handle)->u32;
+    fn object_dword328(&mut self,h:Self::Handle)->u32;
+    fn object_dword340(&mut self,h:Self::Handle)->u32;
+    fn object_dword344(&mut self,h:Self::Handle)->u32;
+    fn object_byte230(&mut self,h:Self::Handle)->u8;
+    fn mode(&mut self)->u32;
+    /// Current `0xB0630`: returns an 8-bit status plus the output word written
+    /// through its third argument.
+    fn transform(&mut self,input:u16,h:Self::Handle)->(u8,u16);
+    fn object_predicate(&mut self,h:Self::Handle)->bool;
+    fn secondary_lookup(&mut self,key:u8)->Option<Self::Handle>;
+    /// Models the unconstrained stack word that current firmware copies to
+    /// request field +18 when the secondary lookup is null and `0xB0630` is not
+    /// called. This preserves the observed uninitialized-local edge explicitly.
+    fn uninitialized_word_seed(&mut self)->u16;
+}
+
+/// Safe state-machine model of current `0x16CC00` / legacy `sub_16A0C0`.
+///
+/// `override_mode` is the firmware's second argument. The safe API requires a
+/// non-null output slot; the original null-output path reaches opaque boundary
+/// `0xBDDBC` and then dereferences the pointer, so no stronger behavior is
+/// invented here. `selected` is cleared before all normal decision logic.
+pub fn bt_stage40_request_select<B:BtStage40Backend>(
+    req:&mut BtStage40Request,override_mode:bool,selected:&mut Option<B::Handle>,b:&mut B,
+)->u32{
+    let original_field5=req.field5;
+    let original_field9=req.field9;
+    let field15=req.field15;
+    let mut transformed=req.field18;
+    let Some(primary)=b.lookup_kind3(req.lookup_key) else{*selected=None;return 2};
+    let (selector,kind_byte)=if override_mode{(4u32,0xFFu8)}else{(req.field13 as u32,req.field17)};
+    *selected=None;
+
+    if b.global_gate_rejects(primary)
+        || b.stage35_three_record_match(primary)
+        || (b.object_word0(primary).wrapping_sub(24)>2 && b.object_byte256(primary)&4!=0)
+    {return 12;}
+
+    if !override_mode{
+        if selector<=3 || kind_byte.wrapping_sub(3)<=0xFB{return 18;}
+        if transformed==0xFFFF{transformed=63;}
+        transformed^=0x03C0;
+        req.field18=transformed;
+    }
+
+    let mode=b.mode();
+    if mode==1{
+        let (status,out_word)=b.transform(transformed,primary);
+        req.field18=out_word;
+        if b.object_predicate(primary)
+            || b.object_byte167(primary)&0x10==0
+            || req.field18&0x03F8!=0
+        {return 14;}
+        *selected=Some(primary);
+        return status as u32;
+    }
+    if mode==0 && !override_mode{return 12;}
+    if mode!=0 && mode!=2{return 0;}
+
+    let secondary_key=b.object_byte215(primary);
+    let secondary=b.secondary_lookup(secondary_key);
+    let (mut status,out_word)=match secondary{
+        Some(h)=>{let (s,w)=b.transform(transformed,h);(s as u32,w)}
+        None=>(0,b.uninitialized_word_seed()),
+    };
+    req.field18=out_word;
+
+    if let Some(h)=secondary{
+        if b.object_predicate(h) && b.object_byte167(h)&0x10!=0 && req.field18&0x03F8==0{return 14;}
+    }
+
+    let primary_matches=override_mode || (
+        (b.object_word208(primary)&0x0FFF)==field15
+        && (b.object_dword324(primary)==u32::MAX || original_field5==u32::MAX || original_field5==b.object_dword340(primary))
+        && (b.object_dword328(primary)==u32::MAX || original_field9==u32::MAX || original_field9==b.object_dword344(primary))
+    );
+    if primary_matches{
+        if status==0 && b.object_byte230(primary)&0x40!=0{status=35;}
+    }else{status=18;}
+    *selected=secondary;
+    status
+}
+
+#[cfg(test)]
+mod stage40_tests{
+    use super::*;use std::vec::Vec;
+    #[derive(Clone,Copy,Debug,PartialEq,Eq)]struct O(u8);
+    struct B{lookup:Option<O>,gate:bool,match3:bool,word0:u32,b256:u8,b167:[u8;2],b215:u8,w208:u16,d324:u32,d328:u32,d340:u32,d344:u32,b230:u8,mode:u32,secondary:Option<O>,transform:(u8,u16),seed:u16,calls:Vec<u8>}
+    impl BtStage40Backend for B{
+        type Handle=O;fn lookup_kind3(&mut self,_:u16)->Option<O>{self.calls.push(1);self.lookup}fn global_gate_rejects(&mut self,_:O)->bool{self.calls.push(2);self.gate}
+        fn stage35_three_record_match(&mut self,_:O)->bool{self.calls.push(3);self.match3}fn object_word0(&mut self,_:O)->u32{self.word0}fn object_byte256(&mut self,_:O)->u8{self.b256}
+        fn object_byte167(&mut self,h:O)->u8{self.b167[h.0 as usize]}fn object_byte215(&mut self,_:O)->u8{self.b215}fn object_word208(&mut self,_:O)->u16{self.w208}
+        fn object_dword324(&mut self,_:O)->u32{self.d324}fn object_dword328(&mut self,_:O)->u32{self.d328}fn object_dword340(&mut self,_:O)->u32{self.d340}fn object_dword344(&mut self,_:O)->u32{self.d344}
+        fn object_byte230(&mut self,_:O)->u8{self.b230}fn mode(&mut self)->u32{self.calls.push(4);self.mode}fn transform(&mut self,_:u16,_:O)->(u8,u16){self.calls.push(5);self.transform}
+        fn object_predicate(&mut self,_:O)->bool{self.calls.push(6);false}fn secondary_lookup(&mut self,_:u8)->Option<O>{self.calls.push(7);self.secondary}fn uninitialized_word_seed(&mut self)->u16{self.calls.push(8);self.seed}
+    }
+    fn base()->B{B{lookup:Some(O(0)),gate:false,match3:false,word0:24,b256:0,b167:[0x10,0],b215:1,w208:0x123,d324:u32::MAX,d328:u32::MAX,d340:0,d344:0,b230:0,mode:3,secondary:None,transform:(7,0),seed:0xBEEF,calls:Vec::new()}}
+    fn req()->BtStage40Request{BtStage40Request{lookup_key:1,field5:10,field9:20,field13:4,field15:0x123,field17:0,field18:0xFFFF}}
+    #[test]fn early_gates_and_nonoverride_transform_are_exact(){
+        let mut b=base();b.lookup=None;let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),2);
+        let mut b=base();b.gate=true;let mut r=req();assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),12);
+        let mut b=base();let mut r=req();r.field13=3;assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),18);
+        let mut b=base();b.mode=3;let mut r=req();assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),0);assert_eq!(r.field18,0x03FF);
+    }
+    #[test]fn mode1_success_and_rejection_preserve_selected_and_status(){
+        let mut b=base();b.mode=1;b.transform=(9,0);let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),9);assert_eq!(out,Some(O(0)));assert_eq!(r.field18,0);
+        let mut b=base();b.mode=1;b.transform=(9,0x3F8);let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),14);assert_eq!(out,None);
+    }
+    #[test]fn secondary_path_preserves_uninitialized_seed_match_rules_and_status35(){
+        let mut b=base();b.mode=2;b.secondary=None;b.seed=0x55AA;b.b230=0x40;let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),35);assert_eq!(r.field18,0x55AA);assert_eq!(out,None);assert!(b.calls.contains(&8));
+        let mut b=base();b.mode=2;b.secondary=Some(O(1));b.transform=(5,0);b.d324=11;b.d340=12;let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,false,&mut out,&mut b),18);assert_eq!(out,Some(O(1)));
+        let mut b=base();b.mode=0;b.secondary=Some(O(1));b.transform=(4,0);let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,true,&mut out,&mut b),4);assert_eq!(out,Some(O(1)));
+    }
+}
