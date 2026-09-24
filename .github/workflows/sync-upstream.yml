@@ -1,0 +1,64 @@
+name: Sync Orange Pi upstream
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: orangepi-firmware-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Fetch upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "stablekite-upstream-sync"
+          git config user.email "actions@users.noreply.github.com"
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/orangepi-xunlong/firmware.git
+          git fetch --filter=blob:none --prune --tags upstream +refs/heads/master:refs/remotes/upstream/master
+
+      - name: Merge upstream into StableKite main
+        shell: bash
+        run: |
+          set +e
+          git merge --no-edit upstream/master
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::error title=Orange Pi upstream merge conflict::Automatic merge of orangepi-xunlong/firmware:master failed. Manual port/review is required."
+            echo "Conflicted paths:"
+            git diff --name-only --diff-filter=U || true
+            exit 1
+          fi
+          set -e
+          for p in ap6275p/fw_bcm43752a2_pcie_ag.bin ap6275p/BCM4362A2.hcd; do
+            if [ -e "$p" ]; then
+              echo "::error title=Managed blob reintroduced::$p exists after merge. Review upstream before syncing."
+              exit 1
+            fi
+          done
+          test -f ap6275p/bcm43752-fw/Cargo.toml
+          test -f ap6275p/bcm4362a2-patch/Cargo.toml
+
+      - name: Publish successful sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin upstream/master:refs/heads/upstream-master --force
+          git push origin --tags
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            git push origin HEAD:main
+          fi

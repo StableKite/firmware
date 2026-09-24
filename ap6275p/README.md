@@ -1,0 +1,14 @@
+# AP6275P — brīwai atkurstan Wi-Fi be Bluetooth firmware
+
+Šis katalogs turri dwāi StableKite Rust rekonstrukcijans per Orange Pi 5B **AP6275P**:
+
+- `bcm43752-fw/` — BCM43752A2 Wi-Fi runtime firmware rekonstrukcija;
+- `bcm4362a2-patch/` — BCM4362A2 Bluetooth PatchRAM rekonstrukcija.
+
+Originalai `fw_bcm43752a2_pcie_ag.bin` be `BCM4362A2.hcd` ni ast en šisse `main` greiwā. CLM, NVRAM be kitāi upstream dātai palīkstan ni etwerptai.
+
+`upstream-master` ast tikka spīgelis `orangepi-xunlong/firmware:master`; `main` ast StableKite greiwa sen brīwai rekonstrukcijans.
+
+Tehniskai dokumentāi ast en `docs/`.
+
+> Prūsiskan teksts ast rekreaciōnin/atgīwinātas Prūsiskan; tehniskai nāmmai palīkstan en originalin formā.
