@@ -2843,3 +2843,131 @@ mod stage40_tests{
         let mut b=base();b.mode=0;b.secondary=Some(O(1));b.transform=(4,0);let mut r=req();let mut out=None;assert_eq!(bt_stage40_request_select(&mut r,true,&mut out,&mut b),4);assert_eq!(out,Some(O(1)));
     }
 }
+
+/// Stage 41: current 294-byte object/request update transaction at `0x16D05C`,
+/// recovered from a globally unique relocation-normalized complete-body match.
+pub const STAGE41_CURRENT_BT_OBJECT_UPDATE_ADDR:u32=0x0016_D05C;
+pub const STAGE41_BT_LOOKUP_BOUNDARY:u32=0x0003_3730;
+pub const STAGE41_BT_MISSING_BOUNDARY:u32=0x0006_F438;
+pub const STAGE41_BT_MODE_BOUNDARY:u32=0x0003_3B8C;
+pub const STAGE41_BT_OBJECT_PREDICATE_BOUNDARY:u32=0x0003_3D28;
+pub const STAGE41_BT_RESOLVE_BOUNDARY:u32=0x0004_FF46;
+pub const STAGE41_BT_NOTIFY_BOUNDARY:u32=0x0006_F340;
+pub const STAGE41_BT_FOLLOWUP_BOUNDARY:u32=0x0003_2F08;
+pub const STAGE41_BT_FINAL_BOUNDARY:u32=0x0005_4BE4;
+pub const STAGE41_BT_STACK_GUARD_FAIL:u32=0x0000_94C0;
+pub const STAGE41_BT_STACK_GUARD_WORD_ADDR:u32=0x0020_0890;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage41Request{
+    pub opcode:u16,
+    pub key:u16,
+    pub dword5:u32,
+    pub dword9:u32,
+    pub byte57:u8,
+    pub byte58:u8,
+    pub word59:u16,
+    pub byte61:u8,
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct BtStage41History{
+    pub dword81:u32,pub dword82:u32,pub dword83:u32,pub dword84:u32,
+    pub dword89:u32,pub dword90:u32,pub dword91:u32,pub dword92:u32,
+}
+
+pub trait BtStage41Backend{
+    type Handle:Copy+core::fmt::Debug+PartialEq+Eq;
+    fn lookup_kind3(&mut self,key:u16)->Option<Self::Handle>;
+    fn missing(&mut self,key:u16,status:u32)->u32;
+    fn mode(&mut self,h:Self::Handle)->u32;
+    /// Current `0x33D28`; its integer return is preserved because unsupported
+    /// mode values return this result unchanged.
+    fn object_predicate(&mut self,h:Self::Handle)->u32;
+    fn object_byte167(&mut self,h:Self::Handle)->u8;
+    fn object_dword28(&mut self,h:Self::Handle)->u32;
+    fn object_byte166(&mut self,h:Self::Handle)->u8;
+    fn resolve(&mut self,h:Self::Handle,req:&BtStage41Request)->(u32,Option<Self::Handle>);
+    fn notify(&mut self,h:Self::Handle,candidate:Option<Self::Handle>,code:u32,is_opcode_1031:bool);
+    fn followup(&mut self,h:Self::Handle,a:u32,b:u32)->u32;
+    fn candidate_byte230(&mut self,h:Self::Handle)->u8;
+    fn candidate_byte231(&mut self,h:Self::Handle)->u8;
+    fn set_candidate_byte230(&mut self,h:Self::Handle,value:u8);
+    fn set_candidate_byte231(&mut self,h:Self::Handle,value:u8);
+    fn history(&mut self,h:Self::Handle)->BtStage41History;
+    fn store_history(&mut self,h:Self::Handle,value:BtStage41History);
+    fn set_primary_word166(&mut self,h:Self::Handle,value:u16);
+    fn set_primary_byte336(&mut self,h:Self::Handle,value:u8);
+    fn set_primary_word167(&mut self,h:Self::Handle,value:u16);
+    fn final_call(&mut self,h:Self::Handle,kind:u32)->u32;
+    /// The binary dereferences a null candidate if mode 1 produces code zero
+    /// without populating the resolver output slot. Safe Rust makes that crash
+    /// edge explicit instead of silently inventing an object.
+    fn null_candidate_fault(&mut self)->!;
+}
+
+/// Safe local-semantics model of current `0x16D05C` / legacy `sub_16A4B4`.
+/// Compiler stack-canary mechanics are omitted; all unresolved runtime calls
+/// remain trait methods.
+pub fn bt_stage41_object_update<B:BtStage41Backend>(req:&mut BtStage41Request,b:&mut B)->u32{
+    let Some(primary)=b.lookup_kind3(req.key) else{return b.missing(req.key,2)};
+    let mode=b.mode(primary);
+    let predicate_result=b.object_predicate(primary);
+    if predicate_result!=0 && b.object_byte167(primary)&0x10!=0{req.word59&=0xFFF8;}
+
+    if mode==1{
+        let (code,candidate)=if b.object_dword28(primary)&0xF8==0x68{
+            (b.object_byte166(primary) as u32,None)
+        }else{b.resolve(primary,req)};
+        if code!=0{
+            b.notify(primary,candidate,code,req.opcode==1031);
+            return b.followup(primary,1,3);
+        }
+        let Some(h)=candidate else{b.null_candidate_fault()};
+        let b231=b.candidate_byte231(h);
+        let b230=b.candidate_byte230(h);
+        b.set_candidate_byte230(h,(b230&0x7F)|((req.opcode==1031) as u8)<<7);
+        b.set_candidate_byte231(h,(b231&0x7F)|((req.opcode==1085) as u8)<<7);
+        return b.final_call(h,0);
+    }
+
+    if mode!=0 && mode!=2{return predicate_result;}
+    let mut h=b.history(primary);
+    h.dword89=h.dword81;h.dword90=h.dword82;h.dword91=h.dword83;h.dword92=h.dword84;
+    h.dword81=req.dword5;h.dword82=req.dword9;
+    b.store_history(primary,h);
+    b.set_primary_word166(primary,(req.byte57 as u16)|((req.byte58 as u16)<<8));
+    b.set_primary_byte336(primary,req.byte61);
+    b.set_primary_word167(primary,req.word59);
+    b.final_call(primary,6)
+}
+
+#[cfg(test)]
+mod stage41_tests{
+    use super::*;use std::vec::Vec;
+    #[derive(Clone,Copy,Debug,PartialEq,Eq)]struct H(u8);
+    struct B{lookup:Option<H>,mode:u32,pred:u32,b167:u8,d28:u32,b166:u8,res:(u32,Option<H>),b230:u8,b231:u8,hist:BtStage41History,calls:Vec<u32>}
+    impl BtStage41Backend for B{
+        type Handle=H;fn lookup_kind3(&mut self,_:u16)->Option<H>{self.calls.push(1);self.lookup}fn missing(&mut self,k:u16,s:u32)->u32{self.calls.push(2);k as u32+s}
+        fn mode(&mut self,_:H)->u32{self.calls.push(3);self.mode}fn object_predicate(&mut self,_:H)->u32{self.calls.push(4);self.pred}fn object_byte167(&mut self,_:H)->u8{self.b167}
+        fn object_dword28(&mut self,_:H)->u32{self.d28}fn object_byte166(&mut self,_:H)->u8{self.b166}fn resolve(&mut self,_:H,_:&BtStage41Request)->(u32,Option<H>){self.calls.push(5);self.res}
+        fn notify(&mut self,_:H,_:Option<H>,c:u32,f:bool){self.calls.push(0x100+c+f as u32)}fn followup(&mut self,_:H,a:u32,b:u32)->u32{self.calls.push(6);a*10+b}
+        fn candidate_byte230(&mut self,_:H)->u8{self.b230}fn candidate_byte231(&mut self,_:H)->u8{self.b231}fn set_candidate_byte230(&mut self,_:H,v:u8){self.b230=v;self.calls.push(7)}fn set_candidate_byte231(&mut self,_:H,v:u8){self.b231=v;self.calls.push(8)}
+        fn history(&mut self,_:H)->BtStage41History{self.hist}fn store_history(&mut self,_:H,v:BtStage41History){self.hist=v;self.calls.push(9)}fn set_primary_word166(&mut self,_:H,v:u16){self.calls.push(0x10000+v as u32)}fn set_primary_byte336(&mut self,_:H,v:u8){self.calls.push(0x20000+v as u32)}fn set_primary_word167(&mut self,_:H,v:u16){self.calls.push(0x30000+v as u32)}
+        fn final_call(&mut self,_:H,k:u32)->u32{self.calls.push(10+k);0x9000+k}fn null_candidate_fault(&mut self)->!{panic!("null candidate")}
+    }
+    fn req(op:u16)->BtStage41Request{BtStage41Request{opcode:op,key:4,dword5:0x11,dword9:0x22,byte57:0x33,byte58:0x44,word59:0xFFFF,byte61:0x55}}
+    fn base()->B{B{lookup:Some(H(0)),mode:0,pred:0,b167:0,d28:0,b166:0,res:(0,Some(H(1))),b230:0xAA,b231:0xBB,hist:BtStage41History{dword81:1,dword82:2,dword83:3,dword84:4,dword89:0,dword90:0,dword91:0,dword92:0},calls:Vec::new()}}
+    #[test]fn missing_mask_and_unsupported_mode_preserve_result(){
+        let mut b=base();b.lookup=None;let mut r=req(0);assert_eq!(bt_stage41_object_update(&mut r,&mut b),6);
+        let mut b=base();b.mode=7;b.pred=9;b.b167=0x10;let mut r=req(0);assert_eq!(bt_stage41_object_update(&mut r,&mut b),9);assert_eq!(r.word59,0xFFF8);
+    }
+    #[test]fn mode1_resolver_preserves_notify_and_opcode_bits(){
+        let mut b=base();b.mode=1;b.res=(5,Some(H(1)));let mut r=req(1031);assert_eq!(bt_stage41_object_update(&mut r,&mut b),13);assert!(b.calls.contains(&(0x100+5+1)));
+        let mut b=base();b.mode=1;let mut r=req(1031);assert_eq!(bt_stage41_object_update(&mut r,&mut b),0x9000);assert_eq!(b.b230,0xAA|0x80);assert_eq!(b.b231,0x3B);
+        let mut b=base();b.mode=1;let mut r=req(1085);let _=bt_stage41_object_update(&mut r,&mut b);assert_eq!(b.b230,0x2A);assert_eq!(b.b231,0xBB|0x80);
+    }
+    #[test]fn mode0_or2_shifts_history_then_commits_request_fields(){
+        let mut b=base();b.mode=2;let mut r=req(0);assert_eq!(bt_stage41_object_update(&mut r,&mut b),0x9006);assert_eq!((b.hist.dword89,b.hist.dword90,b.hist.dword91,b.hist.dword92),(1,2,3,4));assert_eq!((b.hist.dword81,b.hist.dword82),(0x11,0x22));assert!(b.calls.contains(&(0x10000+0x4433)));assert!(b.calls.contains(&(0x20000+0x55)));assert!(b.calls.contains(&(0x30000+0xFFFF)));
+    }
+}
