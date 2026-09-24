@@ -1601,3 +1601,116 @@ mod stage32_tests{
         assert_eq!(STAGE32_CURRENT_BT_REPLAY_ACTIVE_RECORDS_ADDR,0x16BF80);assert_eq!(STAGE32_CURRENT_BT_COMMAND5_ADAPTER_ADDR,0x16C02C);assert_eq!(STAGE32_BT_COMMAND5_DISPATCH_TARGET,0x172594);
     }
 }
+
+/// Stage 33: small current control-plane helpers promoted from globally unique
+/// relocation-normalized complete-body matches. Opaque ROM/runtime calls remain
+/// traits; current literal addresses are recorded only as provenance anchors.
+pub const STAGE33_CURRENT_BT_CLASS1_ADAPTER_ADDR:u32=0x0016_BFF4;
+pub const STAGE33_CURRENT_BT_FLAG_CODE_ADDR:u32=0x0016_C228;
+pub const STAGE33_CURRENT_BT_PARSE_AND_MARK_ADDR:u32=0x0016_C400;
+pub const STAGE33_CURRENT_BT_INDEXED_TOGGLE_ADDR:u32=0x0016_C828;
+pub const STAGE33_BT_CLASS1_MIRROR_ADDR:u32=0x0022_2708;
+pub const STAGE33_BT_PARSE_CONTEXT_ADDR:u32=0x0020_CEF8;
+pub const STAGE33_BT_PARSE_MARK_ADDR:u32=0x0022_2700;
+pub const STAGE33_BT_INDEX_COUNT_ADDR:u32=0x0020_3160;
+pub const STAGE33_BT_INDEX_METADATA_BASE_PTR_ADDR:u32=0x0020_CF10;
+pub const STAGE33_BT_INDEX_FLAG_TABLE_PTR_ADDR:u32=0x0022_257C;
+pub const STAGE33_BT_CLASS1_PHASE_A_BOUNDARY:u32=0x0008_9314;
+pub const STAGE33_BT_CLASS1_PHASE_B_BOUNDARY:u32=0x0008_957C;
+pub const STAGE33_BT_CLASS1_TAIL_BOUNDARY:u32=0x0008_9240;
+pub const STAGE33_BT_PARSE_BOUNDARY:u32=0x0009_D3DC;
+
+pub trait BtStage33Class1Boundary{
+    fn phase_a(&mut self)->u32;
+    fn phase_b(&mut self)->u32;
+    fn tail(&mut self)->u32;
+}
+
+/// Safe control-flow model of current `0x16BFF4` / legacy `sub_169720`.
+/// The response status is cleared before the class test. Class 1 runs phase A;
+/// only phase-A result 1 runs phase B and then tail-dispatches. The request byte
+/// at +13 is mirrored regardless of phase-A result once class 1 is accepted.
+pub fn bt_stage33_class1_adapter<B:BtStage33Class1Boundary>(
+    passthrough:u32,class:u8,mirror_value:u8,response_status:&mut u8,mirror:&mut u8,b:&mut B,
+)->u32{
+    *response_status=0;
+    if class!=1{*response_status=18;return passthrough;}
+    let first=b.phase_a();
+    let mut result=first;
+    if first==1{result=b.phase_b();}
+    *mirror=mirror_value;
+    if first==1{b.tail()}else{result}
+}
+
+/// Exact pure helper at current `0x16C228`: derive the firmware code from the
+/// word at object offset +564. Bit 2 selects 239 vs 245; bit 6 decrements it.
+pub const fn bt_stage33_flag_code(flags:u16)->u32{
+    let base=if flags&4!=0{239u32}else{245u32};
+    if flags&0x40!=0{base-1}else{base}
+}
+
+pub trait BtStage33ParseBoundary{fn parse(&mut self,payload:&[u8],context_addr:u32)->u8;}
+/// Current `0x16C400` / legacy `sub_169A28`: feed request payload beginning at
+/// +12 to opaque boundary `0x9D3DC`, store its low-byte status, and mark the
+/// current global byte at `0x222700` as one.
+pub fn bt_stage33_parse_and_mark<B:BtStage33ParseBoundary>(
+    payload:&[u8],response_status:&mut u8,mark:&mut u8,b:&mut B,
+)->u8{
+    let r=b.parse(payload,STAGE33_BT_PARSE_CONTEXT_ADDR);
+    *response_status=r;*mark=1;r
+}
+
+pub trait BtStage33IndexedToggleBackend{
+    fn count(&self)->u8;
+    fn metadata_enabled(&self,index:usize)->bool;
+    fn set_flag(&mut self,index:usize,value:u8);
+}
+/// Current `0x16C828` / legacy `sub_169CE8`. A valid index must be below the
+/// current count and metadata byte `+166` must have bit 0 set. The destination
+/// is the current 20-byte-per-index flag table byte `+2`. Request value zero
+/// stores one; any nonzero value stores zero. Invalid input writes status 66.
+pub fn bt_stage33_indexed_toggle<B:BtStage33IndexedToggleBackend>(
+    passthrough:u32,index:u16,request_value:u8,response_status:&mut u8,b:&mut B,
+)->u32{
+    let i=index as usize;
+    if i<(b.count() as usize) && b.metadata_enabled(i){
+        b.set_flag(i,if request_value==0{1}else{0});
+    }else{*response_status=66;}
+    passthrough
+}
+
+#[cfg(test)]
+mod stage33_tests{
+    use super::*;use std::vec::Vec;
+    struct C{a:u32,b:u32,t:u32,calls:Vec<u8>}
+    impl BtStage33Class1Boundary for C{
+        fn phase_a(&mut self)->u32{self.calls.push(1);self.a}
+        fn phase_b(&mut self)->u32{self.calls.push(2);self.b}
+        fn tail(&mut self)->u32{self.calls.push(3);self.t}
+    }
+    struct P{seen:Vec<u8>,ctx:u32,ret:u8}
+    impl BtStage33ParseBoundary for P{fn parse(&mut self,p:&[u8],c:u32)->u8{self.seen.extend_from_slice(p);self.ctx=c;self.ret}}
+    #[derive(Default)]struct I{count:u8,enabled:[bool;4],writes:Vec<(usize,u8)>}
+    impl BtStage33IndexedToggleBackend for I{
+        fn count(&self)->u8{self.count}
+        fn metadata_enabled(&self,i:usize)->bool{self.enabled.get(i).copied().unwrap_or(false)}
+        fn set_flag(&mut self,i:usize,v:u8){self.writes.push((i,v))}
+    }
+    #[test]fn class1_and_flag_code_preserve_edges(){
+        let mut c=C{a:0,b:7,t:9,calls:Vec::new()};let mut s=99;let mut m=0;
+        assert_eq!(bt_stage33_class1_adapter(0x1234,1,0x55,&mut s,&mut m,&mut c),0);assert_eq!((s,m),(0,0x55));assert_eq!(c.calls,[1]);
+        c.a=1;c.calls.clear();assert_eq!(bt_stage33_class1_adapter(0,1,2,&mut s,&mut m,&mut c),9);assert_eq!(c.calls,[1,2,3]);
+        c.calls.clear();assert_eq!(bt_stage33_class1_adapter(0xDEAD,2,3,&mut s,&mut m,&mut c),0xDEAD);assert_eq!(s,18);assert!(c.calls.is_empty());
+        assert_eq!(bt_stage33_flag_code(0),245);assert_eq!(bt_stage33_flag_code(4),239);assert_eq!(bt_stage33_flag_code(0x40),244);assert_eq!(bt_stage33_flag_code(0x44),238);
+    }
+    #[test]fn parse_mark_and_index_toggle_preserve_status_and_boolean_store(){
+        let mut p=P{seen:Vec::new(),ctx:0,ret:12};let mut status=0;let mut mark=0;
+        assert_eq!(bt_stage33_parse_and_mark(&[1,2,3],&mut status,&mut mark,&mut p),12);assert_eq!((status,mark,p.ctx),(12,1,STAGE33_BT_PARSE_CONTEXT_ADDR));assert_eq!(p.seen,[1,2,3]);
+        let mut i=I{count:3,enabled:[true,false,true,false],writes:Vec::new()};
+        assert_eq!(bt_stage33_indexed_toggle(7,0,0,&mut status,&mut i),7);assert_eq!(i.writes,[(0,1)]);
+        let _=bt_stage33_indexed_toggle(8,2,9,&mut status,&mut i);assert_eq!(i.writes,[(0,1),(2,0)]);
+        status=0;let _=bt_stage33_indexed_toggle(9,1,0,&mut status,&mut i);assert_eq!(status,66);
+        status=0;let _=bt_stage33_indexed_toggle(9,3,0,&mut status,&mut i);assert_eq!(status,66);
+        assert_eq!(STAGE33_CURRENT_BT_CLASS1_ADAPTER_ADDR,0x16BFF4);assert_eq!(STAGE33_CURRENT_BT_INDEXED_TOGGLE_ADDR,0x16C828);
+    }
+}

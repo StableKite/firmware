@@ -168,3 +168,15 @@ Legacy `sub_1696AC` has one current normalized match at `0x16bf80` (104 bytes). 
 Legacy `sub_169758` has one current normalized match at `0x16c02c` (34 bytes). Its sole current `BL` targets the already recovered Stage-25 command dispatcher at `0x172594`. Request class byte `+12` must equal 5; on that path request byte `+11` is decremented with 8-bit wrap semantics and forwarded as the dispatcher frame length, with frame bytes beginning at request `+13`. The returned dispatcher status is stored at response byte `+5`. For other request classes the firmware writes status 1 and preserves the incoming pointer-shaped return value.
 
 Safe Rust omits compiler stack-canary plumbing but preserves ordering, status handling, wraparound, and the opaque runtime boundary as a trait.
+
+## Stage 33 — current small control-plane helpers
+
+Stage 33 promotes four additional BCM4362A2 functions only after whole-current-code scanning proves a single relocation-normalized complete-body match for each and current literal/direct-target values are re-read independently.
+
+Current `0x16bff4` is the unique 52-byte match of legacy `sub_169720`. Its opaque direct targets remain unchanged at `0x89314`, `0x8957c`, and tail boundary `0x89240`; its mirrored-byte literal relocates to current `0x222708`. The source model preserves the odd control flow: response status is cleared first; request class other than 1 writes status 18 and returns the incoming pointer-shaped value; class 1 runs phase A, runs phase B only when phase A returns 1, mirrors request byte +13 in either accepted case, and tail-dispatches only when the original phase-A result was 1. No vendor role is assigned to any of the three opaque targets.
+
+Current `0x16c228` is byte-identical to legacy `sub_169850` across all 24 bytes and has no calls or literals. It returns 239 when bit 2 of the object word at offset +564 is set, otherwise 245, then subtracts one when bit 6 is set. This pure helper is reconstructed directly.
+
+Current `0x16c400` is the unique 22-byte normalized match of legacy `sub_169A28`. Its sole call remains opaque `0x9d3dc`; current literals are context `0x20cef8` and mark byte `0x222700`. It forwards request payload beginning at +12 to the opaque parser-like boundary, copies the low-byte result to response status +5, sets the current mark byte to one, and returns the boundary result. The boundary name remains deliberately generic.
+
+Current `0x16c828` is byte-identical to legacy `sub_169CE8` across all 60 bytes. Current literals independently resolve count byte `0x203160`, metadata-base pointer `0x20cf10`, and 20-byte-per-index flag-table pointer `0x22257c`. The routine accepts an index only when it is below count and metadata record byte +166 has bit 0 set; valid requests write byte +2 of the indexed 20-byte record to one exactly when request byte +14 is zero, otherwise zero. Invalid index/metadata writes response status 66. The Rust backend keeps metadata and table storage abstract rather than exposing raw firmware pointers.
