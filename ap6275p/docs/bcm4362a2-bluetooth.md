@@ -294,3 +294,13 @@ Legacy `sub_16AAEC` has exactly one relocation-normalized whole-current-code mat
 Two binary-specific ABI edges are deliberately explicit. First, dword `+52` is shifted left 21 into R2 before the bit-10 test. When bit 10 is set, opaque `0x2EB58` is called and the caller forwards *post-call caller-volatile R2* directly to `0x6E9E0`; safe Rust therefore models `0x2EB58` as producing the R2 value observed after the call instead of assuming the pre-call shift survives. Second, after opaque `0x58488` returns nonzero, the binary executes `MOVS R0,#0` before the tail branch to `0x5833C`; the tail receives zero rather than the predicate result.
 
 Compiler stack-canary mechanics are omitted from safe Rust. All external runtime contracts remain traits.
+
+## Stage 45 — current record-window maintenance
+
+Stage 45 promotes legacy `sub_16AB80` only after a fresh whole-current-code scan proves one relocation-normalized complete-body match at current `0x16DB4C` (136 bytes). The current raw SHA-256 is `aa4bb94358cc26103017357c495b264f56810a935b9921a7f90b836f44bbeda8`; masking only the two direct branch encodings produces normalized SHA-256 `df101fd7b60c00fc47cabefe0462b5a7e32090fb06c7473fd05eedf25b44e034`, identical to the legacy body, with the sole current hit at `0x16DB4C`. Current direct targets remain opaque `0x3B04A` and already proven memset-like `0x3D24`. The two literal-pool constants are independently unchanged at `0x30078` and `0x30018`.
+
+When object byte `+149` equals 2, `(dword+144 & 0x30078) == 0x30018` increments state byte `+22` with eight-bit wraparound and sets state byte `+20` bit `0x10`. Otherwise, if `(byte+144 >> 3) & 0x0f` is above 2, byte `+146 & 3` is 1 or 2, and byte `+146` bit 2 is clear, state byte `+20` gains bit `0x04`.
+
+State byte `+15` is then tested. When nonzero, firmware clears it before calling opaque current `0x3B04A(state)` and retains that boundary's return. The source trait deliberately permits the boundary to mutate the state because firmware re-reads byte `+14` after the call. A nonzero byte `+14` is cleared, exactly 116 bytes at state `+16..+131` are zeroed through the already established memset-like semantics, state byte `+1` is cleared, and the return becomes the pointer-shaped value `state+16`, overriding any prior boundary result.
+
+Without that clear path, state byte `+20` bit 0 suppresses index movement. When bit 0 is clear, byte `+1` increments only while it is below `byte+20 >> 5`. If neither opaque boundary nor clear path runs, the binary returns the original object pointer-shaped value. Safe Rust preserves all three return shapes using explicit 32-bit handles while keeping host pointers out of the model.

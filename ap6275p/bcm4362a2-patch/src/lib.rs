@@ -3554,3 +3554,185 @@ mod stage44_tests {
         assert!(!b.calls.iter().any(|x| x.0 == "followup"));
     }
 }
+
+/// Stage 45: current record-window maintenance at `0x16DB4C`.
+///
+/// The body is the sole whole-current-code relocation-normalized match of
+/// legacy `sub_16AB80`. The only unresolved runtime call remains an opaque
+/// trait boundary; the 116-byte zeroing path is modeled directly because
+/// current `0x3D24` is already proven memset-like.
+pub const STAGE45_CURRENT_BT_RECORD_MAINTENANCE_ADDR: u32 = 0x0016_DB4C;
+pub const STAGE45_BT_PENDING15_BOUNDARY: u32 = 0x0003_B04A;
+pub const STAGE45_BT_MEMSET_BOUNDARY: u32 = ROM_MEMSET_ADDR;
+pub const STAGE45_BT_MATCH_MASK: u32 = 0x0003_0078;
+pub const STAGE45_BT_MATCH_VALUE: u32 = 0x0003_0018;
+pub const STAGE45_BT_WINDOW_BYTES: usize = 116;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage45ObjectState {
+    /// Object dword +144. Its low byte is also used by the alternate gate.
+    pub dword144: u32,
+    /// Object byte +146.
+    pub byte146: u8,
+    /// Object byte +149.
+    pub byte149: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtStage45RecordState {
+    /// State byte +1.
+    pub index: u8,
+    /// State byte +14.
+    pub clear_pending: u8,
+    /// State byte +15.
+    pub boundary_pending: u8,
+    /// Exact state bytes +16..+131. In particular byte +20 is window[4]
+    /// and byte +22 is window[6].
+    pub window: [u8; STAGE45_BT_WINDOW_BYTES],
+}
+
+impl Default for BtStage45RecordState {
+    fn default() -> Self {
+        Self { index: 0, clear_pending: 0, boundary_pending: 0, window: [0; STAGE45_BT_WINDOW_BYTES] }
+    }
+}
+
+impl BtStage45RecordState {
+    pub const fn flags20(&self) -> u8 { self.window[4] }
+    pub fn set_flags20(&mut self, value: u8) { self.window[4] = value; }
+    pub const fn counter22(&self) -> u8 { self.window[6] }
+    pub fn set_counter22(&mut self, value: u8) { self.window[6] = value; }
+}
+
+/// Still-opaque current `0x3B04A` boundary.
+///
+/// The current binary clears byte +15 before calling it, then re-reads byte
+/// +14 afterwards, so this contract is allowed to mutate the state.
+pub trait BtStage45Backend {
+    fn pending15_boundary(
+        &mut self,
+        state_handle: u32,
+        state: &mut BtStage45RecordState,
+    ) -> u32;
+}
+
+/// Safe local-semantics model of current `0x16DB4C` / legacy `sub_16AB80`.
+///
+/// `object_handle` and `state_handle` retain the target's 32-bit pointer-shaped
+/// return behavior without exposing host pointers. If the 116-byte clear path
+/// runs, the observed memset-like return is exactly `state_handle + 16`.
+pub fn bt_stage45_record_maintenance<B: BtStage45Backend>(
+    object_handle: u32,
+    object: &BtStage45ObjectState,
+    state_handle: u32,
+    state: &mut BtStage45RecordState,
+    backend: &mut B,
+) -> u32 {
+    let mut result = object_handle;
+
+    if object.byte149 == 2 {
+        if object.dword144 & STAGE45_BT_MATCH_MASK == STAGE45_BT_MATCH_VALUE {
+            state.set_counter22(state.counter22().wrapping_add(1));
+            state.set_flags20(state.flags20() | 0x10);
+        } else {
+            let low144 = object.dword144 as u8;
+            let class = (low144 >> 3) & 0x0f;
+            let low2 = object.byte146 & 0x03;
+            if class > 2 && (low2 == 1 || low2 == 2) && object.byte146 & 0x04 == 0 {
+                state.set_flags20(state.flags20() | 0x04);
+            }
+        }
+    }
+
+    if state.boundary_pending != 0 {
+        state.boundary_pending = 0;
+        result = backend.pending15_boundary(state_handle, state);
+    }
+
+    // Re-read after the opaque boundary: it is permitted to change byte +14.
+    if state.clear_pending != 0 {
+        state.clear_pending = 0;
+        state.window.fill(0);
+        state.index = 0;
+        return state_handle.wrapping_add(16);
+    }
+
+    let flags = state.flags20();
+    if flags & 1 == 0 {
+        let limit = flags >> 5;
+        if state.index < limit {
+            state.index = state.index.wrapping_add(1);
+        }
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod stage45_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Backend { ret: u32, set_clear: bool, calls: u32 }
+    impl BtStage45Backend for Backend {
+        fn pending15_boundary(&mut self, _h: u32, state: &mut BtStage45RecordState) -> u32 {
+            self.calls += 1;
+            if self.set_clear { state.clear_pending = 1; }
+            self.ret
+        }
+    }
+
+    #[test]
+    fn exact_mask_and_alternate_gate_preserve_byte_updates() {
+        let mut b = Backend::default();
+        let mut s = BtStage45RecordState::default();
+        s.set_counter22(0xff);
+        let o = BtStage45ObjectState { dword144: 0x0003_0018, byte146: 0, byte149: 2 };
+        assert_eq!(bt_stage45_record_maintenance(0x1111, &o, 0x2000, &mut s, &mut b), 0x1111);
+        assert_eq!(s.counter22(), 0);
+        assert_eq!(s.flags20(), 0x10);
+
+        let mut s = BtStage45RecordState::default();
+        let o = BtStage45ObjectState { dword144: 0x18, byte146: 1, byte149: 2 };
+        assert_eq!(bt_stage45_record_maintenance(7, &o, 0x3000, &mut s, &mut b), 7);
+        assert_eq!(s.flags20(), 0x04);
+    }
+
+    #[test]
+    fn pending_boundary_return_is_overridden_by_post_call_clear() {
+        let mut b = Backend { ret: 0xdead_beef, set_clear: true, calls: 0 };
+        let mut s = BtStage45RecordState::default();
+        s.boundary_pending = 1;
+        s.index = 5;
+        s.window.fill(0xa5);
+        let o = BtStage45ObjectState::default();
+        assert_eq!(bt_stage45_record_maintenance(0x1111, &o, 0x8000, &mut s, &mut b), 0x8010);
+        assert_eq!(b.calls, 1);
+        assert_eq!(s.boundary_pending, 0);
+        assert_eq!(s.clear_pending, 0);
+        assert_eq!(s.index, 0);
+        assert!(s.window.iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn callback_return_and_index_gate_preserve_exact_order() {
+        let mut b = Backend { ret: 0x1234_5678, set_clear: false, calls: 0 };
+        let mut s = BtStage45RecordState::default();
+        s.boundary_pending = 1;
+        s.index = 2;
+        s.set_flags20(3 << 5);
+        let o = BtStage45ObjectState::default();
+        assert_eq!(bt_stage45_record_maintenance(9, &o, 0x4000, &mut s, &mut b), 0x1234_5678);
+        assert_eq!(s.index, 3);
+
+        s.index = 1;
+        s.set_flags20((7 << 5) | 1);
+        assert_eq!(bt_stage45_record_maintenance(0xaa, &o, 0x4000, &mut s, &mut b), 0xaa);
+        assert_eq!(s.index, 1);
+
+        assert_eq!(STAGE45_CURRENT_BT_RECORD_MAINTENANCE_ADDR, 0x16DB4C);
+        assert_eq!(STAGE45_BT_MEMSET_BOUNDARY, 0x3D24);
+        assert_eq!(STAGE45_BT_MATCH_MASK, 0x30078);
+        assert_eq!(STAGE45_BT_MATCH_VALUE, 0x30018);
+    }
+}
