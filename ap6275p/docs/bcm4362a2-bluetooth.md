@@ -282,3 +282,15 @@ The source model preserves the exact local object transitions. It tests object w
 A deliberately unusual register edge is kept explicit. When both masked fields are nonzero, current `0x3ccdc` is called with the object in R0 and word `+236` in R1. If that call returns zero in R0, the binary branches directly to the commit block without restoring R1, so current `0x4bc44` receives the caller-volatile post-call R1 value. Rust represents the opaque probe result as `{r0, r1_after}` rather than silently replacing `r1_after` with a guessed stable value.
 
 When the probe returns nonzero, byte `+31` bit 3 is set. Byte `+235 & 0x30 == 0x10` returns the probe result unchanged; other values tail current `0x3cc9e` with argument 1 equal to one. All five runtime contracts remain unnamed traits and compiler-generated call/return mechanics are not strengthened beyond the observed register-level behavior.
+
+## Stage 44 — adjacent post-mode continuations
+
+Stage 44 continues from the already recovered current `0x16D90C` mode-1 continuation. No external runtime entry is assigned a vendor name unless independently proven.
+
+Legacy `sub_16AAA0` has exactly one relocation-normalized whole-current-code match at current `0x16D99C` (72 bytes). The current body preserves external targets `0x3CCDC`, `0x3CC9E`, `0x3C3B0`, and `0x2EC18`, plus shared-flags literal base `0x208830`. The source model preserves the probe gate on object byte `+29` bit 7, forwards the probe result in argument register R1 to the follow-up only when the result is `1`, and selects the flagged tail only when dword `+56` bit 3 is set, byte `+29` bit 7 is clear, and runtime dword `0x208834` bit 11 is set. Otherwise it takes the default tail.
+
+Legacy `sub_16AAEC` has exactly one relocation-normalized whole-current-code match at current `0x16D9E8` (138 bytes). The source model preserves the initial probe/follow-up gate, the `(1,0)` mode-write call, object byte `+28` rewrite to `(old & 7) | 0x40`, global `0x2090CC == 1` conditional notification, the primary-handle map/final-predicate path, and all return-shape distinctions.
+
+Two binary-specific ABI edges are deliberately explicit. First, dword `+52` is shifted left 21 into R2 before the bit-10 test. When bit 10 is set, opaque `0x2EB58` is called and the caller forwards *post-call caller-volatile R2* directly to `0x6E9E0`; safe Rust therefore models `0x2EB58` as producing the R2 value observed after the call instead of assuming the pre-call shift survives. Second, after opaque `0x58488` returns nonzero, the binary executes `MOVS R0,#0` before the tail branch to `0x5833C`; the tail receives zero rather than the predicate result.
+
+Compiler stack-canary mechanics are omitted from safe Rust. All external runtime contracts remain traits.

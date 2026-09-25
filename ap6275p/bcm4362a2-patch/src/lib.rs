@@ -3215,3 +3215,342 @@ mod stage43_tests{
         assert_eq!(STAGE43_CURRENT_BT_MODE1_POST_ADDR,0x16D90C);
     }
 }
+
+/// Stage 44: adjacent current continuations after the recovered mode-1 post path.
+///
+/// Both entry points are promoted only after whole-current-code relocation-normalized
+/// uniqueness was proven against the current Orange Pi BCM4362A2 PatchRAM image.
+/// External runtime calls remain deliberately opaque traits.
+pub const STAGE44_CURRENT_BT_POST_GATE_ADDR: u32 = 0x0016_D99C;
+pub const STAGE44_CURRENT_BT_POST_SEQUENCE_ADDR: u32 = 0x0016_D9E8;
+pub const STAGE44_BT_SHARED_FLAGS_BASE_ADDR: u32 = 0x0020_8830;
+pub const STAGE44_BT_GLOBAL_MODE_ADDR: u32 = 0x0020_90CC;
+
+pub const STAGE44_BT_PROBE_BOUNDARY: u32 = 0x0003_CCDC;
+pub const STAGE44_BT_PROBE_FOLLOWUP_BOUNDARY: u32 = 0x0003_CC9E;
+pub const STAGE44_BT_FLAGGED_TAIL_BOUNDARY: u32 = 0x0003_C3B0;
+pub const STAGE44_BT_DEFAULT_TAIL_BOUNDARY: u32 = 0x0002_EC18;
+pub const STAGE44_BT_MODE_WRITE_BOUNDARY: u32 = 0x0004_14A0;
+pub const STAGE44_BT_BIT10_PREPARE_BOUNDARY: u32 = 0x0002_EB58;
+pub const STAGE44_BT_FORWARD_BOUNDARY: u32 = 0x0006_E9E0;
+pub const STAGE44_BT_STEP_A_BOUNDARY: u32 = 0x0004_BF0C;
+pub const STAGE44_BT_STEP_B_BOUNDARY: u32 = 0x0003_7158;
+pub const STAGE44_BT_GLOBAL_PREDICATE_BOUNDARY: u32 = 0x0003_34F8;
+pub const STAGE44_BT_GLOBAL_NOTIFY_BOUNDARY: u32 = 0x0003_BC94;
+pub const STAGE44_BT_PRIMARY_MAP_BOUNDARY: u32 = 0x0002_E678;
+pub const STAGE44_BT_FINAL_PREDICATE_BOUNDARY: u32 = 0x0005_8488;
+pub const STAGE44_BT_ZERO_TAIL_BOUNDARY: u32 = 0x0005_833C;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage44PostGateState {
+    /// Object byte +29.
+    pub byte29: u8,
+    /// Object halfword +236.
+    pub word236: u16,
+    /// Object dword +56.
+    pub dword56: u32,
+    /// Runtime word at shared-flags base +4 (0x208834).
+    pub shared_flags_plus4: u32,
+}
+
+/// Opaque boundaries used by current 0x16D99C / legacy sub_16AAA0.
+pub trait BtStage44PostGateBackend {
+    /// Current 0x3CCDC(object, word236).
+    fn probe(&mut self, word236: u16) -> u32;
+
+    /// Current 0x3CC9E(object, probe_result). The binary forwards R1 from the probe result.
+    fn probe_followup(&mut self, probe_result: u32);
+
+    /// Current tail 0x3C3B0(object, 1).
+    fn flagged_tail(&mut self, one: u32) -> u32;
+
+    /// Current tail 0x2EC18(object).
+    fn default_tail(&mut self) -> u32;
+}
+
+/// Safe source-level model of current 0x16D99C.
+///
+/// Exact locally visible behavior:
+/// - when object byte +29 bit7 is set, call the probe with halfword +236;
+/// - only probe result 1 invokes the follow-up, forwarding that result as argument 2;
+/// - choose the 0x3C3B0 tail only when dword +56 bit3 is set, byte +29 bit7 is clear,
+///   and runtime word 0x208834 bit11 is set;
+/// - otherwise tail to 0x2EC18.
+pub fn bt_stage44_post_gate<B: BtStage44PostGateBackend>(
+    state: &BtStage44PostGateState,
+    backend: &mut B,
+) -> u32 {
+    if state.byte29 & 0x80 != 0 {
+        let probe_result = backend.probe(state.word236);
+        if probe_result == 1 {
+            backend.probe_followup(probe_result);
+        }
+    }
+
+    if state.dword56 & 0x08 != 0
+        && state.byte29 & 0x80 == 0
+        && state.shared_flags_plus4 & 0x0800 != 0
+    {
+        backend.flagged_tail(1)
+    } else {
+        backend.default_tail()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage44PostSequenceState {
+    /// Object dword +0 captured before any runtime calls.
+    pub primary: u32,
+    /// Object halfword +236.
+    pub word236: u16,
+    /// Object byte +29.
+    pub byte29: u8,
+    /// Object dword +52.
+    pub dword52: u32,
+    /// Object byte +28; bits 3..7 are rewritten to binary value 8 (0x40 in the byte).
+    pub byte28: u8,
+    /// Runtime dword at current 0x2090CC.
+    pub global_2090cc: u32,
+    /// Runtime dword at shared-flags base +8 (0x208838).
+    pub shared_flags_plus8: u32,
+}
+
+/// Opaque boundaries used by current 0x16D9E8 / legacy sub_16AAEC.
+pub trait BtStage44PostSequenceBackend {
+    fn probe(&mut self, word236: u16) -> u32;
+    fn probe_followup(&mut self, probe_result: u32);
+    fn mode_write(&mut self, one: u32, zero: u32);
+
+    /// Current 0x2EB58 is called with the object's pointer in R0 while R2 still contains
+    /// `dword52 << 21`. The caller then forwards *post-call* R2 to 0x6E9E0 without
+    /// recomputing it. This trait therefore exposes both the incoming ABI value and the
+    /// caller-volatile R2 observed after the call.
+    fn bit10_prepare_post_r2(&mut self, incoming_r2: u32) -> u32;
+
+    fn forward_primary(&mut self, zero: u32, primary: u32, forwarded_r2: u32);
+    fn step_a(&mut self);
+    fn step_b(&mut self);
+    fn global_predicate(&mut self) -> u32;
+    fn global_notify(&mut self);
+    fn map_primary(&mut self, primary: u32) -> u32;
+    fn final_predicate(&mut self, mapped: u32) -> u32;
+    fn zero_tail(&mut self, zero: u32) -> u32;
+}
+
+/// Safe source-level model of current 0x16D9E8.
+///
+/// Compiler stack-canary plumbing is intentionally omitted. All still-unresolved runtime
+/// entries are traits. The caller-volatile R2 edge and the explicit zero tail argument are
+/// modeled literally because both are observable binary behavior.
+pub fn bt_stage44_post_sequence<B: BtStage44PostSequenceBackend>(
+    state: &mut BtStage44PostSequenceState,
+    backend: &mut B,
+) -> u32 {
+    let probe_result = backend.probe(state.word236);
+    if probe_result == 1 && state.byte29 & 0x80 == 0 {
+        backend.probe_followup(probe_result);
+    }
+
+    backend.mode_write(1, 0);
+
+    let shifted_r2 = state.dword52.wrapping_shl(21);
+    let forwarded_r2 = if state.dword52 & 0x0400 != 0 {
+        backend.bit10_prepare_post_r2(shifted_r2)
+    } else {
+        shifted_r2
+    };
+    backend.forward_primary(0, state.primary, forwarded_r2);
+
+    backend.step_a();
+    backend.step_b();
+
+    // BFI byte28, value 8, lsb 3, width 5.
+    state.byte28 = (state.byte28 & 0x07) | 0x40;
+
+    if state.global_2090cc == 1 && backend.global_predicate() == 1 {
+        backend.global_notify();
+    }
+
+    let mapped = backend.map_primary(state.primary);
+    if state.shared_flags_plus8 & 1 == 0 {
+        return mapped;
+    }
+
+    let final_result = backend.final_predicate(mapped);
+    if final_result == 0 {
+        return 0;
+    }
+
+    // The current binary executes MOVS R0,#0 before the tail branch to 0x5833C.
+    backend.zero_tail(0)
+}
+
+#[cfg(test)]
+mod stage44_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct GateBackend {
+        probe_result: u32,
+        flagged_result: u32,
+        default_result: u32,
+        calls: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage44PostGateBackend for GateBackend {
+        fn probe(&mut self, word236: u16) -> u32 {
+            self.calls.push(("probe", word236 as u32));
+            self.probe_result
+        }
+        fn probe_followup(&mut self, result: u32) {
+            self.calls.push(("followup", result));
+        }
+        fn flagged_tail(&mut self, one: u32) -> u32 {
+            self.calls.push(("flagged", one));
+            self.flagged_result
+        }
+        fn default_tail(&mut self) -> u32 {
+            self.calls.push(("default", 0));
+            self.default_result
+        }
+    }
+
+    #[test]
+    fn post_gate_preserves_probe_and_tail_conditions() {
+        let mut b = GateBackend {
+            probe_result: 1,
+            flagged_result: 0x33,
+            default_result: 0x44,
+            calls: Vec::new(),
+        };
+        let s = BtStage44PostGateState {
+            byte29: 0x80,
+            word236: 0x1234,
+            dword56: 0x08,
+            shared_flags_plus4: 0x0800,
+        };
+        assert_eq!(bt_stage44_post_gate(&s, &mut b), 0x44);
+        assert_eq!(b.calls, [("probe", 0x1234), ("followup", 1), ("default", 0)]);
+
+        let mut b = GateBackend {
+            probe_result: 9,
+            flagged_result: 0x55,
+            default_result: 0x66,
+            calls: Vec::new(),
+        };
+        let s = BtStage44PostGateState {
+            byte29: 0,
+            word236: 7,
+            dword56: 0x08,
+            shared_flags_plus4: 0x0800,
+        };
+        assert_eq!(bt_stage44_post_gate(&s, &mut b), 0x55);
+        assert_eq!(b.calls, [("flagged", 1)]);
+    }
+
+    #[derive(Default)]
+    struct SeqBackend {
+        probe_result: u32,
+        post_r2: u32,
+        global_predicate_result: u32,
+        mapped: u32,
+        final_predicate_result: u32,
+        zero_tail_result: u32,
+        calls: Vec<(&'static str, u32, u32, u32)>,
+    }
+
+    impl BtStage44PostSequenceBackend for SeqBackend {
+        fn probe(&mut self, w: u16) -> u32 {
+            self.calls.push(("probe", w as u32, 0, 0));
+            self.probe_result
+        }
+        fn probe_followup(&mut self, r: u32) {
+            self.calls.push(("followup", r, 0, 0));
+        }
+        fn mode_write(&mut self, one: u32, zero: u32) {
+            self.calls.push(("mode", one, zero, 0));
+        }
+        fn bit10_prepare_post_r2(&mut self, incoming: u32) -> u32 {
+            self.calls.push(("prepare", incoming, 0, 0));
+            self.post_r2
+        }
+        fn forward_primary(&mut self, z: u32, p: u32, r2: u32) {
+            self.calls.push(("forward", z, p, r2));
+        }
+        fn step_a(&mut self) { self.calls.push(("step_a", 0, 0, 0)); }
+        fn step_b(&mut self) { self.calls.push(("step_b", 0, 0, 0)); }
+        fn global_predicate(&mut self) -> u32 {
+            self.calls.push(("global_pred", 0, 0, 0));
+            self.global_predicate_result
+        }
+        fn global_notify(&mut self) { self.calls.push(("notify", 0, 0, 0)); }
+        fn map_primary(&mut self, p: u32) -> u32 {
+            self.calls.push(("map", p, 0, 0));
+            self.mapped
+        }
+        fn final_predicate(&mut self, m: u32) -> u32 {
+            self.calls.push(("final_pred", m, 0, 0));
+            self.final_predicate_result
+        }
+        fn zero_tail(&mut self, z: u32) -> u32 {
+            self.calls.push(("zero_tail", z, 0, 0));
+            self.zero_tail_result
+        }
+    }
+
+    #[test]
+    fn post_sequence_forwards_post_call_r2_not_the_pre_call_shift() {
+        let mut b = SeqBackend {
+            probe_result: 1,
+            post_r2: 0xDEAD_BEEF,
+            global_predicate_result: 1,
+            mapped: 0x1234,
+            final_predicate_result: 0,
+            zero_tail_result: 0x9999,
+            calls: Vec::new(),
+        };
+        let mut s = BtStage44PostSequenceState {
+            primary: 0xCAFE,
+            word236: 0x2222,
+            byte29: 0,
+            dword52: 0x0400,
+            byte28: 0xA5,
+            global_2090cc: 1,
+            shared_flags_plus8: 1,
+        };
+        assert_eq!(bt_stage44_post_sequence(&mut s, &mut b), 0);
+        assert_eq!(s.byte28, (0xA5 & 7) | 0x40);
+        assert!(b.calls.contains(&("prepare", 0x8000_0000, 0, 0)));
+        assert!(b.calls.contains(&("forward", 0, 0xCAFE, 0xDEAD_BEEF)));
+        assert!(b.calls.contains(&("notify", 0, 0, 0)));
+        assert!(!b.calls.iter().any(|x| x.0 == "zero_tail"));
+    }
+
+    #[test]
+    fn post_sequence_explicitly_tails_with_zero_after_nonzero_final_predicate() {
+        let mut b = SeqBackend {
+            probe_result: 7,
+            post_r2: 0,
+            global_predicate_result: 0,
+            mapped: 0x77,
+            final_predicate_result: 5,
+            zero_tail_result: 0xABCD,
+            calls: Vec::new(),
+        };
+        let mut s = BtStage44PostSequenceState {
+            primary: 0x99,
+            word236: 3,
+            byte29: 0x80,
+            dword52: 2,
+            byte28: 0xFF,
+            global_2090cc: 0,
+            shared_flags_plus8: 1,
+        };
+        assert_eq!(bt_stage44_post_sequence(&mut s, &mut b), 0xABCD);
+        assert!(b.calls.contains(&("forward", 0, 0x99, 2u32 << 21)));
+        assert!(b.calls.contains(&("zero_tail", 0, 0, 0)));
+        assert!(!b.calls.iter().any(|x| x.0 == "followup"));
+    }
+}
