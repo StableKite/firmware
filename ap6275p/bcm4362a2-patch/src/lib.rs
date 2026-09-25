@@ -5390,3 +5390,284 @@ mod stage49_tests {
         assert_eq!(STAGE49_BT_FINAL_BOUNDARY,0x3A742);
     }
 }
+
+/// Stage 50: current lookup-slot maintenance routine at `0x16DDAC`.
+///
+/// This is the previously established relocation-normalized current match of legacy
+/// `sub_16ADE0`. Current `0x1F270` and `0x780` remain opaque boundaries; the model
+/// preserves only their observed arguments, return flow, slot rereads, and write order.
+pub const STAGE50_CURRENT_BT_SLOT_MAINTENANCE_ADDR: u32 = 0x0016_DDAC;
+pub const STAGE50_BT_LOOKUP_BOUNDARY: u32 = 0x0001_EE18;
+pub const STAGE50_BT_SLOT_TEST_BOUNDARY: u32 = 0x0001_F270;
+pub const STAGE50_BT_GUARD_BOUNDARY: u32 = 0x0000_0780;
+pub const STAGE50_BT_RELEASE_BOUNDARY: u32 = 0x000B_0460;
+pub const STAGE50_BT_AMBIENT_FLAGS_ADDR: u32 = 0x0020_8338;
+
+const STAGE50_SLOT_10: u8 = 0x10;
+const STAGE50_SLOT_14: u8 = 0x14;
+const STAGE50_SLOT_20: u8 = 0x20;
+const STAGE50_SLOT_2C: u8 = 0x2C;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage50Input {
+    /// Safe flattening of the firmware's `*(*(arg0 + 4))` lookup selector load.
+    pub lookup_selector: u32,
+}
+
+/// Opaque current-runtime surface used by Stage 50.
+///
+/// Lookup-object dwords are addressed by their exact firmware offsets so backend
+/// implementations can preserve mutations performed by opaque calls between rereads.
+pub trait BtStage50Backend {
+    fn lookup(&mut self, selector: u32) -> u32;
+    fn lookup_byte11(&mut self, lookup: u32) -> u8;
+    fn lookup_dword(&mut self, lookup: u32, offset: u8) -> u32;
+    fn set_lookup_dword(&mut self, lookup: u32, offset: u8, value: u32);
+    fn object_byte2(&mut self, object: u32) -> u8;
+
+    /// Current `0x1F270(lookup)`.
+    fn slot_test(&mut self, lookup: u32) -> u32;
+    /// Current `0x780(value)`; the returned token/value is passed back exactly where
+    /// the binary does so without assigning a semantic name to the boundary.
+    fn guard(&mut self, value: u32) -> u32;
+    /// Current `0xB0460(handle)`. Return value is ignored by this routine.
+    fn release(&mut self, handle: u32) -> u32;
+
+    /// Byte at current ambient address `0x208338 + 0x13`, read only on the observed gate.
+    fn ambient_flags_byte19(&mut self) -> u8;
+}
+
+const fn stage50_mode(byte11: u8) -> u8 {
+    (byte11 >> 2) & 0x0F
+}
+
+fn stage50_release_if_nonzero<B: BtStage50Backend>(
+    backend: &mut B,
+    lookup: u32,
+    offset: u8,
+) {
+    let handle = backend.lookup_dword(lookup, offset);
+    if handle != 0 {
+        let _ = backend.release(handle);
+        backend.set_lookup_dword(lookup, offset, 0);
+    }
+}
+
+/// Safe source-level model of current `0x16DDAC` / legacy `sub_16ADE0`.
+///
+/// The binary obtains the selector indirectly through the caller's pointer chain;
+/// `BtStage50Input` exposes the already-loaded scalar. Handle validity and pointed-object
+/// byte access remain backend responsibilities because firmware performs no local safety
+/// validation beyond the explicit null checks represented here.
+pub fn bt_stage50_lookup_slot_maintenance<B: BtStage50Backend>(
+    input: &BtStage50Input,
+    backend: &mut B,
+) -> u32 {
+    let lookup = backend.lookup(input.lookup_selector);
+    let mut return_value = lookup;
+
+    // An occupied primary slot exits immediately with the lookup handle.
+    if backend.lookup_dword(lookup, STAGE50_SLOT_10) != 0 {
+        return return_value;
+    }
+
+    let mode = stage50_mode(backend.lookup_byte11(lookup));
+    let mut slot_test_result = 0u32;
+
+    match mode {
+        // TBB mode 0 selects dword +0x20.
+        0 => {
+            if backend.lookup_dword(lookup, STAGE50_SLOT_20) != 0 {
+                return_value = backend.slot_test(lookup);
+                slot_test_result = return_value;
+            }
+        }
+        // TBB mode 1 selects dword +0x14.
+        1 => {
+            if backend.lookup_dword(lookup, STAGE50_SLOT_14) != 0 {
+                return_value = backend.slot_test(lookup);
+                slot_test_result = return_value;
+            }
+        }
+        // TBB mode 2 selects dword +0x2C. A non-one test result performs two
+        // unconditional release calls while bracketed by the opaque 0x780 boundary.
+        2 => {
+            if backend.lookup_dword(lookup, STAGE50_SLOT_2C) != 0 {
+                slot_test_result = backend.slot_test(lookup);
+                let token = backend.guard(1);
+                if slot_test_result != 1 {
+                    let slot20 = backend.lookup_dword(lookup, STAGE50_SLOT_20);
+                    let _ = backend.release(slot20);
+                    backend.set_lookup_dword(lookup, STAGE50_SLOT_20, 0);
+
+                    let slot2c = backend.lookup_dword(lookup, STAGE50_SLOT_2C);
+                    let _ = backend.release(slot2c);
+                    backend.set_lookup_dword(lookup, STAGE50_SLOT_2C, 0);
+                }
+                return_value = backend.guard(token);
+            }
+        }
+        // TBB mode 3 clears the three secondary slots plus +0x10, releasing only
+        // nonzero handles. The guard-return is the live return value afterward.
+        3 => {
+            let token = backend.guard(1);
+            stage50_release_if_nonzero(backend, lookup, STAGE50_SLOT_14);
+            stage50_release_if_nonzero(backend, lookup, STAGE50_SLOT_20);
+            stage50_release_if_nonzero(backend, lookup, STAGE50_SLOT_2C);
+            stage50_release_if_nonzero(backend, lookup, STAGE50_SLOT_10);
+            return_value = backend.guard(token);
+        }
+        // Modes 4..15 skip the TBB bodies.
+        _ => {}
+    }
+
+    // The +0x14 pointed object's low two byte2 bits can bypass the ambient flag gate.
+    let slot14 = backend.lookup_dword(lookup, STAGE50_SLOT_14);
+    if slot14 != 0
+        && backend.object_byte2(slot14) & 0x03 == 0
+        && backend.ambient_flags_byte19() & 0x08 == 0
+    {
+        return return_value;
+    }
+
+    if slot_test_result != 1 {
+        return return_value;
+    }
+
+    // Promotion path. Preserve firmware ordering: read +0x20 first, then +0x14,
+    // publish +0x14 into +0x10 and clear it before conditionally releasing +0x20;
+    // +0x2C is reread only after that release.
+    let token = backend.guard(1);
+    let old_slot20 = backend.lookup_dword(lookup, STAGE50_SLOT_20);
+    let promoted = backend.lookup_dword(lookup, STAGE50_SLOT_14);
+    backend.set_lookup_dword(lookup, STAGE50_SLOT_10, promoted);
+    backend.set_lookup_dword(lookup, STAGE50_SLOT_14, 0);
+
+    if old_slot20 != 0 {
+        let _ = backend.release(old_slot20);
+        backend.set_lookup_dword(lookup, STAGE50_SLOT_20, 0);
+    }
+
+    let old_slot2c = backend.lookup_dword(lookup, STAGE50_SLOT_2C);
+    if old_slot2c != 0 {
+        let _ = backend.release(old_slot2c);
+        backend.set_lookup_dword(lookup, STAGE50_SLOT_2C, 0);
+    }
+
+    backend.guard(token)
+}
+
+#[cfg(test)]
+mod stage50_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        lookup: u32,
+        byte11: u8,
+        slots: [u32; 4], // +10,+14,+20,+2C
+        byte2: u8,
+        test_result: u32,
+        guard_first: u32,
+        guard_second: u32,
+        guard_calls: usize,
+        ambient19: u8,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl B {
+        fn index(offset:u8)->usize { match offset { 0x10=>0,0x14=>1,0x20=>2,0x2c=>3,_=>panic!("bad offset") } }
+    }
+
+    impl BtStage50Backend for B {
+        fn lookup(&mut self,s:u32)->u32 { self.calls.push(("lookup",s,0)); self.lookup }
+        fn lookup_byte11(&mut self,l:u32)->u8 { self.calls.push(("byte11",l,0)); self.byte11 }
+        fn lookup_dword(&mut self,l:u32,o:u8)->u32 { self.calls.push(("read",l,o as u32)); self.slots[Self::index(o)] }
+        fn set_lookup_dword(&mut self,l:u32,o:u8,v:u32) { self.calls.push(("write",o as u32,v)); self.slots[Self::index(o)]=v; let _=l; }
+        fn object_byte2(&mut self,o:u32)->u8 { self.calls.push(("byte2",o,0)); self.byte2 }
+        fn slot_test(&mut self,l:u32)->u32 { self.calls.push(("test",l,0)); self.test_result }
+        fn guard(&mut self,v:u32)->u32 { self.calls.push(("guard",v,0)); let r=if self.guard_calls==0 {self.guard_first}else{self.guard_second}; self.guard_calls+=1; r }
+        fn release(&mut self,h:u32)->u32 { self.calls.push(("release",h,0)); 0xDEAD_BEEF }
+        fn ambient_flags_byte19(&mut self)->u8 { self.calls.push(("ambient",0,0)); self.ambient19 }
+    }
+
+    fn backend(mode:u8)->B {
+        B { lookup:0x1000, byte11:(mode&0x0f)<<2, guard_first:0xA5A5, guard_second:0x5A5A, ..Default::default() }
+    }
+
+    #[test]
+    fn occupied_primary_returns_lookup_without_mode_dispatch() {
+        let mut b=backend(3); b.slots[0]=0x1111;
+        let r=bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:7},&mut b);
+        assert_eq!(r,0x1000);
+        assert!(!b.calls.iter().any(|x|x.0=="byte11"));
+    }
+
+    #[test]
+    fn mode_two_non_one_releases_both_slots_unconditionally_and_returns_guard_result() {
+        let mut b=backend(2); b.slots[3]=0x3333; b.slots[2]=0; b.test_result=9;
+        let r=bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:1},&mut b);
+        assert_eq!(r,0x5A5A);
+        let releases:Vec<u32>=b.calls.iter().filter(|x|x.0=="release").map(|x|x.1).collect();
+        assert_eq!(releases,[0,0x3333]);
+        assert_eq!((b.slots[2],b.slots[3]),(0,0));
+        assert_eq!(b.guard_calls,2);
+    }
+
+    #[test]
+    fn mode_three_releases_only_nonzero_handles_and_clears_all_four_slots() {
+        let mut b=backend(3); b.slots=[0,0x14,0,0x2c];
+        let r=bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:2},&mut b);
+        assert_eq!(r,0x5A5A);
+        let releases:Vec<u32>=b.calls.iter().filter(|x|x.0=="release").map(|x|x.1).collect();
+        assert_eq!(releases,[0x14,0x2c]);
+        assert_eq!(b.slots,[0,0,0,0]);
+    }
+
+    #[test]
+    fn mode_one_test_one_promotes_slot14_then_releases_later_slots_in_order() {
+        let mut b=backend(1);
+        b.slots=[0,0x1414,0x2020,0x2c2c];
+        b.byte2=1; // low two bits bypass ambient gating.
+        b.test_result=1;
+        let r=bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:3},&mut b);
+        assert_eq!(r,0x5A5A);
+        assert_eq!(b.slots,[0x1414,0,0,0]);
+        let releases:Vec<u32>=b.calls.iter().filter(|x|x.0=="release").map(|x|x.1).collect();
+        assert_eq!(releases,[0x2020,0x2c2c]);
+        let write10=b.calls.iter().position(|x|*x==("write",0x10,0x1414)).unwrap();
+        let release20=b.calls.iter().position(|x|*x==("release",0x2020,0)).unwrap();
+        assert!(write10<release20);
+    }
+
+    #[test]
+    fn zero_low_bits_require_ambient_bit3_for_promotion() {
+        let mut b=backend(1); b.slots[1]=0x1414; b.test_result=1; b.byte2=0; b.ambient19=0;
+        let r=bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:4},&mut b);
+        assert_eq!(r,1); // live return remains 0x1F270 result.
+        assert_eq!(b.slots[0],0);
+        b.ambient19=0x08; b.guard_calls=0; b.calls.clear(); b.slots[1]=0x1414;
+        let r2=bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:4},&mut b);
+        assert_eq!(r2,0x5A5A);
+        assert_eq!(b.slots[0],0x1414);
+    }
+
+    #[test]
+    fn modes_above_three_return_lookup_when_primary_is_empty() {
+        let mut b=backend(7);
+        assert_eq!(bt_stage50_lookup_slot_maintenance(&BtStage50Input{lookup_selector:5},&mut b),0x1000);
+        assert_eq!(b.guard_calls,0);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE50_CURRENT_BT_SLOT_MAINTENANCE_ADDR,0x16DDAC);
+        assert_eq!(STAGE50_BT_LOOKUP_BOUNDARY,0x1EE18);
+        assert_eq!(STAGE50_BT_SLOT_TEST_BOUNDARY,0x1F270);
+        assert_eq!(STAGE50_BT_GUARD_BOUNDARY,0x780);
+        assert_eq!(STAGE50_BT_RELEASE_BOUNDARY,0xB0460);
+        assert_eq!(STAGE50_BT_AMBIENT_FLAGS_ADDR,0x208338);
+    }
+}
