@@ -4099,3 +4099,416 @@ mod stage47_tests {
         assert_eq!(STAGE47_BT_RELEASE_BOUNDARY,0xB0460);
     }
 }
+
+/// Stage 48: current lookup mode router and three-record transfer at `0x16DF10`.
+///
+/// This is the globally unique relocation-normalized current match of legacy
+/// `sub_16AF44`. The internal tail to Stage 47 relocates coherently from legacy
+/// `sub_16AED0`; the remaining runtime calls stay opaque traits.
+pub const STAGE48_CURRENT_BT_MODE_ROUTER_ADDR: u32 = 0x0016_DF10;
+pub const STAGE48_BT_CONTEXT_BOUNDARY: u32 = 0x0003_35AC;
+pub const STAGE48_BT_LOOKUP_BOUNDARY: u32 = 0x0001_EE18;
+pub const STAGE48_BT_PREDICATE_BOUNDARY: u32 = 0x0001_F3BC;
+pub const STAGE48_BT_FINALIZE_BOUNDARY: u32 = 0x0001_F3E0;
+pub const STAGE48_BT_RELEASE_BOUNDARY: u32 = 0x000B_0460;
+pub const STAGE48_BT_AMBIENT_WORD_ADDR: u32 = 0x0031_89DC;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage48InputState {
+    /// Input byte +0; bits 3..6 feed local packed-record metadata.
+    pub byte0: u8,
+    /// Input halfword +2 copied into a selected record.
+    pub word2: u16,
+    /// Input byte +9, consumed only if the function delegates to Stage 47.
+    pub byte9: u8,
+    /// Input byte +20, passed to both initial runtime lookups.
+    pub byte20: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage48Links {
+    /// First pointer-shaped dword at argument 1 +0.
+    pub slot0: u32,
+    /// Second pointer-shaped dword at argument 1 +4.
+    pub slot1: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage48State {
+    /// State halfword +26, shared with the Stage-47 delegated path.
+    pub word26: u16,
+    /// State byte +28, part of the early special gate.
+    pub byte28: u8,
+    /// State byte +29, part of the early gate and shared with Stage 47.
+    pub byte29: u8,
+}
+
+pub trait BtStage48Backend: BtStage47Backend {
+    /// Current `0x335AC(input.byte20)`; its returned object is locally read at byte +167.
+    fn context_boundary(&mut self, selector: u8) -> u32;
+    fn context_byte167(&mut self, context: u32) -> u8;
+
+    fn set_lookup_byte12(&mut self, lookup: u32, value: u8);
+
+    /// Two separate reads are required because firmware reloads this ambient word between
+    /// the two indirect byte stores.
+    fn ambient_word_3189dc(&mut self) -> u32;
+    /// Perform the firmware's byte store through a pointer-shaped dword.
+    fn write_indirect_byte(&mut self, pointer: u32, value: u8);
+
+    /// Current `0x1F3BC(lookup)`.
+    fn lookup_predicate(&mut self, lookup: u32) -> u32;
+
+    /// Record `index` is one of 0, 1, 2; each record is 12 bytes apart and its pointer
+    /// field is at lookup + 20 + 12*index.
+    fn lookup_record_dword20(&mut self, lookup: u32, index: u8) -> u32;
+    fn set_lookup_record_word24(&mut self, lookup: u32, index: u8, value: u16);
+    fn set_lookup_record_byte24(&mut self, lookup: u32, index: u8, value: u8);
+    fn set_lookup_record_word26(&mut self, lookup: u32, index: u8, value: u16);
+    fn set_lookup_record_dword20(&mut self, lookup: u32, index: u8, value: u32);
+
+    /// Current tail boundary `0x1F3E0(lookup, context)`.
+    fn finalize_boundary(&mut self, lookup: u32, context: u32) -> u32;
+}
+
+const fn stage48_mode(byte11: u8) -> u8 {
+    (byte11 >> 2) & 0x0F
+}
+
+const fn stage48_replace_mode(byte11: u8, mode: u8) -> u8 {
+    (byte11 & !0x3C) | ((mode & 0x0F) << 2)
+}
+
+const fn stage48_replace_class(byte11: u8, class: u8) -> u8 {
+    (byte11 & !0xC0) | ((class & 0x03) << 6)
+}
+
+fn stage48_init_record<B: BtStage48Backend>(
+    lookup: u32,
+    index: u8,
+    input: &BtStage48InputState,
+    pointer: u32,
+    backend: &mut B,
+) {
+    backend.set_lookup_record_word24(lookup, index, 0);
+    let packed = ((input.byte0 >> 3) & 0x0F) << 3;
+    backend.set_lookup_record_byte24(lookup, index, packed);
+    backend.set_lookup_record_word26(lookup, index, input.word2);
+    backend.set_lookup_record_dword20(lookup, index, pointer);
+}
+
+fn stage48_delegate_stage47<B: BtStage48Backend>(
+    input: &mut BtStage48InputState,
+    links: &mut BtStage48Links,
+    state: &mut BtStage48State,
+    backend: &mut B,
+) -> u32 {
+    let mut stage47_input = BtStage47InputState {
+        byte9: input.byte9,
+        byte20: input.byte20,
+    };
+    let mut stage47_state = BtStage47State {
+        word26: state.word26,
+        byte29: state.byte29,
+    };
+    let result = bt_stage47_slot_transfer(
+        &mut stage47_input,
+        &mut links.slot0,
+        &mut stage47_state,
+        backend,
+    );
+    input.byte9 = stage47_input.byte9;
+    state.word26 = stage47_state.word26;
+    state.byte29 = stage47_state.byte29;
+    result
+}
+
+/// Safe source-level model of current `0x16DF10` / legacy `sub_16AF44`.
+///
+/// Pointer dereferences, ambient memory and unresolved runtime calls remain backend
+/// operations. The local control flow, packed-field updates, repeated reads, record
+/// selection and the direct tail delegation into reconstructed Stage 47 are preserved.
+pub fn bt_stage48_mode_router<B: BtStage48Backend>(
+    input: &mut BtStage48InputState,
+    links: &mut BtStage48Links,
+    state: &mut BtStage48State,
+    backend: &mut B,
+) -> u32 {
+    let context = backend.context_boundary(input.byte20);
+    let lookup = backend.lookup(input.byte20);
+
+    if state.byte28 == 2 && (state.byte29 == 2 || state.byte29 == 4) {
+        let byte11 = backend.lookup_byte11(lookup);
+        let mode = stage48_mode(byte11);
+        if mode <= 2 {
+            backend.set_lookup_byte11(lookup, stage48_replace_mode(byte11, 3));
+            return backend.finalize_boundary(lookup, context);
+        }
+        if mode == 3 {
+            let predicate = backend.lookup_predicate(lookup);
+            if predicate == 0 {
+                return 0;
+            }
+            let byte11_after = backend.lookup_byte11(lookup);
+            backend.set_lookup_byte11(lookup, byte11_after | 0x3C);
+            return predicate;
+        }
+        return lookup;
+    }
+
+    backend.set_lookup_byte12(lookup, input.byte20);
+
+    let class = if backend.context_byte167(context) & 0xE0 == 0x20 {
+        if ((input.byte0 >> 3) & 0x0F) <= 9 { 1 } else { 2 }
+    } else {
+        match input.byte0 & 0x78 {
+            0x18 | 0x48 => 1,
+            _ => 2,
+        }
+    };
+    let byte11 = backend.lookup_byte11(lookup);
+    backend.set_lookup_byte11(lookup, stage48_replace_class(byte11, class));
+
+    let ambient0 = backend.ambient_word_3189dc();
+    backend.write_indirect_byte(links.slot1, ambient0 as u8);
+    let ambient1 = backend.ambient_word_3189dc();
+    backend.write_indirect_byte(links.slot0, (ambient1 >> 8) as u8);
+
+    let mode = stage48_mode(backend.lookup_byte11(lookup));
+    match mode {
+        0 | 1 => {
+            if backend.lookup_replacement(lookup) != 0 {
+                return stage48_delegate_stage47(input, links, state, backend);
+            }
+            let next_mode = (mode + 1) & 0x0F;
+            let byte11_now = backend.lookup_byte11(lookup);
+            backend.set_lookup_byte11(lookup, stage48_replace_mode(byte11_now, next_mode));
+            if backend.lookup_record_dword20(lookup, next_mode) != 0 {
+                return backend.release(links.slot0);
+            }
+            stage48_init_record(lookup, next_mode, input, links.slot0, backend);
+            backend.finalize_boundary(lookup, context)
+        }
+        2 => {
+            if backend.lookup_replacement(lookup) != 0 {
+                return stage48_delegate_stage47(input, links, state, backend);
+            }
+            let record1 = backend.lookup_record_dword20(lookup, 1);
+            let record2 = backend.lookup_record_dword20(lookup, 2);
+            if record1 == 0 {
+                stage48_init_record(lookup, 1, input, links.slot0, backend);
+                let byte11_now = backend.lookup_byte11(lookup);
+                backend.set_lookup_byte11(lookup, stage48_replace_mode(byte11_now, 1));
+                return backend.finalize_boundary(lookup, context);
+            }
+            if record2 == 0 {
+                stage48_init_record(lookup, 2, input, links.slot0, backend);
+                return backend.finalize_boundary(lookup, context);
+            }
+            backend.release(links.slot0)
+        }
+        3 => {
+            if backend.lookup_predicate(lookup) == 0 {
+                return backend.release(links.slot0);
+            }
+            stage48_init_record(lookup, 0, input, links.slot0, backend);
+            let byte11_now = backend.lookup_byte11(lookup);
+            backend.set_lookup_byte11(lookup, stage48_replace_mode(byte11_now, 0));
+            backend.finalize_boundary(lookup, context)
+        }
+        15 => {
+            let byte11_now = backend.lookup_byte11(lookup);
+            backend.set_lookup_byte11(lookup, stage48_replace_mode(byte11_now, 0));
+            stage48_init_record(lookup, 0, input, links.slot0, backend);
+            backend.finalize_boundary(lookup, context)
+        }
+        _ => lookup,
+    }
+}
+
+#[cfg(test)]
+mod stage48_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct Record { dword20: u32, word24: u16, word26: u16 }
+
+    struct B {
+        context: u32,
+        lookup: u32,
+        byte167: u8,
+        byte11: u8,
+        byte12: u8,
+        replacement: u32,
+        replacement_byte2: u8,
+        replacement_word2: u16,
+        release_result: u32,
+        predicate: u32,
+        predicate_mutate_byte11: Option<u8>,
+        finalize_result: u32,
+        ambient_reads: Vec<u32>,
+        records: [Record; 3],
+        indirect: Vec<(u32, u8)>,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage47Backend for B {
+        fn lookup(&mut self, selector: u8) -> u32 {
+            self.calls.push(("lookup", selector as u32, 0)); self.lookup
+        }
+        fn release(&mut self, old_slot: u32) -> u32 {
+            self.calls.push(("release", old_slot, 0)); self.release_result
+        }
+        fn lookup_byte11(&mut self, _lookup: u32) -> u8 { self.byte11 }
+        fn lookup_replacement(&mut self, _lookup: u32) -> u32 { self.replacement }
+        fn set_lookup_byte11(&mut self, _lookup: u32, value: u8) { self.byte11 = value; }
+        fn set_lookup_replacement(&mut self, _lookup: u32, value: u32) { self.replacement = value; }
+        fn replacement_byte2(&mut self, _replacement: u32) -> u8 { self.replacement_byte2 }
+        fn replacement_word2(&mut self, _replacement: u32) -> u16 { self.replacement_word2 }
+    }
+
+    impl BtStage48Backend for B {
+        fn context_boundary(&mut self, selector: u8) -> u32 {
+            self.calls.push(("context", selector as u32, 0)); self.context
+        }
+        fn context_byte167(&mut self, _context: u32) -> u8 { self.byte167 }
+        fn set_lookup_byte12(&mut self, _lookup: u32, value: u8) { self.byte12 = value; }
+        fn ambient_word_3189dc(&mut self) -> u32 {
+            let v = if self.ambient_reads.is_empty() { 0 } else { self.ambient_reads.remove(0) };
+            self.calls.push(("ambient", v, 0)); v
+        }
+        fn write_indirect_byte(&mut self, pointer: u32, value: u8) {
+            self.indirect.push((pointer, value));
+        }
+        fn lookup_predicate(&mut self, _lookup: u32) -> u32 {
+            self.calls.push(("predicate", 0, 0));
+            if let Some(v) = self.predicate_mutate_byte11 { self.byte11 = v; }
+            self.predicate
+        }
+        fn lookup_record_dword20(&mut self, _lookup: u32, index: u8) -> u32 {
+            self.records[index as usize].dword20
+        }
+        fn set_lookup_record_word24(&mut self, _lookup: u32, index: u8, value: u16) {
+            self.records[index as usize].word24 = value;
+        }
+        fn set_lookup_record_byte24(&mut self, _lookup: u32, index: u8, value: u8) {
+            self.records[index as usize].word24 = (self.records[index as usize].word24 & 0xFF00) | u16::from(value);
+        }
+        fn set_lookup_record_word26(&mut self, _lookup: u32, index: u8, value: u16) {
+            self.records[index as usize].word26 = value;
+        }
+        fn set_lookup_record_dword20(&mut self, _lookup: u32, index: u8, value: u32) {
+            self.records[index as usize].dword20 = value;
+        }
+        fn finalize_boundary(&mut self, lookup: u32, context: u32) -> u32 {
+            self.calls.push(("finalize", lookup, context)); self.finalize_result
+        }
+    }
+
+    fn backend(mode: u8) -> B {
+        let mut ambient_reads = Vec::new();
+        ambient_reads.push(0x1122_33D4);
+        ambient_reads.push(0x5566_C300);
+        B {
+            context: 0x1111,
+            lookup: 0x2222,
+            byte167: 0x20,
+            byte11: (mode & 0x0F) << 2,
+            byte12: 0,
+            replacement: 0,
+            replacement_byte2: 0xAD,
+            replacement_word2: 0x7BAD,
+            release_result: 0xAABB_CCDD,
+            predicate: 1,
+            predicate_mutate_byte11: None,
+            finalize_result: 0x5566_7788,
+            ambient_reads,
+            records: [Record::default(); 3],
+            indirect: Vec::new(),
+            calls: Vec::new(),
+        }
+    }
+    fn input() -> BtStage48InputState {
+        BtStage48InputState { byte0: 0x28, word2: 0xBEEF, byte9: 0x80, byte20: 7 }
+    }
+    fn links() -> BtStage48Links { BtStage48Links { slot0: 0x1000, slot1: 0x2000 } }
+    fn state() -> BtStage48State { BtStage48State { word26: 0xE007, byte28: 0, byte29: 0 } }
+
+    #[test]
+    fn special_gate_modes_zero_through_two_promote_to_three_and_finalize() {
+        let mut b = backend(1); let mut i = input(); let mut l = links();
+        let mut s = state(); s.byte28 = 2; s.byte29 = 4;
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0x5566_7788);
+        assert_eq!(stage48_mode(b.byte11), 3);
+        assert!(b.indirect.is_empty());
+    }
+
+    #[test]
+    fn special_gate_mode_three_rereads_byte11_after_predicate() {
+        let mut b = backend(3); b.predicate = 0x77; b.predicate_mutate_byte11 = Some(0x81);
+        let mut i = input(); let mut l = links(); let mut s = state(); s.byte28 = 2; s.byte29 = 2;
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0x77);
+        assert_eq!(b.byte11, 0xBD);
+    }
+
+    #[test]
+    fn mode_zero_with_existing_replacement_delegates_to_stage47() {
+        let mut b = backend(0); b.replacement = 0x4444; b.replacement_byte2 = 0xAD;
+        let mut i = input(); let mut l = links(); let mut s = state();
+        let r = bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b);
+        assert_eq!(r, 0xAABB_CCDD);
+        assert_eq!(l.slot0, 0x4444);
+        assert_eq!(i.byte9, 0x81);
+        assert_eq!(s.byte29, 2);
+        assert_eq!(b.byte11, 0x7C);
+        assert_eq!(b.replacement, 0);
+        assert_eq!(b.indirect, [(0x2000, 0xD4), (0x1000, 0xC3)]);
+    }
+
+    #[test]
+    fn mode_two_prefers_empty_record_one_and_rewinds_mode_to_one() {
+        let mut b = backend(2); let mut i = input(); let mut l = links(); let mut s = state();
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0x5566_7788);
+        assert_eq!(b.records[1].dword20, 0x1000);
+        assert_eq!(b.records[1].word24, 0x28);
+        assert_eq!(b.records[1].word26, 0xBEEF);
+        assert_eq!(stage48_mode(b.byte11), 1);
+        assert_eq!(b.records[2].dword20, 0);
+    }
+
+    #[test]
+    fn mode_two_uses_record_two_when_record_one_is_occupied() {
+        let mut b = backend(2); b.records[1].dword20 = 9;
+        let mut i = input(); let mut l = links(); let mut s = state();
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0x5566_7788);
+        assert_eq!(b.records[2].dword20, 0x1000);
+        assert_eq!(stage48_mode(b.byte11), 2);
+    }
+
+    #[test]
+    fn mode_two_releases_current_slot_when_both_records_are_occupied() {
+        let mut b = backend(2); b.records[1].dword20 = 1; b.records[2].dword20 = 2;
+        let mut i = input(); let mut l = links(); let mut s = state();
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0xAABB_CCDD);
+        assert!(b.calls.iter().any(|x|*x == ("release", 0x1000, 0)));
+    }
+
+    #[test]
+    fn mode_three_predicate_success_initializes_record_zero_and_clears_mode() {
+        let mut b = backend(3); let mut i = input(); let mut l = links(); let mut s = state();
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0x5566_7788);
+        assert_eq!(b.records[0].dword20, 0x1000);
+        assert_eq!(stage48_mode(b.byte11), 0);
+    }
+
+    #[test]
+    fn mode_fifteen_clears_mode_initializes_record_zero_and_finalizes() {
+        let mut b = backend(15); let mut i = input(); let mut l = links(); let mut s = state();
+        assert_eq!(bt_stage48_mode_router(&mut i, &mut l, &mut s, &mut b), 0x5566_7788);
+        assert_eq!(stage48_mode(b.byte11), 0);
+        assert_eq!(b.records[0].dword20, 0x1000);
+        assert_eq!(STAGE48_BT_AMBIENT_WORD_ADDR, 0x3189DC);
+    }
+}
