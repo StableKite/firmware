@@ -314,3 +314,13 @@ The exact entry gate is `((object.byte152 >> 3) & 0x0f) > 2` together with `(obj
 Register-level inspection corrects one misleading Hex-Rays rendering: current `0x3AF86` is called with `R0 = result_17E2C` and `R1 = state_ptr`. The Rust boundary receives both values and a mutable state object because firmware subsequently reads state fields after that call. If the boundary returns zero, firmware sets state byte `+14` to one and returns zero. On nonzero return, state byte `+18` receives object byte `+15`, current `0x3C7C2(object)` is reduced to boolean `(return == 0)`, state word `+16` receives the post-boundary value of state word `+4`, state byte `+20` adds `0x20` with u8 wrap, byte `+19` receives the boolean, byte `+15` becomes one, and byte `+14` becomes one.
 
 When the function's second argument is zero, no `0x3AF86`/`0x3C7C2` call occurs. Instead state byte `+20` bits 5..7 increment modulo eight while low five bits are preserved; if the new high-three-bit value exceeds three, bit 0 is forced to one. This path and both entry-gate rejection paths return the original `0x17E2C` result unchanged.
+
+## Stage 47 — current lookup/slot transfer and packed-state update
+
+Stage 47 targets current `0x16DE9C`, the globally unique relocation-normalized 116-byte match of legacy `sub_16AED0`. Its only direct runtime calls remain opaque current boundaries `0x1EE18` and `0xB0460`.
+
+The routine looks up an object using input byte `+20`, unconditionally calls the release boundary on the caller-owned old slot, then replaces that slot with lookup-object dword `+16`. The release return is preserved as the function's final return throughout all later local writes. State byte `+29` becomes 2.
+
+Packing into state halfword `+26` depends on lookup-object byte `+11 & 0xC0`. Mode `0x40` inserts `(replacement.byte2 >> 3)` into bits 3..12. Mode `0x80` inserts `(replacement.u16_at_2 >> 3)` into the same ten-bit field. Other modes leave bits 3..12 unchanged. In every mode, bits 0..2 are then replaced from replacement byte `+2 & 7`. No local null check is observed after lookup; safe Rust therefore delegates handle validity/dereference behavior to the backend rather than inventing recovery.
+
+Finally input byte `+9` gets bit 0 set, lookup-object byte `+11` becomes `(old & 0xC0) | 0x3C`, and lookup-object dword `+16` is cleared to zero. The backend API keeps the reads/writes explicit so ownership-transfer ordering remains observable.

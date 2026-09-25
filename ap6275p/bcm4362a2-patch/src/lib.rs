@@ -3951,3 +3951,151 @@ mod stage46_tests {
         assert_eq!(STAGE46_BT_STATE_BOUNDARY, 0x3AF86);
     }
 }
+
+/// Stage 47: current lookup/slot-transfer and packed-state update at `0x16DE9C`.
+///
+/// This is the globally unique relocation-normalized current match of legacy
+/// `sub_16AED0`. The two runtime calls remain opaque traits.
+pub const STAGE47_CURRENT_BT_SLOT_TRANSFER_ADDR: u32 = 0x0016_DE9C;
+pub const STAGE47_BT_LOOKUP_BOUNDARY: u32 = 0x0001_EE18;
+pub const STAGE47_BT_RELEASE_BOUNDARY: u32 = 0x000B_0460;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage47InputState {
+    /// Input byte +9; bit 0 is forced on.
+    pub byte9: u8,
+    /// Input byte +20; passed by value to the lookup boundary.
+    pub byte20: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage47State {
+    /// State halfword +26. Bits 0..12 are partially replaced from the new handle header.
+    pub word26: u16,
+    /// State byte +29; set to 2 before packed-header updates.
+    pub byte29: u8,
+}
+
+pub trait BtStage47Backend {
+    /// Current `0x1EE18(input.byte20)`. The binary performs no local null check.
+    fn lookup(&mut self, selector: u8) -> u32;
+    /// Current `0xB0460(old_slot)`, invoked unconditionally. Its return value is the
+    /// function's final return and must survive all subsequent local state updates.
+    fn release(&mut self, old_slot: u32) -> u32;
+
+    fn lookup_byte11(&mut self, lookup: u32) -> u8;
+    fn lookup_replacement(&mut self, lookup: u32) -> u32;
+    fn set_lookup_byte11(&mut self, lookup: u32, value: u8);
+    fn set_lookup_replacement(&mut self, lookup: u32, value: u32);
+
+    fn replacement_byte2(&mut self, replacement: u32) -> u8;
+    fn replacement_word2(&mut self, replacement: u32) -> u16;
+}
+
+const fn replace_bits_3_through_12(old: u16, value: u16) -> u16 {
+    (old & !0x1FF8) | ((value & 0x03FF) << 3)
+}
+
+/// Safe source-level model of current `0x16DE9C` / legacy `sub_16AED0`.
+///
+/// Handle validity is deliberately delegated to the backend: the firmware performs no
+/// local null test after lookup before dereferencing the returned object/replacement.
+pub fn bt_stage47_slot_transfer<B: BtStage47Backend>(
+    input: &mut BtStage47InputState,
+    slot: &mut u32,
+    state: &mut BtStage47State,
+    backend: &mut B,
+) -> u32 {
+    let lookup = backend.lookup(input.byte20);
+    let release_result = backend.release(*slot);
+
+    let replacement = backend.lookup_replacement(lookup);
+    *slot = replacement;
+    state.byte29 = 2;
+
+    match backend.lookup_byte11(lookup) & 0xC0 {
+        0x40 => {
+            let replacement_now = backend.lookup_replacement(lookup);
+            let packed = (backend.replacement_byte2(replacement_now) >> 3) as u16;
+            state.word26 = replace_bits_3_through_12(state.word26, packed);
+        }
+        0x80 => {
+            let replacement_now = backend.lookup_replacement(lookup);
+            let packed = backend.replacement_word2(replacement_now) >> 3;
+            state.word26 = replace_bits_3_through_12(state.word26, packed);
+        }
+        _ => {}
+    }
+
+    let replacement_now = backend.lookup_replacement(lookup);
+    let byte2 = backend.replacement_byte2(replacement_now);
+    state.word26 = (state.word26 & !0x0007) | u16::from(byte2 & 0x07);
+
+    input.byte9 |= 1;
+    let byte11 = backend.lookup_byte11(lookup);
+    backend.set_lookup_byte11(lookup, (byte11 & 0xC0) | 0x3C);
+    backend.set_lookup_replacement(lookup, 0);
+
+    release_result
+}
+
+#[cfg(test)]
+mod stage47_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    struct B {
+        lookup: u32,
+        release_result: u32,
+        byte11: u8,
+        replacement: u32,
+        byte2: u8,
+        word2: u16,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+    impl BtStage47Backend for B {
+        fn lookup(&mut self, s:u8)->u32{self.calls.push(("lookup",s as u32,0));self.lookup}
+        fn release(&mut self,h:u32)->u32{self.calls.push(("release",h,0));self.release_result}
+        fn lookup_byte11(&mut self,l:u32)->u8{self.calls.push(("byte11",l,0));self.byte11}
+        fn lookup_replacement(&mut self,l:u32)->u32{self.calls.push(("replacement",l,0));self.replacement}
+        fn set_lookup_byte11(&mut self,l:u32,v:u8){self.calls.push(("set_byte11",l,v as u32));self.byte11=v}
+        fn set_lookup_replacement(&mut self,l:u32,v:u32){self.calls.push(("set_replacement",l,v));self.replacement=v}
+        fn replacement_byte2(&mut self,h:u32)->u8{self.calls.push(("byte2",h,0));self.byte2}
+        fn replacement_word2(&mut self,h:u32)->u16{self.calls.push(("word2",h,0));self.word2}
+    }
+    fn backend(mode:u8)->B{B{lookup:0x1000,release_result:0xDEAD_BEEF,byte11:mode|3,replacement:0x2000,byte2:0xAD,word2:0xB6AD,calls:Vec::new()}}
+
+    #[test]
+    fn mode40_packs_byte2_preserves_release_return_and_transfer_order(){
+        let mut b=backend(0x40);let mut input=BtStage47InputState{byte9:0x80,byte20:7};let mut slot=0x3333;let mut state=BtStage47State{word26:0xE007,byte29:0};
+        assert_eq!(bt_stage47_slot_transfer(&mut input,&mut slot,&mut state,&mut b),0xDEAD_BEEF);
+        assert_eq!(slot,0x2000);assert_eq!(state.byte29,2);assert_eq!(input.byte9,0x81);
+        let expected=replace_bits_3_through_12(0xE007,(0xADu16>>3)&0x3FF);
+        assert_eq!(state.word26,(expected&!7)|5);assert_eq!(b.byte11,0x7C);assert_eq!(b.replacement,0);
+        assert_eq!(&b.calls[..2],&[("lookup",7,0),("release",0x3333,0)]);
+    }
+
+    #[test]
+    fn mode80_uses_halfword_then_low_three_bits_from_byte(){
+        let mut b=backend(0x80);b.word2=0x7BAD;b.byte2=0xA2;let mut input=BtStage47InputState{byte9:0,byte20:1};let mut slot=9;let mut state=BtStage47State{word26:0xA005,byte29:9};
+        let _=bt_stage47_slot_transfer(&mut input,&mut slot,&mut state,&mut b);
+        let expected=replace_bits_3_through_12(0xA005,0x7BAD>>3);
+        assert_eq!(state.word26,(expected&!7)|2);
+    }
+
+    #[test]
+    fn other_mode_preserves_bits3_through12_but_still_replaces_low_three(){
+        let mut b=backend(0x00);b.byte2=6;let mut input=BtStage47InputState{byte9:2,byte20:3};let mut slot=0;let mut state=BtStage47State{word26:0x5ABC,byte29:0};
+        let r=bt_stage47_slot_transfer(&mut input,&mut slot,&mut state,&mut b);
+        assert_eq!(r,0xDEAD_BEEF);assert_eq!(state.word26,(0x5ABC&!7)|6);assert_eq!(input.byte9,3);
+        assert!(!b.calls.iter().any(|x|x.0=="word2"));
+    }
+
+    #[test]
+    fn provenance_constants_are_current(){
+        assert_eq!(STAGE47_CURRENT_BT_SLOT_TRANSFER_ADDR,0x16DE9C);
+        assert_eq!(STAGE47_BT_LOOKUP_BOUNDARY,0x1EE18);
+        assert_eq!(STAGE47_BT_RELEASE_BOUNDARY,0xB0460);
+    }
+}
