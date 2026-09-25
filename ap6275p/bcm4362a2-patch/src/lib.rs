@@ -4512,3 +4512,881 @@ mod stage48_tests {
         assert_eq!(STAGE48_BT_AMBIENT_WORD_ADDR, 0x3189DC);
     }
 }
+
+/// Stage 49: current connection-state transition/commit routine at `0x16E0D8`.
+///
+/// This is the previously established relocation-normalized current match of legacy
+/// `sub_16B10C`. Runtime calls and pointer-shaped payload/context accesses remain
+/// opaque; this model preserves the locally visible control flow, packed fields,
+/// global gates, scratch-cell aliasing, and state writes.
+pub const STAGE49_CURRENT_BT_STATE_COMMIT_ADDR: u32 = 0x0016_E0D8;
+pub const STAGE49_BT_ENTRY_BOUNDARY: u32 = 0x0003_A604;
+pub const STAGE49_BT_BYTE14_BOUNDARY: u32 = 0x0001_7E2C;
+pub const STAGE49_BT_CHAIN_BOUNDARY: u32 = 0x0001_7820;
+pub const STAGE49_BT_CHAIN_PREDICATE_BOUNDARY: u32 = 0x0003_90E4;
+pub const STAGE49_BT_EARLY_FINAL_BOUNDARY: u32 = 0x0002_02E8;
+pub const STAGE49_BT_PRECHECK_BOUNDARY: u32 = 0x0002_5288;
+pub const STAGE49_BT_NOTIFY_BOUNDARY: u32 = 0x0001_D104;
+pub const STAGE49_BT_CAPABILITY_BOUNDARY: u32 = 0x0002_521C;
+pub const STAGE49_BT_STATE_PREP_BOUNDARY: u32 = 0x0006_301C;
+pub const STAGE49_BT_SUBSTATE_PREP_BOUNDARY: u32 = 0x0004_D57C;
+pub const STAGE49_BT_STATE_GATE_BOUNDARY: u32 = 0x0002_1FC2;
+pub const STAGE49_BT_SECONDARY_GATE_BOUNDARY: u32 = 0x0006_304C;
+pub const STAGE49_BT_BYTE14_TEST_BOUNDARY: u32 = 0x0002_9778;
+pub const STAGE49_BT_MODE_NOTIFY_BOUNDARY: u32 = 0x0004_D4DC;
+pub const STAGE49_BT_BYTEA4_BOUNDARY: u32 = 0x0001_EFA8;
+pub const STAGE49_BT_STATE_EARLY_RETURN_BOUNDARY: u32 = 0x0003_67CC;
+pub const STAGE49_BT_OPTIONAL_STATE_BOUNDARY: u32 = 0x000A_F094;
+pub const STAGE49_BT_STATE_POST_BOUNDARY: u32 = 0x0006_24E8;
+pub const STAGE49_BT_SUBSTATE_COMMIT_BOUNDARY: u32 = 0x0002_53B0;
+pub const STAGE49_BT_CONTEXT_BOUNDARY: u32 = 0x0003_35AC;
+pub const STAGE49_BT_CONTEXT_CLASS_BOUNDARY: u32 = 0x0003_8918;
+pub const STAGE49_BT_OBJECT_PREDICATE_BOUNDARY: u32 = 0x0003_C7C2;
+pub const STAGE49_BT_FEATURE_PREDICATE_BOUNDARY: u32 = 0x0002_C79E;
+pub const STAGE49_BT_CONTEXT_FEATURE_BOUNDARY: u32 = 0x0002_C78C;
+pub const STAGE49_BT_LATE_STATE_BOUNDARY: u32 = 0x0006_29D0;
+pub const STAGE49_BT_ALIAS_BOUNDARY: u32 = 0x0001_EBA0;
+pub const STAGE49_BT_FINAL_PREP_BOUNDARY: u32 = 0x0006_329C;
+pub const STAGE49_BT_OPTIONAL_FINAL_BOUNDARY: u32 = 0x0002_CAA8;
+pub const STAGE49_BT_FINAL_BOUNDARY: u32 = 0x0003_A742;
+pub const STAGE49_BT_EQUAL_ARG_BOUNDARY: u32 = 0x0002_5320;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage49State {
+    pub word12: u16,
+    pub byte14: u8,
+    pub byte15: u8,
+    pub byte5e: u8,
+    pub dword68: u32,
+    pub word78: u16,
+
+    pub byte90: u8,
+    pub byte94: u8,
+    pub byte95: u8,
+    pub byte97: u8,
+    pub byte98: u8,
+    pub byte99: u8,
+    pub byte9a: u8,
+    pub byte9b: u8,
+    pub byte9c: u8,
+    pub byte9e: u8,
+    pub byte9f: u8,
+    pub dworda0: u32,
+    pub bytea4: u8,
+    pub bytea5: u8,
+
+    pub dwordf8: u32,
+    pub word104: u16,
+    pub byte114: u8,
+    pub byte115: u8,
+    pub byte116: u8,
+    pub byte11b: u8,
+    pub byte11e: u8,
+    pub byte11f: u8,
+    pub byte121: u8,
+    pub byte124: u8,
+    pub byte125: u8,
+    pub byte129: u8,
+    pub byte131: u8,
+    pub byte134: u8,
+    pub byte135: u8,
+}
+
+impl BtStage49State {
+    pub const fn word98(&self) -> u16 {
+        (self.byte98 as u16) | ((self.byte99 as u16) << 8)
+    }
+    pub const fn word9a(&self) -> u16 {
+        (self.byte9a as u16) | ((self.byte9b as u16) << 8)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BtStage49Globals {
+    /// `0x206F78 + 4/+8/+10/+22`.
+    pub g206f78_b4: u8,
+    pub g206f78_b8: u8,
+    pub g206f78_b10: u8,
+    pub g206f78_b22: u8,
+
+    /// `0x208338 + 19`.
+    pub g208338_b19: u8,
+    /// `0x209B98`.
+    pub g209b98_b0: u8,
+
+    /// `0x208B78` pointer-shaped global and its byte +59.
+    pub g208b78_primary: u32,
+    pub g208b7c_secondary: u32,
+    pub g208bb3_b59: u8,
+
+    pub g209b94_mask: u32,
+    pub g2079b6_threshold: u16,
+
+    /// The 16-byte table at `0x20289E`, indexed by `(state.byte98 >> 3) & 0x0F`.
+    pub g20289e_mode_table: [u8; 16],
+    pub g202854_threshold: u32,
+
+    pub g215c20: u32,
+    pub g202fa8_flags: u32,
+    pub g208bb8_mask: u32,
+
+    /// Global state snapshots at `0x318ACC` / `0x318AD0`.
+    pub g318acc_snapshot: u32,
+    pub g318ad0_snapshot: u32,
+
+    /// Base index used with matrix base `0x208C9C`.
+    pub g208c98_index: u32,
+
+    pub g202868_b0: u8,
+    pub g208b74_b0: u8,
+    pub g202852_b0: u8,
+    pub g208b6d_b0: u8,
+    pub g202865_b0: u8,
+    pub g202866_b0: u8,
+
+    pub g207ba8_b0: u8,
+    pub g207ba5_b0: u8,
+    pub g208bbc_mask: u32,
+    pub g20285b_b0: u8,
+    pub g206fe0_b9: u8,
+    pub g3186d0_flags: u32,
+    pub g207fc1_b0: u8,
+    pub g20b278_b0: u8,
+}
+
+impl Default for BtStage49Globals {
+    fn default() -> Self {
+        Self {
+            g206f78_b4: 0,
+            g206f78_b8: 0,
+            g206f78_b10: 0,
+            g206f78_b22: 0,
+            g208338_b19: 0,
+            g209b98_b0: 0,
+            g208b78_primary: 0,
+            g208b7c_secondary: 0,
+            g208bb3_b59: 0,
+            g209b94_mask: 0,
+            g2079b6_threshold: 0,
+            g20289e_mode_table: [0; 16],
+            g202854_threshold: 0,
+            g215c20: 0,
+            g202fa8_flags: 0,
+            g208bb8_mask: 0,
+            g318acc_snapshot: 0,
+            g318ad0_snapshot: 0,
+            g208c98_index: 0,
+            g202868_b0: 0,
+            g208b74_b0: 0,
+            g202852_b0: 0,
+            g208b6d_b0: 0,
+            g202865_b0: 0,
+            g202866_b0: 0,
+            g207ba8_b0: 0,
+            g207ba5_b0: 0,
+            g208bbc_mask: 0,
+            g20285b_b0: 0,
+            g206fe0_b9: 0,
+            g3186d0_flags: 0,
+            g207fc1_b0: 0,
+            g20b278_b0: 0,
+        }
+    }
+}
+
+/// Opaque Stage-49 runtime surface.
+///
+/// `call*` methods model boundaries for which the current function does not pass a
+/// state pointer. `state_pointer_call*` additionally expose the modeled state because
+/// the binary passes either the state pointer or `state + 0x90`, so post-call reads must
+/// observe possible mutations.
+pub trait BtStage49Backend {
+    fn call0(&mut self, addr: u32) -> u32;
+    fn call1(&mut self, addr: u32, a0: u32) -> u32;
+    fn call2(&mut self, addr: u32, a0: u32, a1: u32) -> u32;
+    fn call3(&mut self, addr: u32, a0: u32, a1: u32, a2: u32) -> u32;
+
+    fn state_pointer_call0(
+        &mut self,
+        addr: u32,
+        pointer: u32,
+        state: &mut BtStage49State,
+    ) -> u32;
+
+    fn state_pointer_call1(
+        &mut self,
+        addr: u32,
+        pointer: u32,
+        state: &mut BtStage49State,
+        a1: u32,
+    ) -> u32;
+
+    fn context_word64(&mut self, context: u32) -> u16;
+    fn context_byte167(&mut self, context: u32) -> u8;
+    fn payload_byte0(&mut self, payload: u32) -> u8;
+    fn payload_byte1(&mut self, payload: u32) -> u8;
+
+    /// Firmware address is `0x208C9C + context_class*40 + global_index*20`.
+    /// The local operation copies byte +18 into +19, then writes `value` to +18.
+    fn shift_matrix_entry(&mut self, context_class: u32, global_index: u32, value: u8);
+
+    /// Current `0x3A742(4, state, &scratch_arg1)`.
+    fn final_boundary(
+        &mut self,
+        code: u32,
+        state_addr: u32,
+        state: &mut BtStage49State,
+        scratch_arg1: &mut u32,
+    ) -> u32;
+}
+
+const fn stage49_mode(byte98: u8) -> u8 {
+    (byte98 >> 3) & 0x0F
+}
+
+const fn stage49_set_byte98_bit7(byte98: u8, value: bool) -> u8 {
+    (byte98 & 0x7F) | if value { 0x80 } else { 0 }
+}
+
+const fn stage49_clear_local_fields(v: u32) -> u32 {
+    v & !(0x0000_0078 | 0x0000_7C00)
+}
+
+const fn stage49_set_local_fields_one(v: u32) -> u32 {
+    stage49_clear_local_fields(v) | 0x0000_0408
+}
+
+fn stage49_common_local_state<B: BtStage49Backend>(
+    state_addr: u32,
+    state: &mut BtStage49State,
+    globals: &mut BtStage49Globals,
+    backend: &mut B,
+    scratch_state: &mut u32,
+    scratch_arg1: &mut u32,
+) {
+    let role = state.byte15;
+
+    if role == 1 {
+        state.byte11b = 3;
+        *scratch_arg1 = stage49_clear_local_fields(*scratch_arg1);
+
+        let gate = backend.state_pointer_call0(
+            STAGE49_BT_STATE_GATE_BOUNDARY,
+            state_addr,
+            state,
+        );
+        if gate == 0
+            && globals.g208b78_primary == state_addr
+            && (globals.g209b94_mask & state.dwordf8) == 0
+            && state.byte94 == 2
+            && stage49_mode(state.byte90) <= 1
+        {
+            state.byte124 = role;
+            globals.g208b7c_secondary = state_addr;
+        }
+    } else {
+        let use_cleared = if state.byte114 != 0
+            && state.word104 > 3
+            && state.byte11b > 1
+            && state.byte11e == 0
+        {
+            let test = backend.call1(
+                STAGE49_BT_BYTE14_TEST_BOUNDARY,
+                u32::from(state.byte14),
+            );
+            test == 0 || state.word104 < globals.g2079b6_threshold
+        } else {
+            false
+        };
+
+        if use_cleared {
+            state.byte11b = 3;
+            *scratch_arg1 = stage49_clear_local_fields(*scratch_arg1);
+        } else {
+            state.byte11b = 1;
+            *scratch_arg1 = stage49_set_local_fields_one(*scratch_arg1);
+        }
+    }
+
+    let local_word = *scratch_arg1 as u16;
+    *scratch_state = (*scratch_state & 0xFFFF_0000) | u32::from(local_word);
+    globals.g318acc_snapshot = u32::from(local_word);
+    state.byte9c = 1;
+
+    if globals.g208338_b19 & 0x08 == 0 {
+        let field = ((*scratch_arg1 as u8) >> 3) & 0x0F;
+        let _ = backend.call3(
+            STAGE49_BT_MODE_NOTIFY_BOUNDARY,
+            1,
+            u32::from(field),
+            0,
+        );
+    }
+
+    state.byte129 = 0;
+    if globals.g206f78_b4 != 0 {
+        let _ = backend.call2(
+            STAGE49_BT_NOTIFY_BOUNDARY,
+            1,
+            u32::from(local_word >> 3),
+        );
+    }
+}
+
+fn stage49_tail<B: BtStage49Backend>(
+    state_addr: u32,
+    state: &mut BtStage49State,
+    globals: &mut BtStage49Globals,
+    backend: &mut B,
+    scratch_state: &mut u32,
+    scratch_arg1: &mut u32,
+) -> u32 {
+    if state.byte15 == 1
+        && (state.dwordf8 & globals.g208bbc_mask) != 0
+        && (state.byte99 & 1) != 0
+    {
+        state.byte131 = globals.g20285b_b0;
+    }
+
+    if globals.g208338_b19 & 0x10 != 0 {
+        let _ = backend.state_pointer_call0(
+            STAGE49_BT_LATE_STATE_BOUNDARY,
+            state_addr,
+            state,
+        );
+    }
+
+    if globals.g206fe0_b9 != 0 {
+        let _ = backend.call2(
+            STAGE49_BT_ALIAS_BOUNDARY,
+            u32::from(state.bytea5),
+            *scratch_state,
+        );
+    }
+
+    let _ = backend.state_pointer_call0(
+        STAGE49_BT_FINAL_PREP_BOUNDARY,
+        state_addr,
+        state,
+    );
+
+    if state.byte5e != 0 {
+        let packed = (state.word9a() & !0x0004) & 0x1FFF;
+        if packed == 1 {
+            globals.g3186d0_flags |= 1;
+        } else {
+            globals.g3186d0_flags &= !1;
+        }
+    }
+
+    if globals.g207fc1_b0 != 0 && globals.g20b278_b0 != 0 {
+        let _ = backend.state_pointer_call1(
+            STAGE49_BT_OPTIONAL_FINAL_BOUNDARY,
+            state_addr,
+            state,
+            1,
+        );
+    }
+
+    backend.final_boundary(4, state_addr, state, scratch_arg1)
+}
+
+/// Safe source-level model of current `0x16E0D8` / legacy `sub_16B10C`.
+///
+/// `state_addr` is required because the firmware compares and stores the numeric state
+/// pointer and also reuses the pushed `r0` stack cell: only its low halfword is replaced,
+/// leaving the original address high half intact for current `0x1EBA0`.
+pub fn bt_stage49_state_commit<B: BtStage49Backend>(
+    state_addr: u32,
+    state: &mut BtStage49State,
+    arg1: u32,
+    globals: &mut BtStage49Globals,
+    backend: &mut B,
+) -> u32 {
+    // `push {r0-r8,lr}` leaves two scratch cells that matter semantically.
+    let mut scratch_state = state_addr;
+    let mut scratch_arg1 = arg1;
+
+    if arg1 == 1 {
+        state.byte97 = 0;
+        state.byte115 = 0;
+        state.byte116 = 0;
+    }
+
+    let entry = backend.state_pointer_call1(
+        STAGE49_BT_ENTRY_BOUNDARY,
+        state_addr,
+        state,
+        arg1,
+    );
+    if entry != 0 {
+        let v0 = backend.call1(
+            STAGE49_BT_BYTE14_BOUNDARY,
+            u32::from(state.byte14),
+        );
+        let v1 = backend.call2(STAGE49_BT_CHAIN_BOUNDARY, v0, 1);
+        let byte15_zero = u32::from(state.byte15 == 0);
+        let chained = backend.call3(
+            STAGE49_BT_CHAIN_PREDICATE_BOUNDARY,
+            v1,
+            u32::from(state.bytea4),
+            byte15_zero,
+        );
+        if chained == 0 {
+            return backend.call0(STAGE49_BT_EARLY_FINAL_BOUNDARY);
+        }
+    }
+
+    let precheck = backend.call0(STAGE49_BT_PRECHECK_BOUNDARY);
+    if precheck == 0 {
+        if globals.g206f78_b22 != 0 {
+            let _ = backend.call2(STAGE49_BT_NOTIFY_BOUNDARY, 0x32, 0x18);
+        }
+        return backend.call0(STAGE49_BT_EARLY_FINAL_BOUNDARY);
+    }
+
+    state.word12 = 0;
+    if u32::from(state.byte15) == arg1 {
+        state.byte94 = 0;
+        state.byte95 = 0;
+        let ret = backend.call0(STAGE49_BT_EQUAL_ARG_BOUNDARY);
+        if state.byte5e != 0 {
+            globals.g3186d0_flags &= !1;
+        }
+        if state.dword68 != 0 {
+            state.word12 = state.word78;
+        }
+        return ret;
+    }
+
+    let capability = backend.call0(STAGE49_BT_CAPABILITY_BOUNDARY);
+    let bit7 = if capability != 0 || globals.g208338_b19 & 0x08 != 0 {
+        true
+    } else {
+        false
+    };
+    state.byte98 = stage49_set_byte98_bit7(state.byte98, bit7);
+
+    if globals.g209b98_b0 >> 1 != 0 {
+        state.byte98 = stage49_set_byte98_bit7(
+            state.byte98,
+            globals.g209b98_b0 & 1 != 0,
+        );
+    }
+
+    let _ = backend.state_pointer_call0(
+        STAGE49_BT_STATE_PREP_BOUNDARY,
+        state_addr,
+        state,
+    );
+    if globals.g208338_b19 & 0x10 == 0 {
+        let _ = backend.state_pointer_call0(
+            STAGE49_BT_SUBSTATE_PREP_BOUNDARY,
+            state_addr.wrapping_add(0x90),
+            state,
+        );
+    }
+
+    // Saved r1 is reused as a local packed copy of state halfword +0x98.
+    scratch_arg1 = (scratch_arg1 & 0xFFFF_0000) | u32::from(state.word98());
+
+    let outer_common = if state.dworda0 == 0
+        || state.byte90 & 0x80 == 0
+        || state.byte135 != 0
+    {
+        true
+    } else {
+        let gate = backend.state_pointer_call0(
+            STAGE49_BT_STATE_GATE_BOUNDARY,
+            state_addr,
+            state,
+        );
+        if gate == 0
+            && state.byte15 == 1
+            && globals.g208bb3_b59 == 0
+            && globals.g208b78_primary != state_addr
+            && state.byte9e == 0
+        {
+            true
+        } else {
+            backend.call0(STAGE49_BT_SECONDARY_GATE_BOUNDARY) != 0
+        }
+    };
+
+    if outer_common {
+        stage49_common_local_state(
+            state_addr,
+            state,
+            globals,
+            backend,
+            &mut scratch_state,
+            &mut scratch_arg1,
+        );
+        return stage49_tail(
+            state_addr,
+            state,
+            globals,
+            backend,
+            &mut scratch_state,
+            &mut scratch_arg1,
+        );
+    }
+
+    // Alternate state-transition path at current 0x16E304.
+    if state.byte15 == 0 {
+        state.byte11b = 1;
+    }
+
+    if state.byte9f != 0 {
+        state.byte9f = 0;
+        state.byte99 ^= 0x02;
+        let _ = backend.call1(
+            STAGE49_BT_BYTEA4_BOUNDARY,
+            u32::from(state.bytea4),
+        );
+    }
+
+    if state.byte9e != 0 {
+        state.byte134 = state.byte134.wrapping_add(1);
+        state.byte129 = 2;
+
+        let mode = stage49_mode(state.byte98);
+        if u32::from(globals.g20289e_mode_table[mode as usize])
+            > globals.g202854_threshold
+        {
+            let gate = backend.state_pointer_call0(
+                STAGE49_BT_STATE_GATE_BOUNDARY,
+                state_addr,
+                state,
+            );
+            if gate == 0
+                && !(0x18..=0x1A).contains(&state.bytea4)
+            {
+                let early = backend.state_pointer_call0(
+                    STAGE49_BT_STATE_EARLY_RETURN_BOUNDARY,
+                    state_addr,
+                    state,
+                );
+                if early != 0 {
+                    return early;
+                }
+            }
+        }
+    } else {
+        state.byte134 = 0;
+        state.byte129 = 1;
+    }
+
+    if globals.g215c20 != 0 {
+        let _ = backend.state_pointer_call0(
+            STAGE49_BT_OPTIONAL_STATE_BOUNDARY,
+            state_addr,
+            state,
+        );
+    }
+
+    state.byte9e = 1;
+    state.byte115 = 1;
+    state.byte125 = 1;
+
+    if globals.g202fa8_flags & (1 << 16) != 0 {
+        globals.g208bb8_mask &= !state.dwordf8;
+    }
+
+    if globals.g208338_b19 & 0x10 != 0 {
+        let _ = backend.state_pointer_call0(
+            STAGE49_BT_STATE_POST_BOUNDARY,
+            state_addr,
+            state,
+        );
+    }
+
+    // Current code reloads word +0x98 after the opaque calls and updates only the
+    // low half of the pushed-r0 scratch cell.
+    let current_word98 = state.word98();
+    scratch_state = (scratch_state & 0xFFFF_0000) | u32::from(current_word98);
+    globals.g318acc_snapshot = u32::from(current_word98);
+    globals.g318ad0_snapshot = u32::from(state.word9a());
+
+    let _ = backend.state_pointer_call0(
+        STAGE49_BT_SUBSTATE_COMMIT_BOUNDARY,
+        state_addr.wrapping_add(0x90),
+        state,
+    );
+
+    let context = backend.call1(
+        STAGE49_BT_CONTEXT_BOUNDARY,
+        u32::from(state.bytea4),
+    );
+    if context != 0 {
+        let context_word64 = backend.context_word64(context);
+        let context_class = backend.call1(
+            STAGE49_BT_CONTEXT_CLASS_BOUNDARY,
+            u32::from(context_word64),
+        );
+        if context_class != 2 && (backend.context_byte167(context) >> 5) == 0 {
+            let mode = stage49_mode(state.byte98);
+            if (mode & 0x0B) == 0x0A || mode == 4 {
+                backend.shift_matrix_entry(context_class, globals.g208c98_index, 1);
+            } else if (mode & 0x0B) == 0x0B || mode == 8 {
+                backend.shift_matrix_entry(context_class, globals.g208c98_index, 0);
+            }
+        }
+    }
+
+    let mode_now = stage49_mode(state.byte98);
+    state.byte9c = globals.g20289e_mode_table[mode_now as usize];
+    state.word12 = u16::from(state.byte9c).wrapping_sub(1);
+
+    if state.byte15 == 0 {
+        let gate = backend.state_pointer_call0(
+            STAGE49_BT_STATE_GATE_BOUNDARY,
+            state_addr,
+            state,
+        );
+        if gate == 0 {
+            if state.byte121 != 0 {
+                let pred = backend.state_pointer_call0(
+                    STAGE49_BT_OBJECT_PREDICATE_BOUNDARY,
+                    state_addr,
+                    state,
+                );
+                if pred != 0 {
+                    state.byte11e = globals.g202868_b0;
+                    state.byte11f = globals.g208b74_b0;
+                } else {
+                    state.byte11e = globals.g202852_b0;
+                    state.byte11f = globals.g208b6d_b0;
+                }
+            } else {
+                state.byte11e = globals.g202865_b0;
+                state.byte11f = globals.g202866_b0;
+            }
+        }
+    }
+
+    if globals.g206f78_b4 != 0 {
+        let packed = u32::from((state.word98() >> 3) & 0x007F)
+            | (u32::from(state.word9a()) << 7);
+        let _ = backend.call2(STAGE49_BT_NOTIFY_BOUNDARY, 3, packed);
+        if state.byte129 != 2 {
+            let _ = backend.call2(STAGE49_BT_NOTIFY_BOUNDARY, 0x65, 1);
+        }
+    }
+
+    if globals.g206f78_b8 != 0
+        && (state.byte9a & 3) == 3
+        && state.byte129 != 2
+    {
+        let first = backend.payload_byte0(state.dworda0);
+        let value = if first & 0xFE == 0xFE {
+            u32::from(backend.payload_byte1(state.dworda0).wrapping_add(0x43))
+        } else {
+            u32::from(first >> 1)
+        };
+        let _ = backend.call2(STAGE49_BT_NOTIFY_BOUNDARY, 0x5D, value);
+    }
+
+    if globals.g206f78_b10 != 0 && (state.byte9a & 3) != 3 {
+        let packed = u32::from(state.bytea4 & 0x0F)
+            | (u32::from((state.word9a() >> 3) & 0x03FF) << 4);
+        let _ = backend.call2(STAGE49_BT_NOTIFY_BOUNDARY, 0x0D, packed);
+    }
+
+    if globals.g207ba8_b0 != 0 {
+        let mode = stage49_mode(state.byte98);
+        let feature = backend.call2(
+            STAGE49_BT_FEATURE_PREDICATE_BOUNDARY,
+            u32::from(mode),
+            u32::from(state.bytea5),
+        );
+        if feature != 0 && state.dworda0 != 0 {
+            let context = backend.call1(
+                STAGE49_BT_CONTEXT_BOUNDARY,
+                u32::from(state.bytea4),
+            );
+            if context != 0 {
+                let _ = backend.call1(
+                    STAGE49_BT_CONTEXT_FEATURE_BOUNDARY,
+                    context,
+                );
+            }
+        }
+
+        // Firmware re-reads mode and payload pointer after the opaque calls.
+        if stage49_mode(state.byte98) > 3 && state.dworda0 != 0 {
+            globals.g207ba5_b0 = 1;
+        }
+    }
+
+    stage49_tail(
+        state_addr,
+        state,
+        globals,
+        backend,
+        &mut scratch_state,
+        &mut scratch_arg1,
+    )
+}
+
+#[cfg(test)]
+mod stage49_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        entry: u32,
+        chain_predicate: u32,
+        early_final: u32,
+        precheck: u32,
+        equal_ret: u32,
+        capability: u32,
+        state_gate: u32,
+        secondary_gate: u32,
+        early_state_ret: u32,
+        final_ret: u32,
+        context: u32,
+        context_word64: u16,
+        context_byte167: u8,
+        context_class: u32,
+        payload0: u8,
+        payload1: u8,
+        calls: Vec<(u32, u32, u32, u32)>,
+        matrix: Vec<(u32, u32, u8)>,
+        final_scratch: u32,
+    }
+
+    impl BtStage49Backend for B {
+        fn call0(&mut self, addr:u32)->u32 {
+            self.calls.push((addr,0,0,0));
+            match addr {
+                STAGE49_BT_EARLY_FINAL_BOUNDARY => self.early_final,
+                STAGE49_BT_PRECHECK_BOUNDARY => self.precheck,
+                STAGE49_BT_CAPABILITY_BOUNDARY => self.capability,
+                STAGE49_BT_SECONDARY_GATE_BOUNDARY => self.secondary_gate,
+                STAGE49_BT_EQUAL_ARG_BOUNDARY => self.equal_ret,
+                _ => 0,
+            }
+        }
+        fn call1(&mut self, addr:u32,a0:u32)->u32 {
+            self.calls.push((addr,a0,0,0));
+            match addr {
+                STAGE49_BT_CONTEXT_BOUNDARY => self.context,
+                STAGE49_BT_CONTEXT_CLASS_BOUNDARY => self.context_class,
+                _ => 0,
+            }
+        }
+        fn call2(&mut self, addr:u32,a0:u32,a1:u32)->u32 {
+            self.calls.push((addr,a0,a1,0)); 0
+        }
+        fn call3(&mut self, addr:u32,a0:u32,a1:u32,a2:u32)->u32 {
+            self.calls.push((addr,a0,a1,a2));
+            if addr==STAGE49_BT_CHAIN_PREDICATE_BOUNDARY { self.chain_predicate } else { 0 }
+        }
+        fn state_pointer_call0(&mut self, addr:u32,p:u32,_s:&mut BtStage49State)->u32 {
+            self.calls.push((addr,p,0,0));
+            match addr {
+                STAGE49_BT_STATE_GATE_BOUNDARY => self.state_gate,
+                STAGE49_BT_STATE_EARLY_RETURN_BOUNDARY => self.early_state_ret,
+                _ => 0,
+            }
+        }
+        fn state_pointer_call1(&mut self, addr:u32,p:u32,_s:&mut BtStage49State,a1:u32)->u32 {
+            self.calls.push((addr,p,a1,0));
+            if addr==STAGE49_BT_ENTRY_BOUNDARY { self.entry } else { 0 }
+        }
+        fn context_word64(&mut self,_:u32)->u16 { self.context_word64 }
+        fn context_byte167(&mut self,_:u32)->u8 { self.context_byte167 }
+        fn payload_byte0(&mut self,_:u32)->u8 { self.payload0 }
+        fn payload_byte1(&mut self,_:u32)->u8 { self.payload1 }
+        fn shift_matrix_entry(&mut self,c:u32,g:u32,v:u8){self.matrix.push((c,g,v));}
+        fn final_boundary(&mut self,_:u32,_:u32,_:&mut BtStage49State,s:&mut u32)->u32 {
+            self.final_scratch=*s; self.final_ret
+        }
+    }
+
+    #[test]
+    fn entry_one_clears_three_bytes_and_zero_chain_takes_early_final() {
+        let mut s=BtStage49State{byte97:9,byte115:8,byte116:7,byte14:2,byte15:0,bytea4:4,..Default::default()};
+        let mut g=BtStage49Globals::default();
+        let mut b=B{entry:1,chain_predicate:0,early_final:0xDEAD_BEEF,..Default::default()};
+        assert_eq!(bt_stage49_state_commit(0x0020_1234,&mut s,1,&mut g,&mut b),0xDEAD_BEEF);
+        assert_eq!((s.byte97,s.byte115,s.byte116),(0,0,0));
+        assert_eq!(b.calls.last().unwrap().0,STAGE49_BT_EARLY_FINAL_BOUNDARY);
+    }
+
+    #[test]
+    fn equal_argument_path_clears_state_and_preserves_equal_boundary_return() {
+        let mut s=BtStage49State{byte15:1,byte94:2,byte95:3,byte5e:1,dword68:1,word78:0x3456,..Default::default()};
+        let mut g=BtStage49Globals{g3186d0_flags:0x55,..Default::default()};
+        let mut b=B{precheck:7,equal_ret:0xCAFE_BABE,..Default::default()};
+        let r=bt_stage49_state_commit(0x0020_1000,&mut s,1,&mut g,&mut b);
+        assert_eq!(r,0xCAFE_BABE);
+        assert_eq!((s.byte94,s.byte95,s.word12),(0,0,0x3456));
+        assert_eq!(g.g3186d0_flags & 1,0);
+    }
+
+    #[test]
+    fn common_path_builds_exact_local_fields_and_stack_alias() {
+        let mut s=BtStage49State{byte15:2,byte98:0,byte99:0,bytea4:9,..Default::default()};
+        let mut g=BtStage49Globals{g208338_b19:0x08,..Default::default()};
+        let mut b=B{precheck:1,capability:0,final_ret:0x1234_5678,..Default::default()};
+        let r=bt_stage49_state_commit(0x0021_9ABC,&mut s,3,&mut g,&mut b);
+        assert_eq!(r,0x1234_5678);
+        assert_eq!(g.g318acc_snapshot,0x0488);
+        assert_eq!(b.final_scratch,0x0000_0488);
+        assert_eq!(s.byte11b,1);
+        assert_eq!(s.byte9c,1);
+    }
+
+    #[test]
+    fn outer_gate_primary_mismatch_and_zero_byte9e_bypasses_secondary_gate() {
+        let mut s=BtStage49State{
+            byte15:1,byte90:0x80,byte9e:0,dworda0:1,byte98:0,
+            ..Default::default()
+        };
+        let mut g=BtStage49Globals{g208b78_primary:0x0020_9999,..Default::default()};
+        let mut b=B{precheck:1,state_gate:0,secondary_gate:0,final_ret:0x44,..Default::default()};
+        let r=bt_stage49_state_commit(0x0020_0100,&mut s,3,&mut g,&mut b);
+        assert_eq!(r,0x44);
+        assert!(!b.calls.iter().any(|x|x.0==STAGE49_BT_SECONDARY_GATE_BOUNDARY));
+        assert_eq!(s.byte11b,3);
+    }
+
+    #[test]
+    fn outer_gate_primary_match_reaches_secondary_gate() {
+        let state_addr=0x0020_0100;
+        let mut s=BtStage49State{
+            byte15:1,byte90:0x80,byte9e:0,dworda0:1,byte98:0,
+            ..Default::default()
+        };
+        let mut g=BtStage49Globals{g208b78_primary:state_addr,..Default::default()};
+        let mut b=B{precheck:1,state_gate:0,secondary_gate:1,final_ret:0x45,..Default::default()};
+        let r=bt_stage49_state_commit(state_addr,&mut s,3,&mut g,&mut b);
+        assert_eq!(r,0x45);
+        assert!(b.calls.iter().any(|x|x.0==STAGE49_BT_SECONDARY_GATE_BOUNDARY));
+    }
+
+    #[test]
+    fn alternate_path_zero_previous_state_sets_one_and_commits_flags() {
+        let mut s=BtStage49State{
+            byte15:2,byte90:0x80,byte9e:0,byte134:9,dworda0:1,byte98:0x18,
+            ..Default::default()
+        };
+        let mut g=BtStage49Globals::default();
+        let mut b=B{precheck:1,state_gate:1,secondary_gate:0,final_ret:7,..Default::default()};
+        let r=bt_stage49_state_commit(0x0020_0100,&mut s,3,&mut g,&mut b);
+        assert_eq!(r,7);
+        assert_eq!((s.byte134,s.byte129,s.byte9e,s.byte115,s.byte125),(0,1,1,1,1));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE49_CURRENT_BT_STATE_COMMIT_ADDR,0x16E0D8);
+        assert_eq!(STAGE49_BT_ENTRY_BOUNDARY,0x3A604);
+        assert_eq!(STAGE49_BT_CONTEXT_BOUNDARY,0x335AC);
+        assert_eq!(STAGE49_BT_FINAL_BOUNDARY,0x3A742);
+    }
+}
