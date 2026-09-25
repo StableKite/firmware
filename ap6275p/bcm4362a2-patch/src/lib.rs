@@ -5671,3 +5671,369 @@ mod stage50_tests {
         assert_eq!(STAGE50_BT_AMBIENT_FLAGS_ADDR,0x208338);
     }
 }
+
+/// Stage 51: current record/state coordinator at `0x16DBDC`.
+///
+/// This is the previously established relocation-normalized current match of legacy
+/// `sub_16AC10`. Runtime calls remain opaque boundaries; the model preserves the
+/// exact local gates, unchecked record indexing, wrapping counters, post-call rereads,
+/// and reset ordering visible in the current firmware.
+pub const STAGE51_CURRENT_BT_RECORD_COORDINATOR_ADDR: u32 = 0x0016_DBDC;
+pub const STAGE51_BT_CONTEXT_BOUNDARY: u32 = 0x0003_35AC;
+pub const STAGE51_BT_SAMPLE_BOUNDARY: u32 = 0x0003_A6CC;
+pub const STAGE51_BT_STATS_BOUNDARY: u32 = 0x0003_B04A;
+pub const STAGE51_BT_WINDOW_BOUNDARY: u32 = 0x0000_3D24;
+
+const STAGE51_RECORD_BYTE21: u8 = 0x21;
+const STAGE51_RECORD_BYTE22: u8 = 0x22;
+const STAGE51_RECORD_BYTE23: u8 = 0x23;
+const STAGE51_RECORD_WORD26: u8 = 0x26;
+const STAGE51_RECORD_BYTE28: u8 = 0x28;
+const STAGE51_RECORD_BYTE29: u8 = 0x29;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage51ObjectState {
+    pub byte15: u8,
+    pub byte90: u8,
+    pub byte91: u8,
+    pub byte94: u8,
+    pub byte96: u8,
+    pub bytea4: u8,
+    /// Current signed load at +0x113 is ultimately truncated back to one byte.
+    pub byte113: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage51Stats {
+    pub byte0: u8,
+    /// Firmware uses this byte as an unchecked index with a stride of 25.
+    pub byte1: u8,
+    pub byte14: u8,
+    pub byte15: u8,
+    pub byte20: u8,
+    pub byte22: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage51Event {
+    pub byte0: u8,
+    pub byte2: u8,
+    pub byte4: u8,
+    pub byte6: u8,
+}
+
+/// Opaque current-runtime and unchecked record-access surface used by Stage 51.
+///
+/// Record offsets are the exact offsets from `stats + 25 * stats.byte1` used by the
+/// firmware. The backend owns bounds/aliasing behavior because the binary performs no
+/// local bounds check on `stats.byte1`.
+pub trait BtStage51Backend {
+    /// Current `0x335AC(object.byteA4)`. Only the zero/nonzero result is consumed.
+    fn context_boundary(&mut self, selector: u8) -> u32;
+    /// Current zero-argument `0x3A6CC()`; only its low byte is stored locally.
+    fn sample_boundary(&mut self) -> u32;
+
+    fn record_byte(&mut self, index: u8, offset: u8) -> u8;
+    fn set_record_byte(&mut self, index: u8, offset: u8, value: u8);
+    fn record_word(&mut self, index: u8, offset: u8) -> u16;
+    fn set_record_word(&mut self, index: u8, offset: u8, value: u16);
+
+    /// Current `0x3B04A(stats)`. Firmware clears stats byte +15 before this call and
+    /// then re-reads later fields, so mutations must remain observable.
+    fn stats_boundary(&mut self, stats: &mut BtStage51Stats);
+    /// Current `0x3D24(stats + 16, 0, 0x74)`. The exact runtime implementation remains
+    /// opaque; the backend must expose any mutations of the represented stats fields.
+    fn window_boundary(&mut self, stats: &mut BtStage51Stats);
+}
+
+const fn stage51_mode(byte90: u8) -> u8 {
+    (byte90 >> 3) & 0x0F
+}
+
+const fn stage51_event_mode(byte0: u8) -> u8 {
+    (byte0 >> 3) & 0x0F
+}
+
+fn stage51_inc_record_byte<B: BtStage51Backend>(
+    backend: &mut B,
+    index: u8,
+    offset: u8,
+) {
+    let value = backend.record_byte(index, offset).wrapping_add(1);
+    backend.set_record_byte(index, offset, value);
+}
+
+/// Safe source-level model of current `0x16DBDC` / legacy `sub_16AC10`.
+///
+/// The firmware does not present a stable semantic return value on all paths, so this
+/// reconstruction models the routine as an effectful coordinator rather than assigning
+/// meaning to incidental live contents of R0 at return.
+pub fn bt_stage51_record_state_coordinator<B: BtStage51Backend>(
+    object: &BtStage51ObjectState,
+    stats: &mut BtStage51Stats,
+    event: &BtStage51Event,
+    backend: &mut B,
+) {
+    if backend.context_boundary(object.bytea4) == 0 {
+        return;
+    }
+
+    if object.byte94 == 2 {
+        if object.byte90 & 0x80 == 0 {
+            stats.byte20 |= 0x02;
+        }
+        if stage51_mode(object.byte90) <= 2 {
+            stats.byte22 = stats.byte22.wrapping_add(1);
+        }
+    }
+
+    if event.byte6 != 0 {
+        let event_class = event.byte2 & 0x03;
+        if stage51_event_mode(event.byte0) > 2 && (event_class == 1 || event_class == 2) {
+            let index = stats.byte1;
+            if object.byte94 == 2 {
+                if object.byte91 & 0x01 == 0 {
+                    stage51_inc_record_byte(backend, index, STAGE51_RECORD_BYTE22);
+                } else {
+                    let sample = backend.sample_boundary() as u8;
+                    backend.set_record_byte(index, STAGE51_RECORD_BYTE28, sample);
+                    backend.set_record_byte(index, STAGE51_RECORD_BYTE29, object.byte113);
+                }
+            } else {
+                stage51_inc_record_byte(backend, index, STAGE51_RECORD_BYTE21);
+            }
+        }
+
+        if object.byte15 == 0 && stats.byte0 != 0 {
+            let index = stats.byte1;
+            let accumulated = backend
+                .record_word(index, STAGE51_RECORD_WORD26)
+                .wrapping_add(u16::from(event.byte4))
+                .wrapping_add(u16::from(object.byte96));
+            backend.set_record_word(index, STAGE51_RECORD_WORD26, accumulated);
+            stats.byte0 = 0;
+        }
+    } else if object.byte15 == 1 && object.byte94 != 2 {
+        let index = stats.byte1;
+        stage51_inc_record_byte(backend, index, STAGE51_RECORD_BYTE23);
+        if stats.byte0 != 0 {
+            let accumulated = backend
+                .record_word(index, STAGE51_RECORD_WORD26)
+                .wrapping_add(2);
+            backend.set_record_word(index, STAGE51_RECORD_WORD26, accumulated);
+            stats.byte0 = event.byte6;
+        }
+    }
+
+    if stage51_mode(object.byte90) > 1 {
+        return;
+    }
+
+    if stats.byte15 != 0 {
+        stats.byte15 = 0;
+        backend.stats_boundary(stats);
+    }
+
+    if stats.byte14 != 0 {
+        stats.byte14 = 0;
+        backend.window_boundary(stats);
+        stats.byte1 = 0;
+        return;
+    }
+
+    let flags = stats.byte20;
+    if flags & 0x01 == 0 {
+        let limit = flags >> 5;
+        if stats.byte1 < limit {
+            stats.byte1 = stats.byte1.wrapping_add(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stage51_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        context: u32,
+        sample: u32,
+        bytes: BTreeMap<(u8, u8), u8>,
+        words: BTreeMap<(u8, u8), u16>,
+        calls: Vec<(&'static str, u32, u32)>,
+        stats_set_byte14: Option<u8>,
+        stats_set_byte20: Option<u8>,
+        window_seen_byte14: u8,
+    }
+
+    impl BtStage51Backend for B {
+        fn context_boundary(&mut self, selector:u8)->u32 {
+            self.calls.push(("context",selector as u32,0)); self.context
+        }
+        fn sample_boundary(&mut self)->u32 {
+            self.calls.push(("sample",0,0)); self.sample
+        }
+        fn record_byte(&mut self,index:u8,offset:u8)->u8 {
+            self.calls.push(("read_byte",index as u32,offset as u32));
+            *self.bytes.get(&(index,offset)).unwrap_or(&0)
+        }
+        fn set_record_byte(&mut self,index:u8,offset:u8,value:u8) {
+            self.calls.push(("write_byte",index as u32,offset as u32));
+            self.bytes.insert((index,offset),value);
+        }
+        fn record_word(&mut self,index:u8,offset:u8)->u16 {
+            self.calls.push(("read_word",index as u32,offset as u32));
+            *self.words.get(&(index,offset)).unwrap_or(&0)
+        }
+        fn set_record_word(&mut self,index:u8,offset:u8,value:u16) {
+            self.calls.push(("write_word",index as u32,offset as u32));
+            self.words.insert((index,offset),value);
+        }
+        fn stats_boundary(&mut self,stats:&mut BtStage51Stats) {
+            self.calls.push(("stats",stats.byte15 as u32,0));
+            if let Some(v)=self.stats_set_byte14 { stats.byte14=v; }
+            if let Some(v)=self.stats_set_byte20 { stats.byte20=v; }
+        }
+        fn window_boundary(&mut self,stats:&mut BtStage51Stats) {
+            self.window_seen_byte14=stats.byte14;
+            self.calls.push(("window",stats.byte1 as u32,0));
+            stats.byte20=0;
+            stats.byte22=0;
+        }
+    }
+
+    fn object() -> BtStage51ObjectState {
+        BtStage51ObjectState { byte15:0,byte90:0x18,byte91:0,byte94:0,byte96:3,bytea4:7,byte113:0xE1 }
+    }
+    fn stats() -> BtStage51Stats {
+        BtStage51Stats { byte0:0,byte1:2,byte14:0,byte15:0,byte20:0,byte22:0 }
+    }
+    fn event() -> BtStage51Event {
+        BtStage51Event { byte0:0x18,byte2:1,byte4:5,byte6:1 }
+    }
+    fn backend() -> B { B { context:0x1000,..Default::default() } }
+
+    #[test]
+    fn zero_context_is_a_strict_early_exit() {
+        let o=object(); let mut s=stats(); let e=event(); let mut b=B::default();
+        let before=s;
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(s,before);
+        assert_eq!(b.calls,[("context",7,0)]);
+    }
+
+    #[test]
+    fn state94_two_sets_flag_when_sign_bit_clear_and_counts_modes_zero_to_two() {
+        let mut o=object(); o.byte94=2; o.byte90=0x10;
+        let mut s=stats(); s.byte20=0x20; s.byte22=0xFF;
+        let mut e=event(); e.byte6=0;
+        let mut b=backend();
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(s.byte20,0x22);
+        assert_eq!(s.byte22,0);
+        o.byte90=0x90; s.byte20=0x20; s.byte22=9;
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(s.byte20,0x20);
+        assert_eq!(s.byte22,10);
+    }
+
+    #[test]
+    fn qualifying_event_updates_record22_for_state94_two_without_flag91() {
+        let mut o=object(); o.byte94=2; o.byte90=0x20; o.byte91=0;
+        let mut s=stats(); s.byte1=0xFE;
+        let mut e=event(); e.byte0=0x18; e.byte2=2; e.byte6=1;
+        let mut b=backend(); b.bytes.insert((0xFE,STAGE51_RECORD_BYTE22),0xFF);
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(b.bytes[&(0xFE,STAGE51_RECORD_BYTE22)],0);
+    }
+
+    #[test]
+    fn state94_two_with_flag91_samples_byte28_and_copies_byte113_to29() {
+        let mut o=object(); o.byte94=2; o.byte90=0x20; o.byte91=1; o.byte113=0xFE;
+        let mut s=stats(); s.byte1=3;
+        let e=event(); let mut b=backend(); b.sample=0x1234_ABCD;
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(b.bytes[&(3,STAGE51_RECORD_BYTE28)],0xCD);
+        assert_eq!(b.bytes[&(3,STAGE51_RECORD_BYTE29)],0xFE);
+        assert!(b.calls.iter().any(|x|x.0=="sample"));
+    }
+
+    #[test]
+    fn non_state94_two_qualifying_event_counts_record21() {
+        let o=object(); let mut s=stats(); s.byte1=4;
+        let e=event(); let mut b=backend(); b.bytes.insert((4,STAGE51_RECORD_BYTE21),9);
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(b.bytes[&(4,STAGE51_RECORD_BYTE21)],10);
+    }
+
+    #[test]
+    fn live_event_accumulates_word26_and_clears_stats_byte0() {
+        let o=object(); let mut s=stats(); s.byte0=1; s.byte1=5;
+        let e=event(); let mut b=backend(); b.words.insert((5,STAGE51_RECORD_WORD26),0xFFF9);
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(b.words[&(5,STAGE51_RECORD_WORD26)],1);
+        assert_eq!(s.byte0,0);
+    }
+
+    #[test]
+    fn zero_event_state15_one_counts_record23_and_adds_two() {
+        let mut o=object(); o.byte15=1; o.byte94=1; o.byte90=0x20;
+        let mut s=stats(); s.byte0=7; s.byte1=6;
+        let mut e=event(); e.byte6=0;
+        let mut b=backend(); b.bytes.insert((6,STAGE51_RECORD_BYTE23),0xFF); b.words.insert((6,STAGE51_RECORD_WORD26),0xFFFF);
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(b.bytes[&(6,STAGE51_RECORD_BYTE23)],0);
+        assert_eq!(b.words[&(6,STAGE51_RECORD_WORD26)],1);
+        assert_eq!(s.byte0,0);
+    }
+
+    #[test]
+    fn mode_zero_rereads_byte14_after_stats_boundary_then_resets_index() {
+        let mut o=object(); o.byte90=0;
+        let mut s=stats(); s.byte15=1; s.byte14=0; s.byte1=7; s.byte20=0xE0;
+        let mut e=event(); e.byte6=0;
+        let mut b=backend(); b.stats_set_byte14=Some(1);
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!((s.byte15,s.byte14,s.byte1),(0,0,0));
+        assert_eq!(b.window_seen_byte14,0);
+        let a=b.calls.iter().position(|x|x.0=="stats").unwrap();
+        let z=b.calls.iter().position(|x|x.0=="window").unwrap();
+        assert!(a<z);
+    }
+
+    #[test]
+    fn mode_one_advances_index_from_post_boundary_flags_only_when_allowed() {
+        let mut o=object(); o.byte90=0x08;
+        let mut s=stats(); s.byte15=1; s.byte1=2; s.byte20=0;
+        let mut e=event(); e.byte6=0;
+        let mut b=backend(); b.stats_set_byte20=Some(0x60);
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(s.byte1,3);
+        s.byte15=0; s.byte1=1; s.byte20=0x61;
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!(s.byte1,1);
+    }
+
+    #[test]
+    fn modes_above_one_skip_late_stats_boundaries() {
+        let mut o=object(); o.byte90=0x18;
+        let mut s=stats(); s.byte15=1; s.byte14=1;
+        let mut e=event(); e.byte6=0;
+        let mut b=backend();
+        bt_stage51_record_state_coordinator(&o,&mut s,&e,&mut b);
+        assert_eq!((s.byte15,s.byte14),(1,1));
+        assert!(!b.calls.iter().any(|x|x.0=="stats" || x.0=="window"));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE51_CURRENT_BT_RECORD_COORDINATOR_ADDR,0x16DBDC);
+        assert_eq!(STAGE51_BT_CONTEXT_BOUNDARY,0x335AC);
+        assert_eq!(STAGE51_BT_SAMPLE_BOUNDARY,0x3A6CC);
+        assert_eq!(STAGE51_BT_STATS_BOUNDARY,0x3B04A);
+        assert_eq!(STAGE51_BT_WINDOW_BOUNDARY,0x3D24);
+    }
+}
