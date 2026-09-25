@@ -3736,3 +3736,218 @@ mod stage45_tests {
         assert_eq!(STAGE45_BT_MATCH_VALUE, 0x30018);
     }
 }
+
+/// Stage 46: current indexed-record/state transition at `0x16DD22`.
+///
+/// The body is the globally unique relocation-normalized current match of legacy
+/// `sub_16AD56`. Runtime entries remain opaque trait boundaries. In particular,
+/// current `0x3AF86` receives `(result_17e2c, state_ptr)` even though one legacy
+/// Hex-Rays rendering omitted those arguments.
+pub const STAGE46_CURRENT_BT_INDEXED_STATE_ADDR: u32 = 0x0016_DD22;
+pub const STAGE46_BT_INITIAL_BOUNDARY: u32 = 0x0001_7E2C;
+pub const STAGE46_BT_STATE_BOUNDARY: u32 = 0x0003_AF86;
+pub const STAGE46_BT_OBJECT_PREDICATE_BOUNDARY: u32 = 0x0003_C7C2;
+pub const STAGE46_BT_RECORD_STRIDE: usize = 25;
+pub const STAGE46_BT_RECORD_DWORD_BASE_OFFSET: usize = 53;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage46ObjectState {
+    /// Object byte +14, passed by value to current 0x17E2C.
+    pub byte14: u8,
+    /// Object byte +15, copied into state byte +18 on one path.
+    pub byte15: u8,
+    /// Object byte +152; bits 3..6 participate in the entry gate.
+    pub byte152: u8,
+    /// Object byte +154; low two bits participate in the entry gate.
+    pub byte154: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage46State {
+    /// State byte +1; used as an unchecked firmware record index.
+    pub byte1: u8,
+    /// State halfword +4.
+    pub word4: u16,
+    pub byte14: u8,
+    pub byte15: u8,
+    pub word16: u16,
+    pub byte18: u8,
+    pub byte19: u8,
+    pub byte20: u8,
+}
+
+/// Exact byte offset used by the binary for the indexed dword store:
+/// `state + 53 + 25 * state.byte1`.
+///
+/// No bound is imposed here because the firmware performs no observed bound check.
+pub const fn bt_stage46_indexed_dword_offset(index: u8) -> usize {
+    STAGE46_BT_RECORD_DWORD_BASE_OFFSET + STAGE46_BT_RECORD_STRIDE * index as usize
+}
+
+pub trait BtStage46Backend {
+    /// Current `0x17E2C(object.byte14)`.
+    fn initial(&mut self, object_byte14: u8) -> u32;
+
+    /// Perform the binary's unchecked dword write relative to the state base.
+    /// Implementations must not silently clamp `byte_offset` to a guessed record count.
+    fn write_state_dword_unchecked(&mut self, byte_offset: usize, value: u32);
+
+    /// Current `0x3AF86(first_result, state_ptr)`.
+    /// `state` is mutable because the opaque runtime receives the real state pointer and
+    /// later firmware reads `word4` and `byte20` after this call.
+    fn state_boundary(&mut self, first_result: u32, state: &mut BtStage46State) -> u32;
+
+    /// Current `0x3C7C2(object_ptr)`; the caller reduces its return to `(r0 == 0)`.
+    fn object_predicate(&mut self, object: &mut BtStage46ObjectState) -> u32;
+}
+
+/// Safe source-level model of current `0x16DD22` / legacy `sub_16AD56`.
+///
+/// The unchecked indexed store is delegated to the backend instead of inventing a host-side
+/// array length. All scalar updates and return-shape distinctions follow the Thumb body.
+pub fn bt_stage46_indexed_state_update<B: BtStage46Backend>(
+    object: &mut BtStage46ObjectState,
+    second_argument: u32,
+    state: &mut BtStage46State,
+    backend: &mut B,
+) -> u32 {
+    let first_result = backend.initial(object.byte14);
+
+    let gate_a = (object.byte152 >> 3) & 0x0F;
+    let gate_b = object.byte154 & 0x03;
+    if gate_a <= 2 || (gate_b != 1 && gate_b != 2) {
+        return first_result;
+    }
+
+    backend.write_state_dword_unchecked(
+        bt_stage46_indexed_dword_offset(state.byte1),
+        first_result.wrapping_mul(2),
+    );
+
+    if second_argument != 0 {
+        let second_result = backend.state_boundary(first_result, state);
+        let result = if second_result != 0 {
+            state.byte18 = object.byte15;
+            let predicate = backend.object_predicate(object);
+            state.word16 = state.word4;
+            state.byte20 = state.byte20.wrapping_add(0x20);
+            let boolean = u32::from(predicate == 0);
+            state.byte19 = boolean as u8;
+            state.byte15 = 1;
+            boolean
+        } else {
+            0
+        };
+        state.byte14 = 1;
+        result
+    } else {
+        let old = state.byte20;
+        let high = ((old >> 5).wrapping_add(1)) & 7;
+        let mut new = (old & 0x1F) | (high << 5);
+        if high > 3 {
+            new |= 1;
+        }
+        state.byte20 = new;
+        first_result
+    }
+}
+
+#[cfg(test)]
+mod stage46_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    struct B {
+        first: u32,
+        second: u32,
+        predicate: u32,
+        mutate_word4: Option<u16>,
+        mutate_byte20: Option<u8>,
+        writes: Vec<(usize, u32)>,
+        calls: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage46Backend for B {
+        fn initial(&mut self, v: u8) -> u32 {
+            self.calls.push(("initial", v as u32));
+            self.first
+        }
+        fn write_state_dword_unchecked(&mut self, o: usize, v: u32) {
+            self.writes.push((o, v));
+        }
+        fn state_boundary(&mut self, first: u32, state: &mut BtStage46State) -> u32 {
+            self.calls.push(("state", first));
+            if let Some(v) = self.mutate_word4 { state.word4 = v; }
+            if let Some(v) = self.mutate_byte20 { state.byte20 = v; }
+            self.second
+        }
+        fn object_predicate(&mut self, _object: &mut BtStage46ObjectState) -> u32 {
+            self.calls.push(("predicate", 0));
+            self.predicate
+        }
+    }
+
+    fn backend(first: u32) -> B {
+        B { first, second: 0, predicate: 0, mutate_word4: None, mutate_byte20: None, writes: Vec::new(), calls: Vec::new() }
+    }
+    fn object() -> BtStage46ObjectState {
+        BtStage46ObjectState { byte14: 7, byte15: 0xA5, byte152: 0x18, byte154: 1 }
+    }
+    fn state() -> BtStage46State {
+        BtStage46State { byte1: 3, word4: 0x1234, byte14: 0, byte15: 0, word16: 0, byte18: 0, byte19: 0, byte20: 0 }
+    }
+
+    #[test]
+    fn gate_fail_preserves_first_return_and_performs_no_indexed_write() {
+        let mut b = backend(0x1122_3344);
+        let mut o = object(); o.byte152 = 0x10;
+        let mut s = state();
+        assert_eq!(bt_stage46_indexed_state_update(&mut o, 1, &mut s, &mut b), 0x1122_3344);
+        assert!(b.writes.is_empty());
+        assert_eq!(b.calls, [("initial", 7)]);
+    }
+
+    #[test]
+    fn zero_second_argument_keeps_unchecked_index_and_rotates_high_three_bits() {
+        let mut b = backend(0x8000_0001);
+        let mut o = object();
+        let mut s = state(); s.byte1 = 0xFF; s.byte20 = 0x7A;
+        assert_eq!(bt_stage46_indexed_state_update(&mut o, 0, &mut s, &mut b), 0x8000_0001);
+        assert_eq!(b.writes, [(53 + 25 * 0xFFusize, 2)]);
+        assert_eq!(s.byte20, 0x9B); // high 3 bits: 3 -> 4; low 5 preserved, bit0 forced.
+        assert_eq!(b.calls, [("initial", 7)]);
+    }
+
+    #[test]
+    fn zero_state_boundary_sets_only_byte14_and_returns_zero() {
+        let mut b = backend(9); b.second = 0;
+        let mut o = object(); let mut s = state(); s.byte14 = 0x80;
+        assert_eq!(bt_stage46_indexed_state_update(&mut o, 1, &mut s, &mut b), 0);
+        assert_eq!(s.byte14, 1);
+        assert_eq!(s.byte15, 0);
+        assert_eq!(b.calls, [("initial", 7), ("state", 9)]);
+    }
+
+    #[test]
+    fn nonzero_state_boundary_uses_post_call_state_and_zero_predicate_boolean() {
+        let mut b = backend(11); b.second = 5; b.predicate = 0; b.mutate_word4 = Some(0xBEEF); b.mutate_byte20 = Some(0xF0);
+        let mut o = object(); let mut s = state();
+        assert_eq!(bt_stage46_indexed_state_update(&mut o, 3, &mut s, &mut b), 1);
+        assert_eq!(s.byte18, 0xA5);
+        assert_eq!(s.word16, 0xBEEF); // read after opaque state boundary.
+        assert_eq!(s.byte20, 0x10);   // post-call 0xF0 + 0x20 wraps as u8.
+        assert_eq!((s.byte19, s.byte15, s.byte14), (1, 1, 1));
+        assert_eq!(b.calls, [("initial", 7), ("state", 11), ("predicate", 0)]);
+    }
+
+    #[test]
+    fn nonzero_object_predicate_becomes_zero_return() {
+        let mut b = backend(3); b.second = 1; b.predicate = 0x99;
+        let mut o = object(); let mut s = state();
+        assert_eq!(bt_stage46_indexed_state_update(&mut o, 1, &mut s, &mut b), 0);
+        assert_eq!(s.byte19, 0);
+        assert_eq!(STAGE46_CURRENT_BT_INDEXED_STATE_ADDR, 0x16DD22);
+        assert_eq!(STAGE46_BT_STATE_BOUNDARY, 0x3AF86);
+    }
+}
