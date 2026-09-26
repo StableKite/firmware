@@ -6812,3 +6812,193 @@ mod stage56_tests {
         assert_eq!(STAGE56_BT_OUTPUT_BIT, 1 << 22);
     }
 }
+
+/// Stage 57: current gated counter/copy wrapper at `0x16F59E`.
+///
+/// The exact current 64-byte body is byte-identical to the public 73136-byte legacy
+/// structural counterpart at `0x16C5D2`. The one direct call targets current Stage 56.
+/// This source model preserves the input gates, signed byte comparison, wrapping ambient
+/// byte update, low-six-bit source gate, post-Stage56 dword reads, copy order, and return flow.
+pub const STAGE57_CURRENT_BT_COUNTER_COPY_ADDR: u32 = 0x0016_F59E;
+pub const STAGE57_BT_STAGE56_BOUNDARY: u32 = 0x0016_F438;
+pub const STAGE57_BT_TRIPLET_BASE_ADDR: u32 = 0x0022_1F1D;
+pub const STAGE57_BT_SOURCE_BASE_ADDR: u32 = 0x0020_9644;
+pub const STAGE57_BT_DEST_BASE_ADDR: u32 = 0x0065_0160;
+pub const STAGE57_BT_SOURCE_GATE_MASK: u16 = 0x003F;
+pub const STAGE57_BT_SOURCE_GATE_VALUE: u16 = 0x0019;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage57ObjectState {
+    /// Object byte +0x6C, loaded unsigned.
+    pub byte108: u8,
+    /// Object byte +0x6E, loaded signed with LDRSB.
+    pub signed_byte110: i8,
+}
+
+pub trait BtStage57Backend {
+    /// Current ambient byte at `*(0x221F1D + 2)`.
+    fn read_triplet2(&mut self) -> u8;
+    fn write_triplet2(&mut self, value: u8);
+
+    /// Halfword at current source base +2 (`0x209646`).
+    fn read_source_halfword2(&mut self) -> u16;
+
+    /// Current Stage-56 `0x16F438(object, 1)` boundary.
+    fn stage56_boundary(&mut self, object: u32, mode: u32) -> u32;
+
+    /// Reads current source dword at offset 0 or 4 from `0x209644`.
+    fn read_source_dword(&mut self, offset: u32) -> u32;
+    /// Writes current destination dword at offset 0 or 4 from `0x650160`.
+    fn write_dest_dword(&mut self, offset: u32, value: u32);
+}
+
+/// Safe source-level model of current `0x16F59E`.
+///
+/// When `gate` is zero the incoming object token is returned unchanged and no memory is
+/// touched. On the Stage-56 path, the two source dwords are deliberately read *after* the
+/// Stage-56 call, matching the firmware ordering.
+pub fn bt_stage57_counter_copy<B: BtStage57Backend>(
+    object: u32,
+    state: &BtStage57ObjectState,
+    gate: u32,
+    flags: u32,
+    backend: &mut B,
+) -> u32 {
+    if gate == 0 {
+        return object;
+    }
+
+    let next_triplet2 = if (flags & 1) != 0
+        && i32::from(state.signed_byte110) > i32::from(state.byte108)
+    {
+        backend.read_triplet2().wrapping_add(1)
+    } else {
+        0
+    };
+    backend.write_triplet2(next_triplet2);
+
+    if backend.read_source_halfword2() & STAGE57_BT_SOURCE_GATE_MASK
+        != STAGE57_BT_SOURCE_GATE_VALUE
+    {
+        return object;
+    }
+
+    let result = backend.stage56_boundary(object, 1);
+    let word0 = backend.read_source_dword(0);
+    backend.write_dest_dword(0, word0);
+    let word4 = backend.read_source_dword(4);
+    backend.write_dest_dword(4, word4);
+    result
+}
+
+#[cfg(test)]
+mod stage57_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        triplet2: u8,
+        halfword2: u16,
+        source: [u32; 2],
+        stage56_result: u32,
+        stage56_post_source: Option<[u32; 2]>,
+        dest: [u32; 2],
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage57Backend for B {
+        fn read_triplet2(&mut self) -> u8 {
+            self.calls.push(("read_triplet2", 0, 0));
+            self.triplet2
+        }
+        fn write_triplet2(&mut self, value: u8) {
+            self.calls.push(("write_triplet2", value as u32, 0));
+            self.triplet2 = value;
+        }
+        fn read_source_halfword2(&mut self) -> u16 {
+            self.calls.push(("halfword2", 0, 0));
+            self.halfword2
+        }
+        fn stage56_boundary(&mut self, object: u32, mode: u32) -> u32 {
+            self.calls.push(("stage56", object, mode));
+            if let Some(words) = self.stage56_post_source {
+                self.source = words;
+            }
+            self.stage56_result
+        }
+        fn read_source_dword(&mut self, offset: u32) -> u32 {
+            self.calls.push(("read_source", offset, 0));
+            self.source[(offset / 4) as usize]
+        }
+        fn write_dest_dword(&mut self, offset: u32, value: u32) {
+            self.calls.push(("write_dest", offset, value));
+            self.dest[(offset / 4) as usize] = value;
+        }
+    }
+
+    #[test]
+    fn zero_gate_returns_object_without_memory_access() {
+        let state = BtStage57ObjectState { byte108: 1, signed_byte110: 2 };
+        let mut b = B::default();
+        assert_eq!(bt_stage57_counter_copy(0x1234_5678, &state, 0, 1, &mut b), 0x1234_5678);
+        assert!(b.calls.is_empty());
+    }
+
+    #[test]
+    fn signed_compare_controls_wrapping_counter_increment() {
+        let state = BtStage57ObjectState { byte108: 100, signed_byte110: 101 };
+        let mut b = B { triplet2: 0xFF, halfword2: 0, ..Default::default() };
+        assert_eq!(bt_stage57_counter_copy(7, &state, 1, 1, &mut b), 7);
+        assert_eq!(b.triplet2, 0);
+        assert_eq!(b.calls[0], ("read_triplet2", 0, 0));
+
+        let negative = BtStage57ObjectState { byte108: 0, signed_byte110: -1 };
+        b.calls.clear(); b.triplet2 = 9;
+        let _ = bt_stage57_counter_copy(7, &negative, 1, 1, &mut b);
+        assert_eq!(b.triplet2, 0);
+        assert!(!b.calls.iter().any(|x| x.0 == "read_triplet2"));
+    }
+
+    #[test]
+    fn clear_flag_forces_counter_zero_and_failed_gate_preserves_object_return() {
+        let state = BtStage57ObjectState { byte108: 0, signed_byte110: 100 };
+        let mut b = B { triplet2: 7, halfword2: 0x0018, ..Default::default() };
+        assert_eq!(bt_stage57_counter_copy(0x55AA, &state, 1, 0, &mut b), 0x55AA);
+        assert_eq!(b.triplet2, 0);
+        assert!(!b.calls.iter().any(|x| x.0 == "stage56"));
+    }
+
+    #[test]
+    fn low_six_bit_gate_calls_stage56_then_copies_post_call_words_in_order() {
+        let state = BtStage57ObjectState { byte108: 4, signed_byte110: 5 };
+        let mut b = B {
+            triplet2: 8,
+            halfword2: 0xFFD9, // low six bits == 0x19
+            source: [0x1111_1111, 0x2222_2222],
+            stage56_result: 0xDEAD_BEEF,
+            stage56_post_source: Some([0xAAAA_AAAA, 0xBBBB_BBBB]),
+            ..Default::default()
+        };
+        assert_eq!(bt_stage57_counter_copy(0xCAFE, &state, 1, 1, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.dest, [0xAAAA_AAAA, 0xBBBB_BBBB]);
+        let stage56 = b.calls.iter().position(|x| x.0 == "stage56").unwrap();
+        let read0 = b.calls.iter().position(|x| x.0 == "read_source" && x.1 == 0).unwrap();
+        let write0 = b.calls.iter().position(|x| x.0 == "write_dest" && x.1 == 0).unwrap();
+        let read4 = b.calls.iter().position(|x| x.0 == "read_source" && x.1 == 4).unwrap();
+        let write4 = b.calls.iter().position(|x| x.0 == "write_dest" && x.1 == 4).unwrap();
+        assert!(stage56 < read0 && read0 < write0 && write0 < read4 && read4 < write4);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE57_CURRENT_BT_COUNTER_COPY_ADDR, 0x16F59E);
+        assert_eq!(STAGE57_BT_STAGE56_BOUNDARY, 0x16F438);
+        assert_eq!(STAGE57_BT_TRIPLET_BASE_ADDR, 0x221F1D);
+        assert_eq!(STAGE57_BT_SOURCE_BASE_ADDR, 0x209644);
+        assert_eq!(STAGE57_BT_DEST_BASE_ADDR, 0x650160);
+        assert_eq!(STAGE57_BT_SOURCE_GATE_MASK, 0x3F);
+        assert_eq!(STAGE57_BT_SOURCE_GATE_VALUE, 0x19);
+    }
+}
