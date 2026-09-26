@@ -6526,3 +6526,136 @@ mod stage54_tests {
         assert_eq!(STAGE54_BT_TAIL_BOUNDARY, 0x265E8);
     }
 }
+
+/// Stage 55: compact current masked-record scan at `0x16F306`.
+///
+/// The exact current 40-byte body is byte-identical to the public 73136-byte legacy
+/// structural counterpart at `0x16C33A`. There are no direct calls in the body.
+/// This model preserves the single mask load, low-three-bit scan order, exact table
+/// stride/status offset, first-match return, and zero fallback visible in current firmware.
+pub const STAGE55_CURRENT_BT_MASKED_RECORD_SCAN_ADDR: u32 = 0x0016_F306;
+pub const STAGE55_BT_RECORD_TABLE_BASE_ADDR: u32 = 0x0020_A2D4;
+pub const STAGE55_BT_RECORD_STRIDE: u32 = 0x84;
+pub const STAGE55_BT_STATUS_HALFWORD_OFFSET: u32 = 0x22;
+pub const STAGE55_BT_MATCH_STATUS: u16 = 6;
+pub const STAGE55_BT_RECORD_COUNT: u32 = 3;
+
+pub trait BtStage55Backend {
+    /// Reads the dword pointed to by incoming R3. Current firmware performs this load once,
+    /// before the scan index is initialized.
+    fn read_mask_dword(&mut self, mask_ptr: u32) -> u32;
+
+    /// Reads the halfword at `record + 0x22`.
+    fn read_record_status_halfword(&mut self, record: u32) -> u16;
+}
+
+/// Safe source-level model of current `0x16F306`.
+///
+/// Only indices 0, 1, and 2 are scanned. A record is inspected only when its corresponding
+/// bit is set in the single mask snapshot. The first selected record whose status halfword
+/// equals six is returned as its current firmware address; otherwise zero is returned.
+pub fn bt_stage55_masked_record_scan<B: BtStage55Backend>(
+    mask_ptr: u32,
+    backend: &mut B,
+) -> u32 {
+    let mask = backend.read_mask_dword(mask_ptr);
+
+    let mut index = 0u32;
+    while index < STAGE55_BT_RECORD_COUNT {
+        let bit = 1u32 << index;
+        if (mask & bit) != 0 {
+            let record = STAGE55_BT_RECORD_TABLE_BASE_ADDR
+                .wrapping_add(STAGE55_BT_RECORD_STRIDE.wrapping_mul(index));
+            if backend.read_record_status_halfword(record) == STAGE55_BT_MATCH_STATUS {
+                return record;
+            }
+        }
+        index += 1;
+    }
+
+    0
+}
+
+#[cfg(test)]
+mod stage55_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        mask: u32,
+        statuses: [u16; 3],
+        mask_reads: u32,
+        status_reads: Vec<u32>,
+    }
+
+    impl BtStage55Backend for B {
+        fn read_mask_dword(&mut self, _mask_ptr: u32) -> u32 {
+            self.mask_reads += 1;
+            self.mask
+        }
+
+        fn read_record_status_halfword(&mut self, record: u32) -> u16 {
+            self.status_reads.push(record);
+            let index = (record - STAGE55_BT_RECORD_TABLE_BASE_ADDR) / STAGE55_BT_RECORD_STRIDE;
+            self.statuses[index as usize]
+        }
+    }
+
+    fn record(index: u32) -> u32 {
+        STAGE55_BT_RECORD_TABLE_BASE_ADDR + STAGE55_BT_RECORD_STRIDE * index
+    }
+
+    #[test]
+    fn mask_is_loaded_once_and_zero_mask_reads_no_records() {
+        let mut b = B::default();
+        assert_eq!(bt_stage55_masked_record_scan(0x1234_5678, &mut b), 0);
+        assert_eq!(b.mask_reads, 1);
+        assert!(b.status_reads.is_empty());
+    }
+
+    #[test]
+    fn unselected_records_are_skipped_and_first_selected_match_returns() {
+        let mut b = B {
+            mask: 0b110,
+            statuses: [6, 6, 6],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage55_masked_record_scan(1, &mut b), record(1));
+        assert_eq!(b.mask_reads, 1);
+        assert_eq!(b.status_reads, [record(1)]);
+    }
+
+    #[test]
+    fn selected_nonmatch_continues_to_later_selected_match() {
+        let mut b = B {
+            mask: 0b111,
+            statuses: [5, 7, 6],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage55_masked_record_scan(2, &mut b), record(2));
+        assert_eq!(b.status_reads, [record(0), record(1), record(2)]);
+    }
+
+    #[test]
+    fn bits_above_two_are_ignored() {
+        let mut b = B {
+            mask: 0xFFFF_FFF8,
+            statuses: [6, 6, 6],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage55_masked_record_scan(3, &mut b), 0);
+        assert!(b.status_reads.is_empty());
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE55_CURRENT_BT_MASKED_RECORD_SCAN_ADDR, 0x16F306);
+        assert_eq!(STAGE55_BT_RECORD_TABLE_BASE_ADDR, 0x20A2D4);
+        assert_eq!(STAGE55_BT_RECORD_STRIDE, 0x84);
+        assert_eq!(STAGE55_BT_STATUS_HALFWORD_OFFSET, 0x22);
+        assert_eq!(STAGE55_BT_MATCH_STATUS, 6);
+        assert_eq!(STAGE55_BT_RECORD_COUNT, 3);
+    }
+}
