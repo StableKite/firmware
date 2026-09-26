@@ -7179,3 +7179,156 @@ mod stage59_tests {
         assert_eq!(STAGE59_BT_CALLBACK_C_THUMB, 0x16F33D);
     }
 }
+
+/// Stage 60: current gated ten-byte saturating update at `0x16F8D0`.
+///
+/// The exact current 72-byte leaf body is byte-identical to the public 73136-byte legacy
+/// structural counterpart at `0x16C670`. There are no direct runtime calls. The model
+/// preserves the global gate, selector arithmetic, intentionally overlapping source window,
+/// ten target writes, branch-specific saturation rule, and observable R0 return shape.
+pub const STAGE60_CURRENT_BT_SATURATING_UPDATE_ADDR: u32 = 0x0016_F8D0;
+pub const STAGE60_BT_GATE_ADDR: u32 = 0x0022_2747;
+pub const STAGE60_BT_SELECTOR_BASE_ADDR: u32 = 0x0020_DCD2;
+pub const STAGE60_BT_SELECTOR_OFFSET: u32 = 3;
+pub const STAGE60_BT_SOURCE_BASE_ADDR: u32 = 0x0022_270B;
+pub const STAGE60_BT_SOURCE_WINDOW_STRIDE: u32 = 10;
+pub const STAGE60_BT_TARGET_BASE_ADDR: u32 = 0x0020_DE31;
+pub const STAGE60_BT_TARGET_STRIDE: u32 = 0x24;
+pub const STAGE60_BT_ELEMENT_COUNT: u32 = 10;
+
+pub trait BtStage60Backend {
+    fn read_gate_byte(&mut self) -> u8;
+    fn read_selector_byte(&mut self) -> u8;
+    fn read_source_byte(&mut self, address: u32) -> u8;
+    fn read_target_byte(&mut self, address: u32) -> u8;
+    fn write_target_byte(&mut self, address: u32, value: u8);
+}
+
+/// Safe source-level model of current `0x16F8D0`.
+///
+/// The source window intentionally starts at `base + selector * 10`; byte zero selects the
+/// add/subtract mode and loop bytes one through ten provide adjustments. This means adjacent
+/// selector windows overlap at the boundary exactly as the firmware arithmetic specifies.
+pub fn bt_stage60_saturating_update<B: BtStage60Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    if backend.read_gate_byte() == 0 {
+        return incoming_r0;
+    }
+
+    let selector = u32::from(backend.read_selector_byte());
+    let source = STAGE60_BT_SOURCE_BASE_ADDR
+        .wrapping_add(STAGE60_BT_SOURCE_WINDOW_STRIDE.wrapping_mul(selector));
+    let subtract_mode = backend.read_source_byte(source) != 0;
+
+    let mut index = 1u32;
+    while index <= STAGE60_BT_ELEMENT_COUNT {
+        let target = STAGE60_BT_TARGET_BASE_ADDR
+            .wrapping_add(STAGE60_BT_TARGET_STRIDE.wrapping_mul(index - 1));
+        let old = backend.read_target_byte(target);
+        let delta = backend.read_source_byte(source.wrapping_add(index));
+        let new = if subtract_mode {
+            old.saturating_sub(delta)
+        } else {
+            old.saturating_add(delta)
+        };
+        backend.write_target_byte(target, new);
+        index += 1;
+    }
+
+    source
+}
+
+#[cfg(test)]
+mod stage60_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        gate: u8,
+        selector: u8,
+        source: BTreeMap<u32, u8>,
+        target: BTreeMap<u32, u8>,
+        writes: Vec<(u32, u8)>,
+    }
+
+    impl BtStage60Backend for B {
+        fn read_gate_byte(&mut self) -> u8 { self.gate }
+        fn read_selector_byte(&mut self) -> u8 { self.selector }
+        fn read_source_byte(&mut self, address: u32) -> u8 { *self.source.get(&address).unwrap_or(&0) }
+        fn read_target_byte(&mut self, address: u32) -> u8 { *self.target.get(&address).unwrap_or(&0) }
+        fn write_target_byte(&mut self, address: u32, value: u8) {
+            self.target.insert(address, value);
+            self.writes.push((address, value));
+        }
+    }
+
+    fn target(i: u32) -> u32 {
+        STAGE60_BT_TARGET_BASE_ADDR + STAGE60_BT_TARGET_STRIDE * i
+    }
+
+    #[test]
+    fn zero_gate_returns_incoming_r0_without_target_writes() {
+        let mut b = B::default();
+        assert_eq!(bt_stage60_saturating_update(0xCAFE_BABE, &mut b), 0xCAFE_BABE);
+        assert!(b.writes.is_empty());
+    }
+
+    #[test]
+    fn zero_control_byte_saturating_adds_ten_elements() {
+        let selector = 2u8;
+        let source = STAGE60_BT_SOURCE_BASE_ADDR + u32::from(selector) * 10;
+        let mut b = B { gate: 1, selector, ..Default::default() };
+        b.source.insert(source, 0);
+        for i in 0..10u32 {
+            b.source.insert(source + i + 1, 20);
+            b.target.insert(target(i), if i == 0 { 250 } else { i as u8 });
+        }
+        assert_eq!(bt_stage60_saturating_update(0, &mut b), source);
+        assert_eq!(b.target[&target(0)], 255);
+        assert_eq!(b.writes.len(), 10);
+    }
+
+    #[test]
+    fn nonzero_control_byte_saturating_subtracts_with_floor_zero() {
+        let selector = 1u8;
+        let source = STAGE60_BT_SOURCE_BASE_ADDR + 10;
+        let mut b = B { gate: 1, selector, ..Default::default() };
+        b.source.insert(source, 1);
+        for i in 0..10u32 {
+            b.source.insert(source + i + 1, 10);
+            b.target.insert(target(i), if i == 0 { 3 } else { 20 });
+        }
+        assert_eq!(bt_stage60_saturating_update(9, &mut b), source);
+        assert_eq!(b.target[&target(0)], 0);
+        assert_eq!(b.target[&target(1)], 10);
+    }
+
+    #[test]
+    fn source_window_is_stride_ten_and_reads_offsets_one_through_ten() {
+        let selector = 3u8;
+        let source = STAGE60_BT_SOURCE_BASE_ADDR + 30;
+        let mut b = B { gate: 1, selector, ..Default::default() };
+        b.source.insert(source, 0);
+        b.source.insert(source + 10, 7);
+        for i in 0..10u32 { b.target.insert(target(i), 0); }
+        let _ = bt_stage60_saturating_update(0, &mut b);
+        assert_eq!(b.target[&target(9)], 7);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE60_CURRENT_BT_SATURATING_UPDATE_ADDR, 0x16F8D0);
+        assert_eq!(STAGE60_BT_GATE_ADDR, 0x222747);
+        assert_eq!(STAGE60_BT_SELECTOR_BASE_ADDR, 0x20DCD2);
+        assert_eq!(STAGE60_BT_SELECTOR_OFFSET, 3);
+        assert_eq!(STAGE60_BT_SOURCE_BASE_ADDR, 0x22270B);
+        assert_eq!(STAGE60_BT_TARGET_BASE_ADDR, 0x20DE31);
+        assert_eq!(STAGE60_BT_TARGET_STRIDE, 0x24);
+        assert_eq!(STAGE60_BT_ELEMENT_COUNT, 10);
+    }
+}
