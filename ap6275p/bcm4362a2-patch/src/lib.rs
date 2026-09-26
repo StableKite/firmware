@@ -6247,3 +6247,207 @@ mod stage52_tests {
         assert_eq!(STAGE52_BT_UPPER_BOUND_ADDR, 0x221EE0);
     }
 }
+
+/// Stage 53: compact current post-gate object sequence at `0x16EEA4`.
+///
+/// The exact current 58-byte body is a relocation-normalized structural counterpart of
+/// the public 73136-byte legacy image at `0x16BED8`. Runtime calls remain opaque; this
+/// model preserves only the local argument flow, post-call rereads, ambient byte writes,
+/// and return-value preservation visible in the current firmware.
+pub const STAGE53_CURRENT_BT_POST_GATE_SEQUENCE_ADDR: u32 = 0x0016_EEA4;
+pub const STAGE53_BT_GATE_BOUNDARY: u32 = 0x0002_1F20;
+pub const STAGE53_BT_CONFIG_BOUNDARY: u32 = 0x0002_4824;
+pub const STAGE53_BT_OBJECT_BOUNDARY_A: u32 = 0x0005_180C;
+pub const STAGE53_BT_INTERNAL_BOUNDARY: u32 = 0x0016_F5F4;
+pub const STAGE53_BT_FINAL_BOUNDARY: u32 = 0x0005_0B76;
+pub const STAGE53_BT_AMBIENT_CLEAR_ADDR: u32 = 0x0020_A234;
+pub const STAGE53_BT_AMBIENT_PUBLISH_ADDR: u32 = 0x0020_A223;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage53ObjectState {
+    /// Object dword +0x1C, read only after the gate boundary returns nonzero.
+    pub dword28: u32,
+    /// Object dword +0x48, read only after the gate boundary returns nonzero.
+    pub dword72: u32,
+    /// Object byte +0x14, deliberately re-read after all object-pointer boundaries.
+    pub byte20: u8,
+    /// Object byte +0x5F, forced to one after the final opaque boundary.
+    pub byte95: u8,
+}
+
+pub trait BtStage53Backend {
+    /// Current `0x21F20(object)`. Zero is a strict local early exit; the backend may
+    /// mutate object state before later dword reads.
+    fn gate_boundary(&mut self, object: &mut BtStage53ObjectState) -> u32;
+
+    /// Current `0x24824(object.dword72, object.dword28, 1)`.
+    fn config_boundary(&mut self, first: u32, second: u32, enable: u32);
+
+    /// Current ambient byte store through literal `0x20A234`.
+    fn set_ambient_clear_byte(&mut self, value: u8);
+
+    /// Current `0x5180C(object)`. Its return is not consumed locally.
+    fn object_boundary_a(&mut self, object: &mut BtStage53ObjectState);
+    /// Current internal `0x16F5F4(object)`. It remains opaque in Stage 53.
+    fn internal_boundary(&mut self, object: &mut BtStage53ObjectState);
+    /// Current `0x50B76(object)`. Its return value survives the subsequent local stores
+    /// and is the routine's final return on the nonzero-gate path.
+    fn final_boundary(&mut self, object: &mut BtStage53ObjectState) -> u32;
+
+    /// Current ambient byte store through literal `0x20A223`.
+    fn set_ambient_publish_byte(&mut self, value: u8);
+}
+
+/// Safe source-level model of current `0x16EEA4`.
+pub fn bt_stage53_post_gate_sequence<B: BtStage53Backend>(
+    object: &mut BtStage53ObjectState,
+    backend: &mut B,
+) -> u32 {
+    let gate = backend.gate_boundary(object);
+    if gate == 0 {
+        return 0;
+    }
+
+    // These two fields are loaded after the gate call, so gate-side mutations must be
+    // observable here. Firmware passes dword72 in R0, dword28 in R1, and literal 1 in R2.
+    let second = object.dword28;
+    let first = object.dword72;
+    backend.config_boundary(first, second, 1);
+
+    backend.set_ambient_clear_byte(0);
+    backend.object_boundary_a(object);
+    backend.internal_boundary(object);
+    let final_result = backend.final_boundary(object);
+
+    object.byte95 = 1;
+    // The firmware reads byte20 only after all three object-pointer boundaries.
+    let publish = object.byte20;
+    backend.set_ambient_publish_byte(publish);
+
+    final_result
+}
+
+#[cfg(test)]
+mod stage53_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        gate: u32,
+        final_result: u32,
+        gate_dword28: Option<u32>,
+        gate_dword72: Option<u32>,
+        a_byte20: Option<u8>,
+        internal_byte20: Option<u8>,
+        final_byte20: Option<u8>,
+        ambient_clear: Option<u8>,
+        ambient_publish: Option<u8>,
+        calls: Vec<(&'static str, u32, u32, u32)>,
+    }
+
+    impl BtStage53Backend for B {
+        fn gate_boundary(&mut self, object: &mut BtStage53ObjectState) -> u32 {
+            self.calls.push(("gate", 0, 0, 0));
+            if let Some(v) = self.gate_dword28 { object.dword28 = v; }
+            if let Some(v) = self.gate_dword72 { object.dword72 = v; }
+            self.gate
+        }
+        fn config_boundary(&mut self, first: u32, second: u32, enable: u32) {
+            self.calls.push(("config", first, second, enable));
+        }
+        fn set_ambient_clear_byte(&mut self, value: u8) {
+            self.calls.push(("clear", value as u32, 0, 0));
+            self.ambient_clear = Some(value);
+        }
+        fn object_boundary_a(&mut self, object: &mut BtStage53ObjectState) {
+            self.calls.push(("object_a", 0, 0, 0));
+            if let Some(v) = self.a_byte20 { object.byte20 = v; }
+        }
+        fn internal_boundary(&mut self, object: &mut BtStage53ObjectState) {
+            self.calls.push(("internal", 0, 0, 0));
+            if let Some(v) = self.internal_byte20 { object.byte20 = v; }
+        }
+        fn final_boundary(&mut self, object: &mut BtStage53ObjectState) -> u32 {
+            self.calls.push(("final", 0, 0, 0));
+            if let Some(v) = self.final_byte20 { object.byte20 = v; }
+            self.final_result
+        }
+        fn set_ambient_publish_byte(&mut self, value: u8) {
+            self.calls.push(("publish", value as u32, 0, 0));
+            self.ambient_publish = Some(value);
+        }
+    }
+
+    fn object() -> BtStage53ObjectState {
+        BtStage53ObjectState { dword28: 0x1111, dword72: 0x2222, byte20: 3, byte95: 0 }
+    }
+
+    #[test]
+    fn zero_gate_is_a_strict_early_exit() {
+        let mut o = object();
+        let before = o;
+        let mut b = B::default();
+        assert_eq!(bt_stage53_post_gate_sequence(&mut o, &mut b), 0);
+        assert_eq!(o, before);
+        assert_eq!(b.calls, [("gate", 0, 0, 0)]);
+    }
+
+    #[test]
+    fn config_arguments_are_read_after_gate_mutation_and_in_binary_order() {
+        let mut o = object();
+        let mut b = B {
+            gate: 1,
+            final_result: 7,
+            gate_dword28: Some(0xAAAA_BBBB),
+            gate_dword72: Some(0xCCCC_DDDD),
+            ..Default::default()
+        };
+        assert_eq!(bt_stage53_post_gate_sequence(&mut o, &mut b), 7);
+        assert_eq!(b.calls[1], ("config", 0xCCCC_DDDD, 0xAAAA_BBBB, 1));
+    }
+
+    #[test]
+    fn ambient_clear_precedes_object_boundaries_and_is_exact_zero() {
+        let mut o = object();
+        let mut b = B { gate: 1, final_result: 9, ..Default::default() };
+        let _ = bt_stage53_post_gate_sequence(&mut o, &mut b);
+        assert_eq!(b.ambient_clear, Some(0));
+        let clear = b.calls.iter().position(|x| x.0 == "clear").unwrap();
+        let a = b.calls.iter().position(|x| x.0 == "object_a").unwrap();
+        let internal = b.calls.iter().position(|x| x.0 == "internal").unwrap();
+        let final_call = b.calls.iter().position(|x| x.0 == "final").unwrap();
+        assert!(clear < a && a < internal && internal < final_call);
+    }
+
+    #[test]
+    fn final_return_survives_local_stores_and_publish_uses_post_call_byte20() {
+        let mut o = object();
+        let mut b = B {
+            gate: 1,
+            final_result: 0xDEAD_BEEF,
+            a_byte20: Some(0x11),
+            internal_byte20: Some(0x22),
+            final_byte20: Some(0x33),
+            ..Default::default()
+        };
+        assert_eq!(bt_stage53_post_gate_sequence(&mut o, &mut b), 0xDEAD_BEEF);
+        assert_eq!(o.byte95, 1);
+        assert_eq!(o.byte20, 0x33);
+        assert_eq!(b.ambient_publish, Some(0x33));
+        assert_eq!(b.calls.last().copied(), Some(("publish", 0x33, 0, 0)));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE53_CURRENT_BT_POST_GATE_SEQUENCE_ADDR, 0x16EEA4);
+        assert_eq!(STAGE53_BT_GATE_BOUNDARY, 0x21F20);
+        assert_eq!(STAGE53_BT_CONFIG_BOUNDARY, 0x24824);
+        assert_eq!(STAGE53_BT_OBJECT_BOUNDARY_A, 0x5180C);
+        assert_eq!(STAGE53_BT_INTERNAL_BOUNDARY, 0x16F5F4);
+        assert_eq!(STAGE53_BT_FINAL_BOUNDARY, 0x50B76);
+        assert_eq!(STAGE53_BT_AMBIENT_CLEAR_ADDR, 0x20A234);
+        assert_eq!(STAGE53_BT_AMBIENT_PUBLISH_ADDR, 0x20A223);
+    }
+}
