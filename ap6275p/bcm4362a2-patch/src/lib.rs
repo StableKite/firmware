@@ -7054,3 +7054,128 @@ mod stage58_tests {
         assert_eq!(STAGE58_BT_CLEARED_OFFSET, 2);
     }
 }
+
+/// Stage 59: current ambient-byte copy and callback publication at `0x16F600`.
+///
+/// The exact current 30-byte leaf body is byte-identical to the public 73136-byte legacy
+/// structural counterpart at `0x16C634`. All addresses below are preserved as raw firmware
+/// values; no semantic role is assigned beyond the local loads/stores visible in the body.
+pub const STAGE59_CURRENT_BT_CALLBACK_PUBLISH_ADDR: u32 = 0x0016_F600;
+pub const STAGE59_BT_SOURCE_BYTE_ADDR: u32 = 0x0020_A22A;
+pub const STAGE59_BT_DEST_BYTE_ADDR: u32 = 0x0022_2709;
+pub const STAGE59_BT_OBJECT_PTR_ADDR: u32 = 0x0020_2A74;
+pub const STAGE59_BT_GLOBAL_BLOCK_ADDR: u32 = 0x0021_67D4;
+pub const STAGE59_BT_GLOBAL_SLOT54_ADDR: u32 = 0x0021_6828;
+pub const STAGE59_BT_GLOBAL_SLOT5C_ADDR: u32 = 0x0021_6830;
+pub const STAGE59_BT_CALLBACK_A_THUMB: u32 = 0x0016_F511;
+pub const STAGE59_BT_CALLBACK_B_THUMB: u32 = 0x0016_F4A9;
+pub const STAGE59_BT_CALLBACK_C_THUMB: u32 = 0x0016_F33D;
+
+pub trait BtStage59Backend {
+    fn read_source_byte(&mut self) -> u8;
+    fn write_dest_byte(&mut self, value: u8);
+    fn read_object_ptr(&mut self) -> u32;
+    fn write_global_slot54(&mut self, value: u32);
+    fn write_object_slot14(&mut self, object: u32, value: u32);
+    fn write_global_slot5c(&mut self, value: u32);
+}
+
+/// Safe source-level model of current `0x16F600`.
+///
+/// R0 is not modified by the firmware body, so the model returns the incoming token to make
+/// that register-preservation property explicit.
+pub fn bt_stage59_publish_callbacks<B: BtStage59Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let byte = backend.read_source_byte();
+    backend.write_dest_byte(byte);
+
+    let object = backend.read_object_ptr();
+    if object != 0 {
+        backend.write_global_slot54(STAGE59_BT_CALLBACK_A_THUMB);
+        backend.write_object_slot14(object, STAGE59_BT_CALLBACK_B_THUMB);
+        backend.write_global_slot5c(STAGE59_BT_CALLBACK_C_THUMB);
+    }
+
+    incoming_r0
+}
+
+#[cfg(test)]
+mod stage59_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        source_byte: u8,
+        dest_byte: u8,
+        object: u32,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage59Backend for B {
+        fn read_source_byte(&mut self) -> u8 {
+            self.calls.push(("read_byte", 0, 0));
+            self.source_byte
+        }
+        fn write_dest_byte(&mut self, value: u8) {
+            self.calls.push(("write_byte", value as u32, 0));
+            self.dest_byte = value;
+        }
+        fn read_object_ptr(&mut self) -> u32 {
+            self.calls.push(("read_object", 0, 0));
+            self.object
+        }
+        fn write_global_slot54(&mut self, value: u32) {
+            self.calls.push(("global54", value, 0));
+        }
+        fn write_object_slot14(&mut self, object: u32, value: u32) {
+            self.calls.push(("object14", object, value));
+        }
+        fn write_global_slot5c(&mut self, value: u32) {
+            self.calls.push(("global5c", value, 0));
+        }
+    }
+
+    #[test]
+    fn byte_copy_always_occurs_and_zero_object_skips_callback_writes() {
+        let mut b = B { source_byte: 0xA5, object: 0, ..Default::default() };
+        assert_eq!(bt_stage59_publish_callbacks(0xCAFE_BABE, &mut b), 0xCAFE_BABE);
+        assert_eq!(b.dest_byte, 0xA5);
+        assert_eq!(b.calls, [
+            ("read_byte", 0, 0),
+            ("write_byte", 0xA5, 0),
+            ("read_object", 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn nonzero_object_publishes_three_raw_thumb_pointers_in_binary_order() {
+        let mut b = B { source_byte: 7, object: 0x1234_5000, ..Default::default() };
+        assert_eq!(bt_stage59_publish_callbacks(9, &mut b), 9);
+        assert_eq!(b.calls, [
+            ("read_byte", 0, 0),
+            ("write_byte", 7, 0),
+            ("read_object", 0, 0),
+            ("global54", STAGE59_BT_CALLBACK_A_THUMB, 0),
+            ("object14", 0x1234_5000, STAGE59_BT_CALLBACK_B_THUMB),
+            ("global5c", STAGE59_BT_CALLBACK_C_THUMB, 0),
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE59_CURRENT_BT_CALLBACK_PUBLISH_ADDR, 0x16F600);
+        assert_eq!(STAGE59_BT_SOURCE_BYTE_ADDR, 0x20A22A);
+        assert_eq!(STAGE59_BT_DEST_BYTE_ADDR, 0x222709);
+        assert_eq!(STAGE59_BT_OBJECT_PTR_ADDR, 0x202A74);
+        assert_eq!(STAGE59_BT_GLOBAL_BLOCK_ADDR, 0x2167D4);
+        assert_eq!(STAGE59_BT_GLOBAL_SLOT54_ADDR, 0x216828);
+        assert_eq!(STAGE59_BT_GLOBAL_SLOT5C_ADDR, 0x216830);
+        assert_eq!(STAGE59_BT_CALLBACK_A_THUMB, 0x16F511);
+        assert_eq!(STAGE59_BT_CALLBACK_B_THUMB, 0x16F4A9);
+        assert_eq!(STAGE59_BT_CALLBACK_C_THUMB, 0x16F33D);
+    }
+}
