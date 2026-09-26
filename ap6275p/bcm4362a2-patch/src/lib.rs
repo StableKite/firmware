@@ -6659,3 +6659,156 @@ mod stage55_tests {
         assert_eq!(STAGE55_BT_RECORD_COUNT, 3);
     }
 }
+
+/// Stage 56: current gated bit-22 update at `0x16F438`.
+pub const STAGE56_CURRENT_BT_GATED_BIT22_UPDATE_ADDR: u32 = 0x0016_F438;
+pub const STAGE56_BT_PROBE_BOUNDARY: u32 = 0x0002_1DE8;
+pub const STAGE56_BT_TRIPLET_BASE_ADDR: u32 = 0x0022_1F1D;
+pub const STAGE56_BT_FLAG_ADDR: u32 = 0x0022_1F1C;
+pub const STAGE56_BT_OUTPUT_WORD_ADDR: u32 = 0x0020_9644;
+pub const STAGE56_BT_OUTPUT_BIT: u32 = 1 << 22;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage56ObjectState {
+    pub byte15: u8,
+    pub halfword34: u16,
+    pub byte46: u8,
+    pub byte52: u8,
+}
+
+pub trait BtStage56Backend {
+    fn probe_boundary(&mut self, object: Option<&mut BtStage56ObjectState>, selector: u32) -> u32;
+    fn read_triplet_byte(&mut self, offset: u32) -> u8;
+    fn read_flag_byte(&mut self) -> u8;
+    fn read_output_word(&mut self) -> u32;
+    fn write_output_word(&mut self, value: u32);
+}
+
+/// Preserves the post-probe gates, signed threshold compare, and exact bit-22 RMW.
+pub fn bt_stage56_gated_bit22_update<B: BtStage56Backend>(
+    mut object: Option<&mut BtStage56ObjectState>,
+    mode: u32,
+    backend: &mut B,
+) -> u32 {
+    let probe = backend.probe_boundary(object.as_deref_mut(), 2);
+    let Some(object) = object else { return probe };
+
+    let seed = if object.byte15 != 0 {
+        if mode != 1 { return probe; }
+        0
+    } else if object.byte52 != 0 {
+        u32::from(object.byte52)
+    } else {
+        if mode != 1 { return probe; }
+        0
+    };
+
+    let triplet2 = backend.read_triplet_byte(2);
+    let triplet1 = backend.read_triplet_byte(1);
+    let mut bit = false;
+    if triplet2 < triplet1 {
+        let sum = u32::from(object.byte52).wrapping_add(u32::from(object.byte46));
+        let scale = u32::from(backend.read_triplet_byte(0));
+        let threshold = scale.wrapping_mul(sum).wrapping_add(seed);
+        if (probe as i32) < (threshold as i32) {
+            let flag = backend.read_flag_byte();
+            bit = flag == 0 || object.halfword34 != 6;
+        }
+    }
+
+    let old = backend.read_output_word();
+    backend.write_output_word((old & !STAGE56_BT_OUTPUT_BIT) | (u32::from(bit) << 22));
+    probe
+}
+
+#[cfg(test)]
+mod stage56_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        probe: u32,
+        mutate15: Option<u8>,
+        triplet: [u8; 3],
+        flag: u8,
+        output: u32,
+        calls: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage56Backend for B {
+        fn probe_boundary(&mut self, object: Option<&mut BtStage56ObjectState>, selector: u32) -> u32 {
+            self.calls.push(("probe", selector));
+            if let (Some(object), Some(v)) = (object, self.mutate15) { object.byte15 = v; }
+            self.probe
+        }
+        fn read_triplet_byte(&mut self, offset: u32) -> u8 {
+            self.calls.push(("triplet", offset));
+            self.triplet[offset as usize]
+        }
+        fn read_flag_byte(&mut self) -> u8 {
+            self.calls.push(("flag", 0));
+            self.flag
+        }
+        fn read_output_word(&mut self) -> u32 {
+            self.calls.push(("read_output", 0));
+            self.output
+        }
+        fn write_output_word(&mut self, value: u32) {
+            self.calls.push(("write_output", value));
+            self.output = value;
+        }
+    }
+
+    fn object() -> BtStage56ObjectState {
+        BtStage56ObjectState { byte15: 0, halfword34: 5, byte46: 4, byte52: 3 }
+    }
+
+    #[test]
+    fn early_paths_preserve_probe_return_and_skip_output() {
+        let mut b = B { probe: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage56_gated_bit22_update(None, 9, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.calls, [("probe", 2)]);
+        let mut o = object();
+        b.calls.clear(); b.mutate15 = Some(1);
+        assert_eq!(bt_stage56_gated_bit22_update(Some(&mut o), 0, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.calls, [("probe", 2)]);
+    }
+
+    #[test]
+    fn threshold_path_uses_seed_and_sets_bit22() {
+        let mut o = object();
+        let mut b = B { probe: 16, triplet: [2, 10, 5], flag: 0, ..Default::default() };
+        assert_eq!(bt_stage56_gated_bit22_update(Some(&mut o), 99, &mut b), 16);
+        assert_eq!(b.output, STAGE56_BT_OUTPUT_BIT);
+        assert_eq!(b.calls, [
+            ("probe", 2), ("triplet", 2), ("triplet", 1), ("triplet", 0),
+            ("flag", 0), ("read_output", 0), ("write_output", STAGE56_BT_OUTPUT_BIT),
+        ]);
+    }
+
+    #[test]
+    fn signed_compare_and_halfword_gate_preserve_only_bit22() {
+        let mut o = object();
+        o.halfword34 = 6;
+        let keep = 0xA5BF_FF5A;
+        let mut b = B { probe: 0xFFFF_FFFF, triplet: [1, 2, 1], flag: 1,
+                        output: keep | STAGE56_BT_OUTPUT_BIT, ..Default::default() };
+        assert_eq!(bt_stage56_gated_bit22_update(Some(&mut o), 2, &mut b), 0xFFFF_FFFF);
+        assert_eq!(b.output, keep & !STAGE56_BT_OUTPUT_BIT);
+        o.halfword34 = 7; b.output = keep & !STAGE56_BT_OUTPUT_BIT;
+        let _ = bt_stage56_gated_bit22_update(Some(&mut o), 2, &mut b);
+        assert_eq!(b.output, (keep & !STAGE56_BT_OUTPUT_BIT) | STAGE56_BT_OUTPUT_BIT);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE56_CURRENT_BT_GATED_BIT22_UPDATE_ADDR, 0x16F438);
+        assert_eq!(STAGE56_BT_PROBE_BOUNDARY, 0x21DE8);
+        assert_eq!(STAGE56_BT_TRIPLET_BASE_ADDR, 0x221F1D);
+        assert_eq!(STAGE56_BT_FLAG_ADDR, 0x221F1C);
+        assert_eq!(STAGE56_BT_OUTPUT_WORD_ADDR, 0x209644);
+        assert_eq!(STAGE56_BT_OUTPUT_BIT, 1 << 22);
+    }
+}
