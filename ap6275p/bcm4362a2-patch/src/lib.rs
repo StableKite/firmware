@@ -6037,3 +6037,213 @@ mod stage51_tests {
         assert_eq!(STAGE51_BT_WINDOW_BOUNDARY,0x3D24);
     }
 }
+
+/// Stage 52: current lookup/range gate at `0x16EBA4`.
+///
+/// The exact current 64-byte body is a relocation-normalized structural counterpart of
+/// the 73136-byte legacy image's `sub_16BBD8`. Runtime calls and ambient bounds remain
+/// opaque; this model preserves only the local argument flow, dword mask, call ordering,
+/// short-circuiting, and open-interval comparison visible in current firmware.
+pub const STAGE52_CURRENT_BT_LOOKUP_RANGE_GATE_ADDR: u32 = 0x0016_EBA4;
+pub const STAGE52_BT_FIRST_BOUNDARY: u32 = 0x0003_38FC;
+pub const STAGE52_BT_SECOND_BOUNDARY: u32 = 0x0004_D552;
+pub const STAGE52_BT_TRANSFORM_BOUNDARY: u32 = 0x0001_8540;
+pub const STAGE52_BT_LOWER_BOUND_ADDR: u32 = 0x0022_1EDC;
+pub const STAGE52_BT_UPPER_BOUND_ADDR: u32 = 0x0022_1EE0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage52InputState {
+    /// Input byte +0xA4, passed independently to the first and second opaque boundaries.
+    pub bytea4: u8,
+}
+
+pub trait BtStage52Backend {
+    /// Current `0x338FC(input.byteA4)`. A zero result is a strict local early exit.
+    fn first_boundary(&mut self, selector: u8) -> u32;
+    /// Dword +0 of the first-boundary object.
+    fn first_dword0(&mut self, first: u32) -> u32;
+
+    /// Current `0x4D552(input.byteA4)`.
+    fn second_boundary(&mut self, selector: u8) -> u32;
+    /// Dword +0x0C of the nonzero record obtained from `first_dword0`.
+    fn record_dword12(&mut self, record: u32) -> u32;
+    /// Current `0x18540(second_result, record_dword12 & 0x0FFF_FFFF)`.
+    fn transform_boundary(&mut self, token: u32, masked_word: u32) -> u32;
+
+    /// Current ambient dword loaded indirectly through literal `0x221EDC`.
+    fn lower_bound(&mut self) -> u32;
+    /// Current ambient dword loaded indirectly through literal `0x221EE0`.
+    fn upper_bound(&mut self) -> u32;
+}
+
+/// Safe source-level model of current `0x16EBA4`.
+///
+/// The function returns one exactly when the locally produced value lies strictly inside
+/// the firmware's ambient unsigned interval `(lower_bound, upper_bound)`. The upper bound
+/// is deliberately not read when the lower comparison already rejects the value.
+pub fn bt_stage52_lookup_range_gate<B: BtStage52Backend>(
+    input: &BtStage52InputState,
+    backend: &mut B,
+) -> u32 {
+    let first = backend.first_boundary(input.bytea4);
+    if first == 0 {
+        return 0;
+    }
+
+    let record = backend.first_dword0(first);
+    let value = if record == 0 {
+        0
+    } else {
+        let token = backend.second_boundary(input.bytea4);
+        let masked_word = backend.record_dword12(record) & 0x0FFF_FFFF;
+        backend.transform_boundary(token, masked_word)
+    };
+
+    let lower = backend.lower_bound();
+    if value <= lower {
+        return 0;
+    }
+
+    let upper = backend.upper_bound();
+    u32::from(value < upper)
+}
+
+#[cfg(test)]
+mod stage52_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        first: u32,
+        record: u32,
+        second: u32,
+        word12: u32,
+        transformed: u32,
+        lower: u32,
+        upper: u32,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage52Backend for B {
+        fn first_boundary(&mut self, selector: u8) -> u32 {
+            self.calls.push(("first", selector as u32, 0));
+            self.first
+        }
+        fn first_dword0(&mut self, first: u32) -> u32 {
+            self.calls.push(("dword0", first, 0));
+            self.record
+        }
+        fn second_boundary(&mut self, selector: u8) -> u32 {
+            self.calls.push(("second", selector as u32, 0));
+            self.second
+        }
+        fn record_dword12(&mut self, record: u32) -> u32 {
+            self.calls.push(("dword12", record, 0));
+            self.word12
+        }
+        fn transform_boundary(&mut self, token: u32, masked_word: u32) -> u32 {
+            self.calls.push(("transform", token, masked_word));
+            self.transformed
+        }
+        fn lower_bound(&mut self) -> u32 {
+            self.calls.push(("lower", 0, 0));
+            self.lower
+        }
+        fn upper_bound(&mut self) -> u32 {
+            self.calls.push(("upper", 0, 0));
+            self.upper
+        }
+    }
+
+    fn input() -> BtStage52InputState {
+        BtStage52InputState { bytea4: 7 }
+    }
+
+    #[test]
+    fn zero_first_boundary_is_a_strict_early_exit() {
+        let mut b = B::default();
+        assert_eq!(bt_stage52_lookup_range_gate(&input(), &mut b), 0);
+        assert_eq!(b.calls, [("first", 7, 0)]);
+    }
+
+    #[test]
+    fn zero_record_skips_second_and_transform_and_rejects_at_lower_bound() {
+        let mut b = B { first: 0x1000, record: 0, lower: 0, upper: 10, ..Default::default() };
+        assert_eq!(bt_stage52_lookup_range_gate(&input(), &mut b), 0);
+        assert_eq!(b.calls, [
+            ("first", 7, 0),
+            ("dword0", 0x1000, 0),
+            ("lower", 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn nonzero_record_preserves_call_order_and_clears_top_nibble() {
+        let mut b = B {
+            first: 0x1000,
+            record: 0x2000,
+            second: 0x3000,
+            word12: 0xF123_4567,
+            transformed: 15,
+            lower: 10,
+            upper: 20,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage52_lookup_range_gate(&input(), &mut b), 1);
+        assert_eq!(b.calls, [
+            ("first", 7, 0),
+            ("dword0", 0x1000, 0),
+            ("second", 7, 0),
+            ("dword12", 0x2000, 0),
+            ("transform", 0x3000, 0x0123_4567),
+            ("lower", 0, 0),
+            ("upper", 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn lower_endpoint_is_excluded_without_reading_upper() {
+        let mut b = B {
+            first: 1,
+            record: 2,
+            second: 3,
+            transformed: 10,
+            lower: 10,
+            upper: 20,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage52_lookup_range_gate(&input(), &mut b), 0);
+        assert!(!b.calls.iter().any(|x| x.0 == "upper"));
+    }
+
+    #[test]
+    fn upper_endpoint_is_excluded_but_strict_interior_is_accepted() {
+        let mut b = B {
+            first: 1,
+            record: 2,
+            second: 3,
+            transformed: 20,
+            lower: 10,
+            upper: 20,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage52_lookup_range_gate(&input(), &mut b), 0);
+        assert!(b.calls.iter().any(|x| x.0 == "upper"));
+
+        b.calls.clear();
+        b.transformed = 19;
+        assert_eq!(bt_stage52_lookup_range_gate(&input(), &mut b), 1);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE52_CURRENT_BT_LOOKUP_RANGE_GATE_ADDR, 0x16EBA4);
+        assert_eq!(STAGE52_BT_FIRST_BOUNDARY, 0x338FC);
+        assert_eq!(STAGE52_BT_SECOND_BOUNDARY, 0x4D552);
+        assert_eq!(STAGE52_BT_TRANSFORM_BOUNDARY, 0x18540);
+        assert_eq!(STAGE52_BT_LOWER_BOUND_ADDR, 0x221EDC);
+        assert_eq!(STAGE52_BT_UPPER_BOUND_ADDR, 0x221EE0);
+    }
+}
