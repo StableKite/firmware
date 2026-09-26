@@ -7852,3 +7852,87 @@ mod stage64_tests {
         assert_eq!(STAGE64_BT_MATCH_VALUE, 1);
     }
 }
+
+/// Stage 65: current zero-fallback mode wrapper at `0x1724C8`.
+///
+/// The exact current 28-byte body contains one ordinary BL and one final B.W to the same
+/// opaque boundary. Masking both four-byte control-transfer encodings leaves 20 fixed bytes
+/// and yields one current structural hit plus one public-legacy counterpart at `0x16E3B8`.
+/// This model preserves the mode-zero probe, exact nonzero gate, mode-one fallback, and
+/// tail-result forwarding without assigning wider meaning to the boundary.
+pub const STAGE65_CURRENT_BT_ZERO_FALLBACK_ADDR: u32 = 0x0017_24C8;
+pub const STAGE65_BT_BOUNDARY: u32 = 0x0017_2458;
+pub const STAGE65_BT_PRIMARY_MODE: u32 = 0;
+pub const STAGE65_BT_FALLBACK_MODE: u32 = 1;
+
+pub trait BtStage65Backend {
+    /// Current `0x172458(mode, input)`.
+    fn boundary(&mut self, mode: u32, input: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x1724C8`.
+///
+/// Firmware calls mode zero first. Any nonzero return is final. Only exact zero triggers a
+/// frame restore followed by a tail branch to the same boundary with mode one.
+pub fn bt_stage65_zero_fallback<B: BtStage65Backend>(
+    input: u32,
+    backend: &mut B,
+) -> u32 {
+    let first = backend.boundary(STAGE65_BT_PRIMARY_MODE, input);
+    if first != 0 {
+        return first;
+    }
+    backend.boundary(STAGE65_BT_FALLBACK_MODE, input)
+}
+
+#[cfg(test)]
+mod stage65_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct B {
+        primary: u32,
+        fallback: u32,
+        calls: [(u32, u32); 2],
+        count: usize,
+    }
+
+    impl BtStage65Backend for B {
+        fn boundary(&mut self, mode: u32, input: u32) -> u32 {
+            self.calls[self.count] = (mode, input);
+            self.count += 1;
+            if mode == 0 { self.primary } else { self.fallback }
+        }
+    }
+
+    #[test]
+    fn nonzero_primary_return_skips_fallback_and_is_final() {
+        let mut b = B { primary: 7, fallback: 99, ..Default::default() };
+        assert_eq!(bt_stage65_zero_fallback(0x1234, &mut b), 7);
+        assert_eq!(b.count, 1);
+        assert_eq!(b.calls[0], (0, 0x1234));
+    }
+
+    #[test]
+    fn exact_zero_primary_tail_forwards_mode_one_result() {
+        let mut b = B { primary: 0, fallback: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage65_zero_fallback(0xABCD, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.count, 2);
+        assert_eq!(b.calls, [(0, 0xABCD), (1, 0xABCD)]);
+    }
+
+    #[test]
+    fn fallback_zero_is_preserved() {
+        let mut b = B::default();
+        assert_eq!(bt_stage65_zero_fallback(0, &mut b), 0);
+        assert_eq!(b.calls, [(0, 0), (1, 0)]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE65_CURRENT_BT_ZERO_FALLBACK_ADDR, 0x1724C8);
+        assert_eq!(STAGE65_BT_BOUNDARY, 0x172458);
+        assert_eq!(STAGE65_BT_PRIMARY_MODE, 0);
+        assert_eq!(STAGE65_BT_FALLBACK_MODE, 1);
+    }
+}

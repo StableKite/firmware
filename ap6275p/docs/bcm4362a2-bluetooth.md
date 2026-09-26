@@ -492,3 +492,11 @@ Stage 64 reconstructs current `0x1720C0`, an exact 24-byte wrapper. It contains 
 The function initializes its scan index to zero and overwrites incoming R0 with the zero-extended low byte of that index before every call. The opaque current boundary `0x172044(index)` is invoked for indices zero through seven in ascending order. The wrapper stops only when the boundary return is exactly literal one; other nonzero values do not match.
 
 When a call returns one, firmware returns the current index immediately. Otherwise it increments the index and continues while the index is not eight. If none of the eight calls returns exactly one, the wrapper returns literal eight. The source model preserves the exact call order, equality-to-one predicate, early return, ignored incoming R0, and sentinel-eight fallback without assigning broader meaning to the opaque boundary.
+
+## Stage 65 — current zero-fallback mode wrapper
+
+Stage 65 reconstructs current `0x1724C8`, an exact 28-byte wrapper. It has two direct control transfers to the same current boundary `0x172458`: an ordinary `BL` at `0x1724D0` and a final `B.W` at `0x1724DE`. Masking only those two four-byte encodings leaves 20 fixed bytes; the normalized pattern yields exactly one current structural hit at `0x1724C8` and exactly one public-legacy structural counterpart at `0x16E3B8`, whose corresponding boundary is older relocated `0x16E348`. Public legacy remains structural cross-check material only.
+
+Firmware saves the incoming R0 input, copies it into R1, sets R0 to literal zero, and calls `0x172458(0, input)`. A `CBNZ` tests that call return directly. Any nonzero value branches to the ordinary epilogue and is returned unchanged.
+
+Only an exact zero return reaches the fallback path. Firmware restores the saved input to R1, sets R0 to literal one, restores the frame, and tail-branches to the same boundary as `0x172458(1, input)`. The tail boundary return is therefore the wrapper's final return, including zero. The source model preserves the exact nonzero gate, input forwarding, two mode values, and tail-result semantics while keeping the shared boundary opaque.
