@@ -484,3 +484,11 @@ Stage 63 reconstructs current `0x1704D4`, an exact 34-byte wrapper. The body con
 The current literal following the body points to context-pointer cell `0x22257C`; the legacy structural literal points to older relocated `0x2224CC`. Firmware loads this cell once into R4 and saves incoming R0 separately in R5. If the loaded context is nonzero, it first calls opaque `0x163668` with the incoming R0, then calls opaque `0x3D24(context, 0, first_return)`. The second call's R0 return becomes the current R0 value.
 
 The final call is gated by the saved original input, not by the context and not by either boundary return. When original input is nonzero, firmware calls opaque `0x171A7C` with whatever R0 is current at that point: the untouched original input when context was zero, or the `0x3D24` return when context was nonzero. The final call's return is ignored. Firmware then forces R0 to zero and returns. The source model preserves this exact argument/order/forwarding behavior without assigning broader semantics to the three boundaries.
+
+## Stage 64 — current first-exact-one index scan
+
+Stage 64 reconstructs current `0x1720C0`, an exact 24-byte wrapper. It contains one direct `BL` at `0x1720C6`. Masking only that four-byte relocation leaves 20 fixed bytes; the normalized pattern yields exactly one current structural hit at `0x1720C0` and exactly one public-legacy structural counterpart at `0x16E010`. The current call targets `0x172044`; the legacy structural body calls older relocated `0x16DF94`. Public legacy remains structural cross-check material only.
+
+The function initializes its scan index to zero and overwrites incoming R0 with the zero-extended low byte of that index before every call. The opaque current boundary `0x172044(index)` is invoked for indices zero through seven in ascending order. The wrapper stops only when the boundary return is exactly literal one; other nonzero values do not match.
+
+When a call returns one, firmware returns the current index immediately. Otherwise it increments the index and continues while the index is not eight. If none of the eight calls returns exactly one, the wrapper returns literal eight. The source model preserves the exact call order, equality-to-one predicate, early return, ignored incoming R0, and sentinel-eight fallback without assigning broader meaning to the opaque boundary.

@@ -7760,3 +7760,95 @@ mod stage63_tests {
         assert_eq!(STAGE63_BT_FINAL_BOUNDARY, 0x171A7C);
     }
 }
+
+/// Stage 64: current first-exact-one index scan at `0x1720C0`.
+///
+/// The exact current 24-byte wrapper contains one direct call. Masking only that BL encoding
+/// leaves 20 fixed bytes and yields one current structural hit plus one public-legacy
+/// structural counterpart at `0x16E010`. The callee contract remains opaque; this model
+/// preserves the exact index sequence, equality-to-one stop condition, and sentinel return.
+pub const STAGE64_CURRENT_BT_EXACT_ONE_SCAN_ADDR: u32 = 0x0017_20C0;
+pub const STAGE64_BT_PREDICATE_BOUNDARY: u32 = 0x0017_2044;
+pub const STAGE64_BT_SCAN_COUNT: u32 = 8;
+pub const STAGE64_BT_MATCH_VALUE: u32 = 1;
+
+pub trait BtStage64Backend {
+    /// Current `0x172044(index)`. Firmware passes indices zero through seven as zero-extended
+    /// bytes and stops only when this opaque boundary returns exactly one.
+    fn predicate_boundary(&mut self, index: u8) -> u32;
+}
+
+/// Safe source-level model of current `0x1720C0`.
+///
+/// Incoming R0 is overwritten before the first call. The return is the first matching index,
+/// or literal eight when no call returns exactly one.
+pub fn bt_stage64_first_exact_one<B: BtStage64Backend>(
+    _incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let mut index = 0u32;
+    while index < STAGE64_BT_SCAN_COUNT {
+        if backend.predicate_boundary(index as u8) == STAGE64_BT_MATCH_VALUE {
+            return index;
+        }
+        index += 1;
+    }
+    STAGE64_BT_SCAN_COUNT
+}
+
+#[cfg(test)]
+mod stage64_tests {
+    use super::*;
+
+    struct B {
+        returns: [u32; 8],
+        calls: [u8; 8],
+        count: usize,
+    }
+
+    impl B {
+        fn new(returns: [u32; 8]) -> Self {
+            Self { returns, calls: [0; 8], count: 0 }
+        }
+    }
+
+    impl BtStage64Backend for B {
+        fn predicate_boundary(&mut self, index: u8) -> u32 {
+            self.calls[self.count] = index;
+            self.count += 1;
+            self.returns[index as usize]
+        }
+    }
+
+    #[test]
+    fn first_exact_one_stops_immediately() {
+        let mut b = B::new([1, 1, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(bt_stage64_first_exact_one(0xDEAD_BEEF, &mut b), 0);
+        assert_eq!(b.count, 1);
+        assert_eq!(&b.calls[..b.count], &[0]);
+    }
+
+    #[test]
+    fn non_one_values_do_not_match() {
+        let mut b = B::new([0, 2, u32::MAX, 3, 1, 1, 1, 1]);
+        assert_eq!(bt_stage64_first_exact_one(7, &mut b), 4);
+        assert_eq!(b.count, 5);
+        assert_eq!(&b.calls[..b.count], &[0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn no_match_returns_eight_after_all_indices() {
+        let mut b = B::new([0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bt_stage64_first_exact_one(123, &mut b), 8);
+        assert_eq!(b.count, 8);
+        assert_eq!(b.calls, [0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE64_CURRENT_BT_EXACT_ONE_SCAN_ADDR, 0x1720C0);
+        assert_eq!(STAGE64_BT_PREDICATE_BOUNDARY, 0x172044);
+        assert_eq!(STAGE64_BT_SCAN_COUNT, 8);
+        assert_eq!(STAGE64_BT_MATCH_VALUE, 1);
+    }
+}
