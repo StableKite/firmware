@@ -7332,3 +7332,164 @@ mod stage60_tests {
         assert_eq!(STAGE60_BT_ELEMENT_COUNT, 10);
     }
 }
+
+/// Stage 61: current indirect dual-sample clamp at `0x16F928`.
+///
+/// This is a current-only reconstruction: the exact 60-byte body has one unique hit in the
+/// current executable range, but no exact/prefix structural counterpart was found in the
+/// available public legacy HCD. The two calls are indirect BLX operations through a runtime
+/// function pointer; their broader contract remains opaque.
+pub const STAGE61_CURRENT_BT_DUAL_SAMPLE_CLAMP_ADDR: u32 = 0x0016_F928;
+pub const STAGE61_BT_GATE_ADDR: u32 = 0x0022_274A;
+pub const STAGE61_BT_DISPATCH_PTR_ADDR: u32 = 0x0020_375C;
+pub const STAGE61_BT_DISPATCH_METHOD_OFFSET: u32 = 0x5C;
+pub const STAGE61_BT_OFFSET_BYTE_ADDR: u32 = 0x0020_D9A4;
+pub const STAGE61_BT_SAMPLE_OFFSET: u32 = 0x15;
+
+pub trait BtStage61Backend {
+    /// Current ambient gate byte. Firmware reads it once before any indirect call and again
+    /// after both calls, so backends may return different values on successive reads.
+    fn read_gate_byte(&mut self) -> u8;
+
+    /// Models a fresh load of `*0x20375C`, method dword `+0x5C`, and indirect BLX with the
+    /// supplied selector. The returned value is the firmware R0 result of that call.
+    fn invoke_selector(&mut self, selector: u32) -> u32;
+
+    /// Current ambient offset byte `*0x20D9A4`, deliberately re-read after each call.
+    fn read_offset_byte(&mut self) -> u8;
+
+    fn read_byte(&mut self, address: u32) -> u8;
+    fn write_byte(&mut self, address: u32, value: u8);
+}
+
+/// Safe source-level model of current `0x16F928`.
+pub fn bt_stage61_dual_sample_clamp<B: BtStage61Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    if backend.read_gate_byte() == 0 {
+        return incoming_r0;
+    }
+
+    let first_base = backend
+        .invoke_selector(1)
+        .wrapping_add(u32::from(backend.read_offset_byte()));
+    let first_addr = first_base.wrapping_add(STAGE61_BT_SAMPLE_OFFSET);
+    let first = backend.read_byte(first_addr);
+
+    let second_base = backend
+        .invoke_selector(0)
+        .wrapping_add(u32::from(backend.read_offset_byte()));
+    let post_gate = backend.read_gate_byte();
+    let second_addr = second_base.wrapping_add(STAGE61_BT_SAMPLE_OFFSET);
+    let second = backend.read_byte(second_addr);
+
+    let difference = first.abs_diff(second);
+    if post_gate < difference {
+        backend.write_byte(second_addr, first);
+    }
+
+    second_base
+}
+
+#[cfg(test)]
+mod stage61_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        gates: Vec<u8>,
+        offsets: Vec<u8>,
+        returns: [u32; 2],
+        memory: BTreeMap<u32, u8>,
+        writes: Vec<(u32, u8)>,
+        calls: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage61Backend for B {
+        fn read_gate_byte(&mut self) -> u8 {
+            self.calls.push(("gate", 0));
+            self.gates.remove(0)
+        }
+        fn invoke_selector(&mut self, selector: u32) -> u32 {
+            self.calls.push(("invoke", selector));
+            self.returns[selector as usize]
+        }
+        fn read_offset_byte(&mut self) -> u8 {
+            self.calls.push(("offset", 0));
+            self.offsets.remove(0)
+        }
+        fn read_byte(&mut self, address: u32) -> u8 {
+            self.calls.push(("read", address));
+            *self.memory.get(&address).unwrap_or(&0)
+        }
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.calls.push(("write", address));
+            self.memory.insert(address, value);
+            self.writes.push((address, value));
+        }
+    }
+
+    #[test]
+    fn zero_initial_gate_is_strict_early_exit() {
+        let mut b = B { gates: vec![0], ..Default::default() };
+        assert_eq!(bt_stage61_dual_sample_clamp(0xCAFE_BABE, &mut b), 0xCAFE_BABE);
+        assert_eq!(b.calls, [("gate", 0)]);
+    }
+
+    #[test]
+    fn offsets_and_gate_are_reread_after_indirect_calls() {
+        let first_ret = 0x1000u32;
+        let second_ret = 0x2000u32;
+        let first_addr = first_ret + 3 + STAGE61_BT_SAMPLE_OFFSET;
+        let second_addr = second_ret + 9 + STAGE61_BT_SAMPLE_OFFSET;
+        let mut memory = BTreeMap::new();
+        memory.insert(first_addr, 100);
+        memory.insert(second_addr, 10);
+        let mut b = B {
+            gates: vec![1, 20],
+            offsets: vec![3, 9],
+            returns: [second_ret, first_ret],
+            memory,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage61_dual_sample_clamp(0, &mut b), second_ret + 9);
+        assert_eq!(b.writes, [(second_addr, 100)]);
+        assert_eq!(b.calls.iter().filter(|x| x.0 == "offset").count(), 2);
+        assert_eq!(b.calls.iter().filter(|x| x.0 == "gate").count(), 2);
+    }
+
+    #[test]
+    fn threshold_is_strict_gate_less_than_absolute_difference() {
+        let mut memory = BTreeMap::new();
+        memory.insert(0x1000 + STAGE61_BT_SAMPLE_OFFSET, 90);
+        memory.insert(0x2000 + STAGE61_BT_SAMPLE_OFFSET, 50);
+        let mut b = B {
+            gates: vec![1, 40],
+            offsets: vec![0, 0],
+            returns: [0x2000, 0x1000],
+            memory,
+            ..Default::default()
+        };
+        let _ = bt_stage61_dual_sample_clamp(0, &mut b);
+        assert!(b.writes.is_empty());
+
+        b.calls.clear(); b.gates = vec![1, 39]; b.offsets = vec![0, 0];
+        let _ = bt_stage61_dual_sample_clamp(0, &mut b);
+        assert_eq!(b.writes, [(0x2000 + STAGE61_BT_SAMPLE_OFFSET, 90)]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE61_CURRENT_BT_DUAL_SAMPLE_CLAMP_ADDR, 0x16F928);
+        assert_eq!(STAGE61_BT_GATE_ADDR, 0x22274A);
+        assert_eq!(STAGE61_BT_DISPATCH_PTR_ADDR, 0x20375C);
+        assert_eq!(STAGE61_BT_DISPATCH_METHOD_OFFSET, 0x5C);
+        assert_eq!(STAGE61_BT_OFFSET_BYTE_ADDR, 0x20D9A4);
+        assert_eq!(STAGE61_BT_SAMPLE_OFFSET, 0x15);
+    }
+}
