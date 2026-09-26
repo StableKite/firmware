@@ -7493,3 +7493,134 @@ mod stage61_tests {
         assert_eq!(STAGE61_BT_SAMPLE_OFFSET, 0x15);
     }
 }
+
+/// Stage 62: current three-selector record-byte initializer at `0x17022C`.
+///
+/// The exact current 70-byte leaf body is byte-identical to the public 73136-byte legacy
+/// structural counterpart at `0x16CD34`. There are no runtime calls. The model preserves
+/// the three-byte selector scan, 0xFF sentinel, fresh base-pointer load for each live
+/// selector, exact 14-byte record stride, byte offset 11, literal value eight, and R0 shape.
+pub const STAGE62_CURRENT_BT_SELECTOR_INIT_ADDR: u32 = 0x0017_022C;
+pub const STAGE62_BT_SELECTOR_TABLE_ADDR: u32 = 0x0022_2750;
+pub const STAGE62_BT_RECORD_BASE_PTR_ADDR: u32 = 0x0020_918C;
+pub const STAGE62_BT_SELECTOR_COUNT: u32 = 3;
+pub const STAGE62_BT_UNUSED_SELECTOR: u8 = 0xFF;
+pub const STAGE62_BT_RECORD_STRIDE: u32 = 14;
+pub const STAGE62_BT_RECORD_BYTE_OFFSET: u32 = 11;
+pub const STAGE62_BT_INITIAL_VALUE: u8 = 8;
+
+pub trait BtStage62Backend {
+    fn read_selector_byte(&mut self, index: u32) -> u8;
+    /// Firmware reloads `*0x20918C` independently for every non-0xFF selector.
+    fn read_record_base(&mut self) -> u32;
+    fn write_byte(&mut self, address: u32, value: u8);
+}
+
+/// Safe source-level model of current `0x17022C`.
+pub fn bt_stage62_initialize_selected_records<B: BtStage62Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let mut index = 0u32;
+    while index < STAGE62_BT_SELECTOR_COUNT {
+        let selector = backend.read_selector_byte(index);
+        if selector != STAGE62_BT_UNUSED_SELECTOR {
+            let base = backend.read_record_base();
+            let record = base.wrapping_add(
+                STAGE62_BT_RECORD_STRIDE.wrapping_mul(u32::from(selector)),
+            );
+            backend.write_byte(
+                record.wrapping_add(STAGE62_BT_RECORD_BYTE_OFFSET),
+                STAGE62_BT_INITIAL_VALUE,
+            );
+        }
+        index += 1;
+    }
+    incoming_r0
+}
+
+#[cfg(test)]
+mod stage62_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    struct B {
+        selectors: [u8; 3],
+        bases: Vec<u32>,
+        base_reads: usize,
+        writes: Vec<(u32, u8)>,
+    }
+
+    impl BtStage62Backend for B {
+        fn read_selector_byte(&mut self, index: u32) -> u8 {
+            self.selectors[index as usize]
+        }
+        fn read_record_base(&mut self) -> u32 {
+            let value = self.bases[self.base_reads];
+            self.base_reads += 1;
+            value
+        }
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.writes.push((address, value));
+        }
+    }
+
+    #[test]
+    fn all_ff_selectors_skip_base_reads_and_writes() {
+        let mut b = B {
+            selectors: [0xFF; 3],
+            bases: Vec::new(),
+            base_reads: 0,
+            writes: Vec::new(),
+        };
+        assert_eq!(bt_stage62_initialize_selected_records(0xCAFE_BABE, &mut b), 0xCAFE_BABE);
+        assert_eq!(b.base_reads, 0);
+        assert!(b.writes.is_empty());
+    }
+
+    #[test]
+    fn live_selectors_reload_base_and_use_stride_fourteen_offset_eleven() {
+        let mut b = B {
+            selectors: [1, 0xFF, 2],
+            bases: vec![0x1000, 0x2000],
+            base_reads: 0,
+            writes: Vec::new(),
+        };
+        assert_eq!(bt_stage62_initialize_selected_records(7, &mut b), 7);
+        assert_eq!(b.base_reads, 2);
+        assert_eq!(b.writes, [
+            (0x1000 + 14 + 11, 8),
+            (0x2000 + 28 + 11, 8),
+        ]);
+    }
+
+    #[test]
+    fn selectors_are_processed_in_table_order() {
+        let mut b = B {
+            selectors: [2, 0, 1],
+            bases: vec![0x100, 0x200, 0x300],
+            base_reads: 0,
+            writes: Vec::new(),
+        };
+        let _ = bt_stage62_initialize_selected_records(0, &mut b);
+        assert_eq!(b.writes, [
+            (0x100 + 28 + 11, 8),
+            (0x200 + 11, 8),
+            (0x300 + 14 + 11, 8),
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE62_CURRENT_BT_SELECTOR_INIT_ADDR, 0x17022C);
+        assert_eq!(STAGE62_BT_SELECTOR_TABLE_ADDR, 0x222750);
+        assert_eq!(STAGE62_BT_RECORD_BASE_PTR_ADDR, 0x20918C);
+        assert_eq!(STAGE62_BT_SELECTOR_COUNT, 3);
+        assert_eq!(STAGE62_BT_UNUSED_SELECTOR, 0xFF);
+        assert_eq!(STAGE62_BT_RECORD_STRIDE, 14);
+        assert_eq!(STAGE62_BT_RECORD_BYTE_OFFSET, 11);
+        assert_eq!(STAGE62_BT_INITIAL_VALUE, 8);
+    }
+}
