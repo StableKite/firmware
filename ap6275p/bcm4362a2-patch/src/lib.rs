@@ -6451,3 +6451,78 @@ mod stage53_tests {
         assert_eq!(STAGE53_BT_AMBIENT_PUBLISH_ADDR, 0x20A223);
     }
 }
+
+/// Stage 54: compact current two-boundary wrapper at `0x16F228`.
+///
+/// The exact current 20-byte body is a relocation-normalized structural counterpart of
+/// the public 73136-byte legacy image at `0x16C25C`. Both runtime targets remain opaque;
+/// this model preserves only the literal argument, object-token forwarding, call order,
+/// and tail-return behavior visible in current firmware.
+pub const STAGE54_CURRENT_BT_TWO_BOUNDARY_WRAPPER_ADDR: u32 = 0x0016_F228;
+pub const STAGE54_BT_FIRST_BOUNDARY: u32 = 0x0004_4468;
+pub const STAGE54_BT_TAIL_BOUNDARY: u32 = 0x0002_65E8;
+
+pub trait BtStage54Backend {
+    /// Current `0x44468(object, 1)`. The return value is ignored locally.
+    fn first_boundary(&mut self, object: u32, enable: u32);
+    /// Current tail `0x265E8(object)`. Its return is the wrapper's final return.
+    fn tail_boundary(&mut self, object: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x16F228`.
+///
+/// The firmware performs no local null/range check on the opaque object token.
+pub fn bt_stage54_two_boundary_wrapper<B: BtStage54Backend>(
+    object: u32,
+    backend: &mut B,
+) -> u32 {
+    backend.first_boundary(object, 1);
+    backend.tail_boundary(object)
+}
+
+#[cfg(test)]
+mod stage54_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        tail_result: u32,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage54Backend for B {
+        fn first_boundary(&mut self, object: u32, enable: u32) {
+            self.calls.push(("first", object, enable));
+        }
+        fn tail_boundary(&mut self, object: u32) -> u32 {
+            self.calls.push(("tail", object, 0));
+            self.tail_result
+        }
+    }
+
+    #[test]
+    fn forwards_same_object_with_literal_one_then_tail_calls() {
+        let mut b = B { tail_result: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage54_two_boundary_wrapper(0x1234_5678, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.calls, [
+            ("first", 0x1234_5678, 1),
+            ("tail", 0x1234_5678, 0),
+        ]);
+    }
+
+    #[test]
+    fn zero_object_is_forwarded_without_inventing_a_local_guard() {
+        let mut b = B { tail_result: 7, ..Default::default() };
+        assert_eq!(bt_stage54_two_boundary_wrapper(0, &mut b), 7);
+        assert_eq!(b.calls, [("first", 0, 1), ("tail", 0, 0)]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE54_CURRENT_BT_TWO_BOUNDARY_WRAPPER_ADDR, 0x16F228);
+        assert_eq!(STAGE54_BT_FIRST_BOUNDARY, 0x44468);
+        assert_eq!(STAGE54_BT_TAIL_BOUNDARY, 0x265E8);
+    }
+}
