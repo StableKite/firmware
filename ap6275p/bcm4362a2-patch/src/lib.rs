@@ -7002,3 +7002,55 @@ mod stage57_tests {
         assert_eq!(STAGE57_BT_SOURCE_GATE_VALUE, 0x19);
     }
 }
+
+/// Stage 58: current ambient triplet-byte clear at `0x16F5F4`.
+///
+/// The exact current 8-byte leaf body is byte-identical to the public 73136-byte legacy
+/// structural counterpart at `0x16C628`. The only relocation is the PC-relative literal
+/// following the body: current points at `0x221F1D`, public legacy at older `0x221EE9`.
+pub const STAGE58_CURRENT_BT_TRIPLET_CLEAR_ADDR: u32 = 0x0016_F5F4;
+pub const STAGE58_BT_TRIPLET_BASE_ADDR: u32 = 0x0022_1F1D;
+pub const STAGE58_BT_CLEARED_OFFSET: u32 = 2;
+
+pub trait BtStage58Backend {
+    /// Stores a byte at current `*(0x221F1D + 2)`.
+    fn write_triplet2(&mut self, value: u8);
+}
+
+/// Safe source-level model of current `0x16F5F4`.
+pub fn bt_stage58_clear_triplet2<B: BtStage58Backend>(backend: &mut B) {
+    backend.write_triplet2(0);
+}
+
+#[cfg(test)]
+mod stage58_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct B {
+        value: u8,
+        writes: u32,
+    }
+
+    impl BtStage58Backend for B {
+        fn write_triplet2(&mut self, value: u8) {
+            self.value = value;
+            self.writes += 1;
+        }
+    }
+
+    #[test]
+    fn writes_exact_zero_once() {
+        let mut b = B { value: 0xA5, writes: 0 };
+        bt_stage58_clear_triplet2(&mut b);
+        assert_eq!(b.value, 0);
+        assert_eq!(b.writes, 1);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE58_CURRENT_BT_TRIPLET_CLEAR_ADDR, 0x16F5F4);
+        assert_eq!(STAGE58_BT_TRIPLET_BASE_ADDR, 0x221F1D);
+        assert_eq!(STAGE58_BT_CLEARED_OFFSET, 2);
+    }
+}
