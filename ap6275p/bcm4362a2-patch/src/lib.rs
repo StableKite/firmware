@@ -7624,3 +7624,139 @@ mod stage62_tests {
         assert_eq!(STAGE62_BT_INITIAL_VALUE, 8);
     }
 }
+
+/// Stage 63: current optional-boundary sequence at `0x1704D4`.
+///
+/// After masking only the three direct BL encodings, the current 34-byte body has one
+/// structural hit in current firmware and one in public legacy (`0x16CFDC`). The wider
+/// runtime meaning of all three callees remains opaque. This model preserves the single
+/// context load, call arguments/order, current-R0 forwarding to the optional final call,
+/// saved-input gate, and unconditional zero return.
+pub const STAGE63_CURRENT_BT_OPTIONAL_SEQUENCE_ADDR: u32 = 0x0017_04D4;
+pub const STAGE63_BT_CONTEXT_PTR_ADDR: u32 = 0x0022_257C;
+pub const STAGE63_BT_FIRST_BOUNDARY: u32 = 0x0016_3668;
+pub const STAGE63_BT_SECOND_BOUNDARY: u32 = 0x0000_3D24;
+pub const STAGE63_BT_FINAL_BOUNDARY: u32 = 0x0017_1A7C;
+
+pub trait BtStage63Backend {
+    fn read_context_ptr(&mut self) -> u32;
+    fn first_boundary(&mut self, incoming_r0: u32) -> u32;
+    fn second_boundary(&mut self, context: u32, zero: u32, first_result: u32) -> u32;
+    fn final_boundary(&mut self, current_r0: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x1704D4`.
+pub fn bt_stage63_optional_sequence<B: BtStage63Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let context = backend.read_context_ptr();
+    let saved_input = incoming_r0;
+    let mut current_r0 = incoming_r0;
+
+    if context != 0 {
+        current_r0 = backend.first_boundary(current_r0);
+        current_r0 = backend.second_boundary(context, 0, current_r0);
+    }
+
+    if saved_input != 0 {
+        let _ = backend.final_boundary(current_r0);
+    }
+
+    0
+}
+
+#[cfg(test)]
+mod stage63_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        context: u32,
+        first_result: u32,
+        second_result: u32,
+        final_result: u32,
+        calls: Vec<(&'static str, u32, u32, u32)>,
+    }
+
+    impl BtStage63Backend for B {
+        fn read_context_ptr(&mut self) -> u32 {
+            self.calls.push(("context", 0, 0, 0));
+            self.context
+        }
+        fn first_boundary(&mut self, incoming_r0: u32) -> u32 {
+            self.calls.push(("first", incoming_r0, 0, 0));
+            self.first_result
+        }
+        fn second_boundary(&mut self, context: u32, zero: u32, first_result: u32) -> u32 {
+            self.calls.push(("second", context, zero, first_result));
+            self.second_result
+        }
+        fn final_boundary(&mut self, current_r0: u32) -> u32 {
+            self.calls.push(("final", current_r0, 0, 0));
+            self.final_result
+        }
+    }
+
+    #[test]
+    fn zero_context_and_zero_input_only_read_context() {
+        let mut b = B::default();
+        assert_eq!(bt_stage63_optional_sequence(0, &mut b), 0);
+        assert_eq!(b.calls, [("context", 0, 0, 0)]);
+    }
+
+    #[test]
+    fn zero_context_nonzero_input_forwards_original_r0_to_final() {
+        let mut b = B { final_result: 0xAAAA, ..Default::default() };
+        assert_eq!(bt_stage63_optional_sequence(0x1234, &mut b), 0);
+        assert_eq!(b.calls, [
+            ("context", 0, 0, 0),
+            ("final", 0x1234, 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn nonzero_context_zero_input_runs_first_two_but_skips_final() {
+        let mut b = B {
+            context: 0x9000,
+            first_result: 0x1111,
+            second_result: 0x2222,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage63_optional_sequence(0, &mut b), 0);
+        assert_eq!(b.calls, [
+            ("context", 0, 0, 0),
+            ("first", 0, 0, 0),
+            ("second", 0x9000, 0, 0x1111),
+        ]);
+    }
+
+    #[test]
+    fn nonzero_context_nonzero_input_forwards_second_return_to_final() {
+        let mut b = B {
+            context: 0x9000,
+            first_result: 0x1111,
+            second_result: 0x2222,
+            final_result: 0x3333,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage63_optional_sequence(0xABCD, &mut b), 0);
+        assert_eq!(b.calls, [
+            ("context", 0, 0, 0),
+            ("first", 0xABCD, 0, 0),
+            ("second", 0x9000, 0, 0x1111),
+            ("final", 0x2222, 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE63_CURRENT_BT_OPTIONAL_SEQUENCE_ADDR, 0x1704D4);
+        assert_eq!(STAGE63_BT_CONTEXT_PTR_ADDR, 0x22257C);
+        assert_eq!(STAGE63_BT_FIRST_BOUNDARY, 0x163668);
+        assert_eq!(STAGE63_BT_SECOND_BOUNDARY, 0x3D24);
+        assert_eq!(STAGE63_BT_FINAL_BOUNDARY, 0x171A7C);
+    }
+}
