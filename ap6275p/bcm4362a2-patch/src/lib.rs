@@ -8268,3 +8268,155 @@ mod stage67_tests {
         assert_eq!(STAGE67_BT_FINALIZE_BOUNDARY, 0x15180);
     }
 }
+
+/// Stage 68: current conditional context-registration leaf at `0x1726D0`.
+///
+/// This is a current-HCD-first reconstruction. The 40-byte current body has one
+/// unique normalized hit in the current executable range. No public-legacy
+/// structural counterpart is promoted for this stage.
+pub const STAGE68_CURRENT_BT_CONDITIONAL_CONTEXT_REGISTER_ADDR: u32 = 0x0017_26D0;
+pub const STAGE68_BT_CONTEXT_ADDR: u32 = 0x0022_3088;
+pub const STAGE68_BT_CONTEXT_FLAG_WORD_ADDR: u32 = 0x0022_3090;
+pub const STAGE68_BT_CONTEXT_FLAG_MASK: u32 = 0x0000_0004;
+pub const STAGE68_BT_CALLBACK_THUMB: u32 = 0x0017_2661;
+pub const STAGE68_BT_RESET_BYTE_ADDR: u32 = 0x0022_3080;
+pub const STAGE68_BT_REGISTER_BOUNDARY: u32 = 0x0001_51FE;
+pub const STAGE68_BT_FINALIZE_BOUNDARY: u32 = 0x0001_5180;
+
+pub trait BtStage68Backend {
+    /// Reads current dword `[0x223088 + 8]` before any runtime boundary.
+    fn read_context_flag_word(&mut self) -> u32;
+
+    /// Current `0x151FE(context, callback_thumb, 0, argument)`.
+    /// Its return value is ignored locally.
+    fn register_boundary(
+        &mut self,
+        context: u32,
+        callback_thumb: u32,
+        zero: u32,
+        argument: u32,
+    ) -> u32;
+
+    /// Current `0x15180(context, argument)`. Its return survives the final byte
+    /// store and is the function return on the active path.
+    fn finalize_boundary(&mut self, context: u32, argument: u32) -> u32;
+
+    /// Exact final byte write to current `0x223080`.
+    fn write_reset_byte(&mut self, value: u8);
+}
+
+/// Safe source-level model of current `0x1726D0`.
+///
+/// When context flag bit 2 is already set, the firmware returns the incoming
+/// argument unchanged and performs no other visible work. Otherwise it invokes
+/// the register and finalize boundaries in order, writes zero to the reset byte,
+/// and returns the finalize-boundary result.
+pub fn bt_stage68_conditional_context_register<B: BtStage68Backend>(
+    argument: u32,
+    backend: &mut B,
+) -> u32 {
+    if backend.read_context_flag_word() & STAGE68_BT_CONTEXT_FLAG_MASK != 0 {
+        return argument;
+    }
+
+    let _ = backend.register_boundary(
+        STAGE68_BT_CONTEXT_ADDR,
+        STAGE68_BT_CALLBACK_THUMB,
+        0,
+        argument,
+    );
+    let result = backend.finalize_boundary(STAGE68_BT_CONTEXT_ADDR, argument);
+    backend.write_reset_byte(0);
+    result
+}
+
+#[cfg(test)]
+mod stage68_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        flags: u32,
+        register_return: u32,
+        finalize_return: u32,
+        events: Vec<&'static str>,
+        register_args: (u32, u32, u32, u32),
+        finalize_args: (u32, u32),
+        reset_value: Option<u8>,
+    }
+
+    impl BtStage68Backend for B {
+        fn read_context_flag_word(&mut self) -> u32 {
+            self.events.push("flags");
+            self.flags
+        }
+
+        fn register_boundary(
+            &mut self,
+            context: u32,
+            callback_thumb: u32,
+            zero: u32,
+            argument: u32,
+        ) -> u32 {
+            self.events.push("register");
+            self.register_args = (context, callback_thumb, zero, argument);
+            self.register_return
+        }
+
+        fn finalize_boundary(&mut self, context: u32, argument: u32) -> u32 {
+            self.events.push("finalize");
+            self.finalize_args = (context, argument);
+            self.finalize_return
+        }
+
+        fn write_reset_byte(&mut self, value: u8) {
+            self.events.push("reset");
+            self.reset_value = Some(value);
+        }
+    }
+
+    #[test]
+    fn bit2_set_is_strict_early_return_of_incoming_argument() {
+        let mut b = B { flags: STAGE68_BT_CONTEXT_FLAG_MASK, finalize_return: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage68_conditional_context_register(0x1234_5678, &mut b), 0x1234_5678);
+        assert_eq!(b.events, ["flags"]);
+        assert_eq!(b.reset_value, None);
+    }
+
+    #[test]
+    fn active_path_preserves_exact_boundary_arguments_and_order() {
+        let mut b = B { register_return: 0xAAAA_AAAA, finalize_return: 0xBBBB_BBBB, ..Default::default() };
+        assert_eq!(bt_stage68_conditional_context_register(0x1357_2468, &mut b), 0xBBBB_BBBB);
+        assert_eq!(b.register_args, (STAGE68_BT_CONTEXT_ADDR, STAGE68_BT_CALLBACK_THUMB, 0, 0x1357_2468));
+        assert_eq!(b.finalize_args, (STAGE68_BT_CONTEXT_ADDR, 0x1357_2468));
+        assert_eq!(b.events, ["flags", "register", "finalize", "reset"]);
+    }
+
+    #[test]
+    fn register_return_is_ignored_finalize_return_survives_reset_store() {
+        let mut b = B { register_return: 7, finalize_return: 11, ..Default::default() };
+        assert_eq!(bt_stage68_conditional_context_register(3, &mut b), 11);
+        assert_eq!(b.reset_value, Some(0));
+    }
+
+    #[test]
+    fn unrelated_flag_bits_do_not_block_active_path() {
+        let mut b = B { flags: 0xFFFF_FFFB, finalize_return: 9, ..Default::default() };
+        assert_eq!(bt_stage68_conditional_context_register(5, &mut b), 9);
+        assert_eq!(b.events, ["flags", "register", "finalize", "reset"]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE68_CURRENT_BT_CONDITIONAL_CONTEXT_REGISTER_ADDR, 0x1726D0);
+        assert_eq!(STAGE68_BT_CONTEXT_ADDR, 0x223088);
+        assert_eq!(STAGE68_BT_CONTEXT_FLAG_WORD_ADDR, 0x223090);
+        assert_eq!(STAGE68_BT_CONTEXT_FLAG_MASK, 4);
+        assert_eq!(STAGE68_BT_CALLBACK_THUMB, 0x172661);
+        assert_eq!(STAGE68_BT_RESET_BYTE_ADDR, 0x223080);
+        assert_eq!(STAGE68_BT_REGISTER_BOUNDARY, 0x151FE);
+        assert_eq!(STAGE68_BT_FINALIZE_BOUNDARY, 0x15180);
+    }
+}
