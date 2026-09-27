@@ -8073,3 +8073,198 @@ mod stage66_tests {
         assert_eq!(STAGE66_BT_COPY_LIMIT, 58);
     }
 }
+
+/// Stage 67: current five-way state dispatch wrapper at `0x172518`.
+///
+/// The exact current 98-byte body contains a TBB dispatch and four direct calls. Masking
+/// only those four four-byte call encodings leaves 82 fixed bytes and yields one current
+/// structural hit plus one public-legacy counterpart at `0x16E408`.
+pub const STAGE67_CURRENT_BT_STATE_DISPATCH_ADDR: u32 = 0x0017_2518;
+pub const STAGE67_BT_STATE_ADDR: u32 = 0x0022_3064;
+pub const STAGE67_BT_SOURCE_BYTE_ADDR: u32 = 0x0022_2084;
+pub const STAGE67_BT_CONTEXT_WORD_ADDR: u32 = 0x0022_208C;
+pub const STAGE67_BT_DEST_BYTE_ADDR: u32 = 0x0022_3065;
+pub const STAGE67_BT_CALLBACK_PTR: u32 = 0x0017_1FF9;
+pub const STAGE67_BT_BLOCK_ADDR: u32 = 0x0022_304C;
+pub const STAGE67_BT_ZERO_BOUNDARY: u32 = 0x0007_2B24;
+pub const STAGE67_BT_REGISTER_BOUNDARY: u32 = 0x0001_51FE;
+pub const STAGE67_BT_ALTERNATE_BOUNDARY: u32 = 0x0001_51BC;
+pub const STAGE67_BT_FINALIZE_BOUNDARY: u32 = 0x0001_5180;
+
+pub trait BtStage67Backend {
+    fn read_state_byte(&mut self) -> u8;
+    fn write_state_byte(&mut self, value: u8);
+    fn read_source_byte(&mut self) -> u8;
+    fn write_dest_byte(&mut self, value: u8);
+    fn read_context_word(&mut self) -> u32;
+
+    /// Current `0x72B24(0, incoming_r1, incoming_r2, 0)` on state zero.
+    fn zero_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+    /// Current `0x151FE(block, callback, 0, context)` on state zero.
+    fn register_boundary(&mut self, block: u32, callback: u32, zero: u32, context: u32) -> u32;
+    /// Current `0x151BC(block, incoming_r1, copied_byte, dest_addr)` on state one.
+    fn alternate_boundary(&mut self, block: u32, incoming_r1: u32, value: u32, dest_addr: u32) -> u32;
+    /// Current `0x15180(block, context)` on states zero and one.
+    fn finalize_boundary(&mut self, block: u32, context: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x172518`.
+///
+/// Incoming R0 is not consumed by the visible body. State zero runs the zero/init route;
+/// state one runs the alternate route; states two through four are rewritten to five;
+/// states above four skip dispatch work. The final state byte is always re-read and maps
+/// to return value three when it is at least two, otherwise zero.
+pub fn bt_stage67_state_dispatch<B: BtStage67Backend>(
+    _incoming_r0: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    backend: &mut B,
+) -> u32 {
+    let state = backend.read_state_byte();
+    match state {
+        0 => {
+            let _ = backend.zero_boundary(0, incoming_r1, incoming_r2, 0);
+            backend.write_state_byte(1);
+
+            let value = backend.read_source_byte();
+            backend.write_dest_byte(value);
+
+            let context = backend.read_context_word();
+            let _ = backend.register_boundary(
+                STAGE67_BT_BLOCK_ADDR,
+                STAGE67_BT_CALLBACK_PTR,
+                0,
+                context,
+            );
+
+            let context = backend.read_context_word();
+            let _ = backend.finalize_boundary(STAGE67_BT_BLOCK_ADDR, context);
+        }
+        1 => {
+            let value = backend.read_source_byte();
+            backend.write_dest_byte(value);
+            let _ = backend.alternate_boundary(
+                STAGE67_BT_BLOCK_ADDR,
+                incoming_r1,
+                u32::from(value),
+                STAGE67_BT_DEST_BYTE_ADDR,
+            );
+
+            let context = backend.read_context_word();
+            let _ = backend.finalize_boundary(STAGE67_BT_BLOCK_ADDR, context);
+        }
+        2..=4 => backend.write_state_byte(5),
+        _ => {}
+    }
+
+    if backend.read_state_byte() >= 2 { 3 } else { 0 }
+}
+
+#[cfg(test)]
+mod stage67_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct B {
+        state: u8,
+        source: u8,
+        context: u32,
+        next_context_after_register: Option<u32>,
+        state_after_finalize: Option<u8>,
+        events: [u8; 16],
+        count: usize,
+        zero_args: (u32, u32, u32, u32),
+        register_args: (u32, u32, u32, u32),
+        alternate_args: (u32, u32, u32, u32),
+        finalize_args: (u32, u32),
+    }
+
+    impl B {
+        fn event(&mut self, id: u8) {
+            self.events[self.count] = id;
+            self.count += 1;
+        }
+    }
+
+    impl BtStage67Backend for B {
+        fn read_state_byte(&mut self) -> u8 { self.event(1); self.state }
+        fn write_state_byte(&mut self, value: u8) { self.event(2); self.state = value; }
+        fn read_source_byte(&mut self) -> u8 { self.event(3); self.source }
+        fn write_dest_byte(&mut self, _value: u8) { self.event(4); }
+        fn read_context_word(&mut self) -> u32 { self.event(5); self.context }
+        fn zero_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32 {
+            self.event(6); self.zero_args = (r0, r1, r2, r3); 0xAAAA_AAAA
+        }
+        fn register_boundary(&mut self, block: u32, callback: u32, zero: u32, context: u32) -> u32 {
+            self.event(7); self.register_args = (block, callback, zero, context);
+            if let Some(v) = self.next_context_after_register { self.context = v; }
+            0xBBBB_BBBB
+        }
+        fn alternate_boundary(&mut self, block: u32, incoming_r1: u32, value: u32, dest_addr: u32) -> u32 {
+            self.event(8); self.alternate_args = (block, incoming_r1, value, dest_addr); 0xCCCC_CCCC
+        }
+        fn finalize_boundary(&mut self, block: u32, context: u32) -> u32 {
+            self.event(9); self.finalize_args = (block, context);
+            if let Some(v) = self.state_after_finalize { self.state = v; }
+            0xDDDD_DDDD
+        }
+    }
+
+    #[test]
+    fn state_zero_preserves_call_order_and_rereads_context_and_final_state() {
+        let mut b = B {
+            state: 0,
+            source: 0x5A,
+            context: 0x1111,
+            next_context_after_register: Some(0x2222),
+            state_after_finalize: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(bt_stage67_state_dispatch(99, 0x12, 0x34, &mut b), 3);
+        assert_eq!(b.zero_args, (0, 0x12, 0x34, 0));
+        assert_eq!(b.register_args, (STAGE67_BT_BLOCK_ADDR, STAGE67_BT_CALLBACK_PTR, 0, 0x1111));
+        assert_eq!(b.finalize_args, (STAGE67_BT_BLOCK_ADDR, 0x2222));
+        assert_eq!(&b.events[..b.count], &[1,6,2,3,4,5,7,5,9,1]);
+    }
+
+    #[test]
+    fn state_one_forwards_incoming_r1_and_copied_byte_then_uses_post_call_state() {
+        let mut b = B { state: 1, source: 7, context: 0x3333, state_after_finalize: Some(0), ..Default::default() };
+        assert_eq!(bt_stage67_state_dispatch(88, 0xABCD, 0xEEEE, &mut b), 0);
+        assert_eq!(b.alternate_args, (STAGE67_BT_BLOCK_ADDR, 0xABCD, 7, STAGE67_BT_DEST_BYTE_ADDR));
+        assert_eq!(b.finalize_args, (STAGE67_BT_BLOCK_ADDR, 0x3333));
+        assert_eq!(&b.events[..b.count], &[1,3,4,8,5,9,1]);
+    }
+
+    #[test]
+    fn states_two_through_four_are_rewritten_to_five() {
+        for initial in 2..=4 {
+            let mut b = B { state: initial, ..Default::default() };
+            assert_eq!(bt_stage67_state_dispatch(0, 0, 0, &mut b), 3);
+            assert_eq!(b.state, 5);
+            assert_eq!(&b.events[..b.count], &[1,2,1]);
+        }
+    }
+
+    #[test]
+    fn states_above_four_only_reread_for_final_mapping() {
+        let mut b = B { state: 0xFF, ..Default::default() };
+        assert_eq!(bt_stage67_state_dispatch(1, 2, 3, &mut b), 3);
+        assert_eq!(&b.events[..b.count], &[1,1]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE67_CURRENT_BT_STATE_DISPATCH_ADDR, 0x172518);
+        assert_eq!(STAGE67_BT_STATE_ADDR, 0x223064);
+        assert_eq!(STAGE67_BT_SOURCE_BYTE_ADDR, 0x222084);
+        assert_eq!(STAGE67_BT_CONTEXT_WORD_ADDR, 0x22208C);
+        assert_eq!(STAGE67_BT_DEST_BYTE_ADDR, 0x223065);
+        assert_eq!(STAGE67_BT_CALLBACK_PTR, 0x171FF9);
+        assert_eq!(STAGE67_BT_BLOCK_ADDR, 0x22304C);
+        assert_eq!(STAGE67_BT_ZERO_BOUNDARY, 0x72B24);
+        assert_eq!(STAGE67_BT_REGISTER_BOUNDARY, 0x151FE);
+        assert_eq!(STAGE67_BT_ALTERNATE_BOUNDARY, 0x151BC);
+        assert_eq!(STAGE67_BT_FINALIZE_BOUNDARY, 0x15180);
+    }
+}
