@@ -7936,3 +7936,140 @@ mod stage65_tests {
         assert_eq!(STAGE65_BT_FALLBACK_MODE, 1);
     }
 }
+
+/// Stage 66: current bounded tail-copy wrapper at `0x1724E4`.
+///
+/// The exact current 46-byte body contains one ordinary BL and one final B.W. Masking
+/// those two four-byte control-transfer encodings leaves 38 fixed bytes and yields one
+/// current structural hit plus one public-legacy counterpart at `0x16E3D4`.
+/// This model preserves the first opaque boundary, the intervening header-byte store,
+/// unsigned length clamp, source preservation, and final tail-result forwarding.
+pub const STAGE66_CURRENT_BT_BOUNDED_TAIL_COPY_ADDR: u32 = 0x0017_24E4;
+pub const STAGE66_BT_FIRST_BOUNDARY: u32 = 0x0000_3D24;
+pub const STAGE66_BT_TAIL_BOUNDARY: u32 = 0x0000_3DB4;
+pub const STAGE66_BT_CURRENT_BUFFER_BASE: u32 = 0x0022_300E;
+pub const STAGE66_BT_CLEAR_LENGTH: u32 = 0x3B;
+pub const STAGE66_BT_INLINE_LIMIT: u32 = 0x39;
+pub const STAGE66_BT_COPY_LIMIT: u32 = 0x3A;
+
+pub trait BtStage66Backend {
+    /// Current `0x3D24(buffer, 0, 59)`. The return is ignored locally.
+    fn first_boundary(&mut self, buffer: u32, value: u32, len: u32) -> u32;
+
+    /// Exact local byte store performed after the first boundary returns.
+    fn write_header_byte(&mut self, address: u32, value: u8);
+
+    /// Current tail boundary `0x3DB4(buffer + 1, source, len)`.
+    fn tail_boundary(&mut self, destination: u32, source: u32, len: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x1724E4`.
+///
+/// Firmware first invokes the opaque `0x3D24` boundary with `(base, 0, 59)`. It then
+/// stores the low byte of a logical right shift by one into `base`, preserves the incoming
+/// source value, clamps the unsigned input length to at most 58, restores its frame, and
+/// tail-branches to `0x3DB4(base + 1, source, clamped_len)`. The tail return is final.
+pub fn bt_stage66_bounded_tail_copy<B: BtStage66Backend>(
+    input_len: u32,
+    source: u32,
+    backend: &mut B,
+) -> u32 {
+    let base = STAGE66_BT_CURRENT_BUFFER_BASE;
+    let _ = backend.first_boundary(base, 0, STAGE66_BT_CLEAR_LENGTH);
+
+    backend.write_header_byte(base, (input_len >> 1) as u8);
+
+    let copy_len = if input_len <= STAGE66_BT_INLINE_LIMIT {
+        input_len
+    } else {
+        STAGE66_BT_COPY_LIMIT
+    };
+
+    backend.tail_boundary(base.wrapping_add(1), source, copy_len)
+}
+
+#[cfg(test)]
+mod stage66_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct B {
+        first_args: (u32, u32, u32),
+        first_return: u32,
+        header: (u32, u8),
+        tail_args: (u32, u32, u32),
+        tail_return: u32,
+        first_step: u8,
+        header_step: u8,
+        tail_step: u8,
+        next_step: u8,
+    }
+
+    impl B {
+        fn step(&mut self) -> u8 {
+            self.next_step += 1;
+            self.next_step
+        }
+    }
+
+    impl BtStage66Backend for B {
+        fn first_boundary(&mut self, buffer: u32, value: u32, len: u32) -> u32 {
+            let step = self.step();
+            self.first_step = step;
+            self.first_args = (buffer, value, len);
+            self.first_return
+        }
+
+        fn write_header_byte(&mut self, address: u32, value: u8) {
+            let step = self.step();
+            self.header_step = step;
+            self.header = (address, value);
+        }
+
+        fn tail_boundary(&mut self, destination: u32, source: u32, len: u32) -> u32 {
+            let step = self.step();
+            self.tail_step = step;
+            self.tail_args = (destination, source, len);
+            self.tail_return
+        }
+    }
+
+    #[test]
+    fn first_boundary_header_store_and_tail_are_ordered() {
+        let mut b = B { first_return: 0xAAAA_AAAA, tail_return: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage66_bounded_tail_copy(5, 0x1234_5678, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.first_args, (STAGE66_BT_CURRENT_BUFFER_BASE, 0, 59));
+        assert_eq!(b.header, (STAGE66_BT_CURRENT_BUFFER_BASE, 2));
+        assert_eq!(b.tail_args, (STAGE66_BT_CURRENT_BUFFER_BASE + 1, 0x1234_5678, 5));
+        assert_eq!((b.first_step, b.header_step, b.tail_step), (1, 2, 3));
+    }
+
+    #[test]
+    fn unsigned_length_clamp_changes_only_values_above_57() {
+        let mut b = B { tail_return: 1, ..Default::default() };
+        let _ = bt_stage66_bounded_tail_copy(57, 9, &mut b);
+        assert_eq!(b.tail_args.2, 57);
+        let _ = bt_stage66_bounded_tail_copy(58, 9, &mut b);
+        assert_eq!(b.tail_args.2, 58);
+        let _ = bt_stage66_bounded_tail_copy(u32::MAX, 9, &mut b);
+        assert_eq!(b.tail_args.2, 58);
+    }
+
+    #[test]
+    fn header_is_low_byte_of_logical_shift_and_first_return_is_ignored() {
+        let mut b = B { first_return: 7, tail_return: 11, ..Default::default() };
+        assert_eq!(bt_stage66_bounded_tail_copy(u32::MAX, 3, &mut b), 11);
+        assert_eq!(b.header.1, 0xFF);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE66_CURRENT_BT_BOUNDED_TAIL_COPY_ADDR, 0x1724E4);
+        assert_eq!(STAGE66_BT_FIRST_BOUNDARY, 0x3D24);
+        assert_eq!(STAGE66_BT_TAIL_BOUNDARY, 0x3DB4);
+        assert_eq!(STAGE66_BT_CURRENT_BUFFER_BASE, 0x22300E);
+        assert_eq!(STAGE66_BT_CLEAR_LENGTH, 59);
+        assert_eq!(STAGE66_BT_INLINE_LIMIT, 57);
+        assert_eq!(STAGE66_BT_COPY_LIMIT, 58);
+    }
+}
