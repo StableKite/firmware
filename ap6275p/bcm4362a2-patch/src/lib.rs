@@ -8795,3 +8795,247 @@ mod stage70_tests {
         assert_eq!(STAGE70_BT_STATUS_BYTE_ADDR, 0x206F8F);
     }
 }
+
+/// Stage 71: current callback published by Stage 59 at raw Thumb pointer `0x16F511`.
+///
+/// The callable function starts at `0x16F510`. Its exact 118-byte current body has one
+/// relocation-normalized public-legacy structural counterpart at `0x16C544`. The compiler
+/// stack-canary word and failure sink are recorded as provenance/hardening boundaries; the
+/// safe semantic model below focuses on the callback's observable dispatch behavior.
+pub const STAGE71_CURRENT_BT_CALLBACK_ADDR: u32 = 0x0016_F510;
+pub const STAGE71_CURRENT_BT_CALLBACK_THUMB: u32 = 0x0016_F511;
+pub const STAGE71_BT_TABLE_BASE_ADDR: u32 = 0x0020_2A90;
+pub const STAGE71_BT_GATE_ADDR: u32 = 0x0022_2708;
+pub const STAGE71_BT_AMBIENT_WORD_ADDR: u32 = 0x0020_9644;
+pub const STAGE71_BT_AMBIENT_BIT: u32 = 1 << 22;
+pub const STAGE71_BT_GUARD_WORD_ADDR: u32 = 0x0020_0890;
+pub const STAGE71_BT_STACK_GUARD_FAIL: u32 = ROM_STACK_GUARD_FAIL_ADDR;
+pub const STAGE71_BT_PROBE_BOUNDARY: u32 = 0x0005_1800;
+pub const STAGE71_BT_STAGE56_ADDR: u32 = STAGE56_CURRENT_BT_GATED_BIT22_UPDATE_ADDR;
+pub const STAGE71_BT_MUTATE_HALFWORD_BOUNDARY: u32 = 0x0004_5624;
+pub const STAGE71_BT_SELECTOR21_PREDICATE: u32 = 0x0008_917C;
+pub const STAGE71_BT_REQUIRED_CLASS: u32 = 2;
+pub const STAGE71_BT_SELECTOR_STAGE56: u32 = 6;
+pub const STAGE71_BT_SELECTOR_GATE: u32 = 20;
+pub const STAGE71_BT_SELECTOR_PREDICATE_GATE: u32 = 21;
+
+pub trait BtStage71Backend {
+    /// Exact unchecked firmware read `*(u16 *)(0x202A90 + selector * 2)`.
+    ///
+    /// It occurs before the class check, so the model deliberately does not add a bounds check.
+    fn read_table_halfword(&mut self, selector: u32) -> u16;
+
+    /// Current `0x51800` with the entry registers still carrying object/selector/class and the
+    /// already-read table halfword in R3.
+    fn probe(&mut self, object: u32, selector: u32, class: u32, table_halfword: u16) -> u32;
+
+    /// Already recovered current Stage 56 called as `0x16F438(object, 0)`.
+    fn stage56_zero_mode(&mut self, object: u32) -> u32;
+
+    /// Current `0x45624(object, &mut local_halfword)`.
+    fn mutate_halfword(&mut self, object: u32, value: &mut u16) -> u32;
+
+    /// Current `0x8917C` on selector 21 with the entry register shape.
+    fn selector21_predicate(
+        &mut self,
+        object: u32,
+        selector: u32,
+        class: u32,
+        table_halfword: u16,
+    ) -> u32;
+
+    fn read_gate_byte(&mut self) -> u8;
+    fn read_object_byte45(&mut self, object: u32) -> u8;
+    fn read_ambient_word(&mut self) -> u32;
+    fn write_ambient_word(&mut self, value: u32);
+}
+
+/// Safe source-level semantic model of current `0x16F510`.
+///
+/// The table halfword read is intentionally unconditional and unchecked. Only class two
+/// dispatches selectors 6, 20, and 21. Selector 6 always returns one after its callback
+/// sequence. Selectors 20/21 return zero and can only OR bit 22 into the ambient dword.
+pub fn bt_stage71_published_callback<B: BtStage71Backend>(
+    object: u32,
+    selector: u32,
+    class: u32,
+    backend: &mut B,
+) -> u32 {
+    let mut local_halfword = backend.read_table_halfword(selector);
+
+    if class != STAGE71_BT_REQUIRED_CLASS {
+        return 0;
+    }
+
+    match selector {
+        STAGE71_BT_SELECTOR_STAGE56 => {
+            let probe = backend.probe(object, selector, class, local_halfword);
+            if probe == 0 {
+                let _ = backend.stage56_zero_mode(object);
+            }
+            let _ = backend.mutate_halfword(object, &mut local_halfword);
+            1
+        }
+        STAGE71_BT_SELECTOR_GATE => {
+            if backend.read_gate_byte() != 1 {
+                return 0;
+            }
+            if backend.read_object_byte45(object) != 0 {
+                return 0;
+            }
+            let old = backend.read_ambient_word();
+            backend.write_ambient_word(old | STAGE71_BT_AMBIENT_BIT);
+            0
+        }
+        STAGE71_BT_SELECTOR_PREDICATE_GATE => {
+            if backend.selector21_predicate(object, selector, class, local_halfword) == 0 {
+                return 0;
+            }
+            if backend.read_gate_byte() != 1 {
+                return 0;
+            }
+            if backend.read_object_byte45(object) != 0 {
+                return 0;
+            }
+            let old = backend.read_ambient_word();
+            backend.write_ambient_word(old | STAGE71_BT_AMBIENT_BIT);
+            0
+        }
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod stage71_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        table: u16,
+        probe_result: u32,
+        predicate_result: u32,
+        gate: u8,
+        byte45: u8,
+        ambient: u32,
+        mutated_value: u16,
+        events: Vec<&'static str>,
+        probe_args: (u32, u32, u32, u16),
+        pred_args: (u32, u32, u32, u16),
+    }
+
+    impl BtStage71Backend for B {
+        fn read_table_halfword(&mut self, _selector: u32) -> u16 {
+            self.events.push("table");
+            self.table
+        }
+        fn probe(&mut self, o: u32, s: u32, c: u32, h: u16) -> u32 {
+            self.events.push("probe");
+            self.probe_args = (o, s, c, h);
+            self.probe_result
+        }
+        fn stage56_zero_mode(&mut self, _object: u32) -> u32 {
+            self.events.push("stage56");
+            0xAAAA_AAAA
+        }
+        fn mutate_halfword(&mut self, _object: u32, value: &mut u16) -> u32 {
+            self.events.push("mutate");
+            *value = 0xBEEF;
+            self.mutated_value = *value;
+            0xBBBB_BBBB
+        }
+        fn selector21_predicate(&mut self, o: u32, s: u32, c: u32, h: u16) -> u32 {
+            self.events.push("predicate");
+            self.pred_args = (o, s, c, h);
+            self.predicate_result
+        }
+        fn read_gate_byte(&mut self) -> u8 {
+            self.events.push("gate");
+            self.gate
+        }
+        fn read_object_byte45(&mut self, _object: u32) -> u8 {
+            self.events.push("byte45");
+            self.byte45
+        }
+        fn read_ambient_word(&mut self) -> u32 {
+            self.events.push("read_word");
+            self.ambient
+        }
+        fn write_ambient_word(&mut self, value: u32) {
+            self.events.push("write_word");
+            self.ambient = value;
+        }
+    }
+
+    #[test]
+    fn table_read_precedes_class_rejection_and_no_bounds_rule_is_added() {
+        let mut b = B { table: 0x1234, ..Default::default() };
+        assert_eq!(bt_stage71_published_callback(1, 0xFFFF_FFFF, 7, &mut b), 0);
+        assert_eq!(b.events, ["table"]);
+    }
+
+    #[test]
+    fn selector_six_zero_probe_runs_stage56_then_mutates_and_returns_one() {
+        let mut b = B { table: 0x2345, probe_result: 0, ..Default::default() };
+        assert_eq!(bt_stage71_published_callback(0xABC, 6, 2, &mut b), 1);
+        assert_eq!(b.events, ["table", "probe", "stage56", "mutate"]);
+        assert_eq!(b.probe_args, (0xABC, 6, 2, 0x2345));
+        assert_eq!(b.mutated_value, 0xBEEF);
+    }
+
+    #[test]
+    fn selector_six_nonzero_probe_skips_stage56_but_still_mutates() {
+        let mut b = B { table: 7, probe_result: 9, ..Default::default() };
+        assert_eq!(bt_stage71_published_callback(4, 6, 2, &mut b), 1);
+        assert_eq!(b.events, ["table", "probe", "mutate"]);
+    }
+
+    #[test]
+    fn selector_twenty_gates_exactly_and_ors_only_bit22() {
+        let mut b = B { table: 1, gate: 1, byte45: 0, ambient: 0xA501_0203, ..Default::default() };
+        assert_eq!(bt_stage71_published_callback(5, 20, 2, &mut b), 0);
+        assert_eq!(b.ambient, 0xA501_0203 | STAGE71_BT_AMBIENT_BIT);
+        assert_eq!(b.events, ["table", "gate", "byte45", "read_word", "write_word"]);
+
+        let mut blocked = B { gate: 0, ambient: 0x55, ..Default::default() };
+        assert_eq!(bt_stage71_published_callback(5, 20, 2, &mut blocked), 0);
+        assert_eq!(blocked.ambient, 0x55);
+        assert_eq!(blocked.events, ["table", "gate"]);
+    }
+
+    #[test]
+    fn selector_twenty_one_predicate_precedes_shared_gate_path() {
+        let mut reject = B { predicate_result: 0, gate: 1, ..Default::default() };
+        assert_eq!(bt_stage71_published_callback(9, 21, 2, &mut reject), 0);
+        assert_eq!(reject.events, ["table", "predicate"]);
+
+        let mut pass = B {
+            table: 0x77,
+            predicate_result: 1,
+            gate: 1,
+            byte45: 0,
+            ambient: 0x10,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage71_published_callback(9, 21, 2, &mut pass), 0);
+        assert_eq!(pass.pred_args, (9, 21, 2, 0x77));
+        assert_eq!(pass.ambient, 0x10 | STAGE71_BT_AMBIENT_BIT);
+        assert_eq!(pass.events, ["table", "predicate", "gate", "byte45", "read_word", "write_word"]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE71_CURRENT_BT_CALLBACK_ADDR, 0x16F510);
+        assert_eq!(STAGE71_CURRENT_BT_CALLBACK_THUMB, 0x16F511);
+        assert_eq!(STAGE71_BT_TABLE_BASE_ADDR, 0x202A90);
+        assert_eq!(STAGE71_BT_GATE_ADDR, 0x222708);
+        assert_eq!(STAGE71_BT_AMBIENT_WORD_ADDR, 0x209644);
+        assert_eq!(STAGE71_BT_GUARD_WORD_ADDR, 0x200890);
+        assert_eq!(STAGE71_BT_STACK_GUARD_FAIL, 0x94C0);
+        assert_eq!(STAGE71_BT_PROBE_BOUNDARY, 0x51800);
+        assert_eq!(STAGE71_BT_STAGE56_ADDR, 0x16F438);
+        assert_eq!(STAGE71_BT_MUTATE_HALFWORD_BOUNDARY, 0x45624);
+        assert_eq!(STAGE71_BT_SELECTOR21_PREDICATE, 0x8917C);
+    }
+}
