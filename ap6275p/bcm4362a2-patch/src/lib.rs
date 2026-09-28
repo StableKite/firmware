@@ -8607,3 +8607,191 @@ mod stage69_tests {
         assert_eq!(STAGE69_BT_CLEAR_BYTES, 24);
     }
 }
+
+/// Stage 70: current masked-state publish wrapper at `0x16F4AA`.
+///
+/// The exact 88-byte current body has one relocation-normalized public-legacy
+/// structural counterpart at `0x16C4DE`. Runtime meanings of opaque boundaries
+/// remain deliberately unnamed.
+pub const STAGE70_CURRENT_BT_MASKED_STATE_PUBLISH_ADDR: u32 = 0x0016_F4AA;
+pub const STAGE70_BT_NORMALIZE_MODE_BOUNDARY: u32 = 0x0004_5624;
+pub const STAGE70_BT_STAGE56_BOUNDARY: u32 = 0x0016_F438;
+pub const STAGE70_BT_MAIN_BOUNDARY: u32 = 0x0004_4C00;
+pub const STAGE70_BT_POST_PUBLISH_PREDICATE: u32 = 0x0004_6A08;
+pub const STAGE70_BT_NOTIFY_BOUNDARY: u32 = 0x0004_6EB8;
+pub const STAGE70_BT_PUBLISH_BASE: u32 = 0x0065_0160;
+pub const STAGE70_BT_STATUS_BASE: u32 = 0x0020_6F78;
+pub const STAGE70_BT_STATUS_BYTE_ADDR: u32 = 0x0020_6F8F;
+pub const STAGE70_BT_MODE_THREE: u32 = 3;
+pub const STAGE70_BT_STAGE56_TRIGGER_MODE: u32 = 25;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage70State {
+    pub word0: u32,
+    pub word4: u32,
+}
+
+pub trait BtStage70Backend {
+    /// Current `0x45624(object, &mut mode)`; only used when mode is exactly 3.
+    fn normalize_mode(&mut self, object: u32, mode: &mut u32) -> u32;
+    /// Already recovered current Stage-56 boundary `0x16F438(object, 0)`.
+    fn stage56_zero_mode(&mut self, object: u32, mode: u32) -> u32;
+    /// Current `0x44C00(object, post-normalize-mode)`.
+    fn main_boundary(&mut self, object: u32, mode: u32) -> u32;
+    fn publish_word(&mut self, address: u32, value: u32);
+    fn read_status_byte(&mut self) -> u8;
+    /// Current `0x46A08`; exact local R0 forwarding is preserved.
+    fn post_publish_predicate(&mut self, current_r0: u32) -> u32;
+    /// Current `0x46EB8(4)`.
+    fn notify_boundary(&mut self, value: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x16F4AA`.
+///
+/// Local state masks happen before every boundary. Mode three may be rewritten
+/// through a pointer by the first boundary and is then re-read. Post-normalize
+/// mode 25 invokes Stage 56 with literal mode zero. The two masked words are
+/// published after the main boundary. Return shape depends on the post-publish
+/// status/predicate path exactly as in the current body.
+pub fn bt_stage70_masked_state_publish<B: BtStage70Backend>(
+    object: u32,
+    mut mode: u32,
+    state: &mut BtStage70State,
+    backend: &mut B,
+) -> u32 {
+    state.word0 &= 0x003F_FFFF;
+    state.word4 &= !0x0000_3F00;
+
+    if mode == STAGE70_BT_MODE_THREE {
+        let _ = backend.normalize_mode(object, &mut mode);
+    }
+
+    if mode == STAGE70_BT_STAGE56_TRIGGER_MODE {
+        let _ = backend.stage56_zero_mode(object, 0);
+    }
+
+    let main_result = backend.main_boundary(object, mode);
+    backend.publish_word(STAGE70_BT_PUBLISH_BASE, state.word0);
+    backend.publish_word(STAGE70_BT_PUBLISH_BASE + 4, state.word4);
+
+    if backend.read_status_byte() == 0 {
+        return main_result;
+    }
+
+    let predicate = backend.post_publish_predicate(main_result);
+    if predicate == 0 {
+        return 0;
+    }
+
+    backend.notify_boundary(4)
+}
+
+#[cfg(test)]
+mod stage70_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        normalized_mode: Option<u32>,
+        main_return: u32,
+        status: u8,
+        predicate_return: u32,
+        notify_return: u32,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage70Backend for B {
+        fn normalize_mode(&mut self, object: u32, mode: &mut u32) -> u32 {
+            self.events.push(("normalize", object, *mode));
+            if let Some(v) = self.normalized_mode { *mode = v; }
+            0xAAAA_AAAA
+        }
+        fn stage56_zero_mode(&mut self, object: u32, mode: u32) -> u32 {
+            self.events.push(("stage56", object, mode));
+            0xBBBB_BBBB
+        }
+        fn main_boundary(&mut self, object: u32, mode: u32) -> u32 {
+            self.events.push(("main", object, mode));
+            self.main_return
+        }
+        fn publish_word(&mut self, address: u32, value: u32) {
+            self.events.push(("publish", address, value));
+        }
+        fn read_status_byte(&mut self) -> u8 {
+            self.events.push(("status", STAGE70_BT_STATUS_BYTE_ADDR, 0));
+            self.status
+        }
+        fn post_publish_predicate(&mut self, current_r0: u32) -> u32 {
+            self.events.push(("predicate", current_r0, 0));
+            self.predicate_return
+        }
+        fn notify_boundary(&mut self, value: u32) -> u32 {
+            self.events.push(("notify", value, 0));
+            self.notify_return
+        }
+    }
+
+    #[test]
+    fn mode_three_can_rewrite_to_twenty_five_before_stage56_and_main() {
+        let mut s = BtStage70State { word0: 0xFFFF_FFFF, word4: 0xFFFF_FFFF };
+        let mut b = B { normalized_mode: Some(25), main_return: 0x1234, status: 0, ..Default::default() };
+        assert_eq!(bt_stage70_masked_state_publish(0x55, 3, &mut s, &mut b), 0x1234);
+        assert_eq!(s.word0, 0x003F_FFFF);
+        assert_eq!(s.word4, 0xFFFF_C0FF);
+        assert_eq!(b.events, [
+            ("normalize",0x55,3),("stage56",0x55,0),("main",0x55,25),
+            ("publish",STAGE70_BT_PUBLISH_BASE,0x003F_FFFF),
+            ("publish",STAGE70_BT_PUBLISH_BASE+4,0xFFFF_C0FF),
+            ("status",STAGE70_BT_STATUS_BYTE_ADDR,0),
+        ]);
+    }
+
+    #[test]
+    fn mode_twenty_five_skips_normalizer_but_still_calls_stage56() {
+        let mut s = BtStage70State::default();
+        let mut b = B { main_return: 7, ..Default::default() };
+        assert_eq!(bt_stage70_masked_state_publish(9, 25, &mut s, &mut b), 7);
+        assert!(!b.events.iter().any(|x| x.0 == "normalize"));
+        assert!(b.events.iter().any(|x| x.0 == "stage56"));
+    }
+
+    #[test]
+    fn other_mode_skips_stage56_and_zero_status_preserves_main_return() {
+        let mut s = BtStage70State { word0: 0xABCDEF12, word4: 0x12345678 };
+        let mut b = B { main_return: 0xDEAD_BEEF, status: 0, ..Default::default() };
+        assert_eq!(bt_stage70_masked_state_publish(1, 8, &mut s, &mut b), 0xDEAD_BEEF);
+        assert!(!b.events.iter().any(|x| x.0 == "stage56"));
+        assert!(!b.events.iter().any(|x| x.0 == "predicate"));
+    }
+
+    #[test]
+    fn nonzero_status_zero_predicate_replaces_main_return_with_zero() {
+        let mut s = BtStage70State::default();
+        let mut b = B { main_return: 0xCAFE, status: 1, predicate_return: 0, notify_return: 99, ..Default::default() };
+        assert_eq!(bt_stage70_masked_state_publish(2, 0, &mut s, &mut b), 0);
+        assert!(b.events.contains(&("predicate", 0xCAFE, 0)));
+        assert!(!b.events.iter().any(|x| x.0 == "notify"));
+    }
+
+    #[test]
+    fn nonzero_predicate_notifies_literal_four_and_forwards_notify_return() {
+        let mut s = BtStage70State::default();
+        let mut b = B { main_return: 6, status: 1, predicate_return: 3, notify_return: 0xFACE_B00C, ..Default::default() };
+        assert_eq!(bt_stage70_masked_state_publish(4, 1, &mut s, &mut b), 0xFACE_B00C);
+        assert_eq!(b.events[b.events.len()-2..], [("predicate",6,0),("notify",4,0)]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE70_CURRENT_BT_MASKED_STATE_PUBLISH_ADDR, 0x16F4AA);
+        assert_eq!(STAGE70_BT_NORMALIZE_MODE_BOUNDARY, 0x45624);
+        assert_eq!(STAGE70_BT_STAGE56_BOUNDARY, 0x16F438);
+        assert_eq!(STAGE70_BT_MAIN_BOUNDARY, 0x44C00);
+        assert_eq!(STAGE70_BT_POST_PUBLISH_PREDICATE, 0x46A08);
+        assert_eq!(STAGE70_BT_NOTIFY_BOUNDARY, 0x46EB8);
+        assert_eq!(STAGE70_BT_PUBLISH_BASE, 0x650160);
+        assert_eq!(STAGE70_BT_STATUS_BYTE_ADDR, 0x206F8F);
+    }
+}
