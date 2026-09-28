@@ -9039,3 +9039,95 @@ mod stage71_tests {
         assert_eq!(STAGE71_BT_SELECTOR21_PREDICATE, 0x8917C);
     }
 }
+
+/// Stage 72: raw callback-B entry published by Stage 59 at Thumb pointer `0x16F4A9`.
+///
+/// The callable entry starts at `0x16F4A8`. Its first instruction loads the stable ambient
+/// state-pair pointer `0x209644` into R3 and then falls through into the already recovered
+/// Stage-70 shared entry at `0x16F4AA`. The 90-byte callable region is therefore a concrete
+/// wrapper-entry specialization of Stage 70 rather than a second independent routine.
+pub const STAGE72_CURRENT_BT_CALLBACK_B_ADDR: u32 = 0x0016_F4A8;
+pub const STAGE72_CURRENT_BT_CALLBACK_B_THUMB: u32 = 0x0016_F4A9;
+pub const STAGE72_BT_AMBIENT_STATE_ADDR: u32 = 0x0020_9644;
+pub const STAGE72_BT_SHARED_STAGE70_ADDR: u32 = STAGE70_CURRENT_BT_MASKED_STATE_PUBLISH_ADDR;
+
+/// Safe source-level model of the current `0x16F4A8` callback entry.
+///
+/// `state` represents the exact ambient dword pair beginning at `0x209644`. The entry adds
+/// no gate or mutation of its own: it supplies that fixed R3 pointer and immediately enters
+/// Stage 70, so all return and call-order semantics are exactly Stage 70's.
+pub fn bt_stage72_published_callback_b<B: BtStage70Backend>(
+    object: u32,
+    mode: u32,
+    state: &mut BtStage70State,
+    backend: &mut B,
+) -> u32 {
+    bt_stage70_masked_state_publish(object, mode, state, backend)
+}
+
+#[cfg(test)]
+mod stage72_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        main_return: u32,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage70Backend for B {
+        fn normalize_mode(&mut self, object: u32, mode: &mut u32) -> u32 {
+            self.events.push(("normalize", object, *mode));
+            0
+        }
+        fn stage56_zero_mode(&mut self, object: u32, mode: u32) -> u32 {
+            self.events.push(("stage56", object, mode));
+            0
+        }
+        fn main_boundary(&mut self, object: u32, mode: u32) -> u32 {
+            self.events.push(("main", object, mode));
+            self.main_return
+        }
+        fn publish_word(&mut self, address: u32, value: u32) {
+            self.events.push(("publish", address, value));
+        }
+        fn read_status_byte(&mut self) -> u8 {
+            self.events.push(("status", STAGE70_BT_STATUS_BYTE_ADDR, 0));
+            0
+        }
+        fn post_publish_predicate(&mut self, current_r0: u32) -> u32 {
+            self.events.push(("predicate", current_r0, 0));
+            0
+        }
+        fn notify_boundary(&mut self, value: u32) -> u32 {
+            self.events.push(("notify", value, 0));
+            0
+        }
+    }
+
+    #[test]
+    fn callback_b_specializes_stage70_with_the_ambient_state_pair() {
+        let mut state = BtStage70State { word0: 0xFFFF_FFFF, word4: 0xFFFF_FFFF };
+        let mut b = B { main_return: 0x1234_5678, ..Default::default() };
+        assert_eq!(bt_stage72_published_callback_b(0x55, 8, &mut state, &mut b), 0x1234_5678);
+        assert_eq!(state.word0, 0x003F_FFFF);
+        assert_eq!(state.word4, 0xFFFF_C0FF);
+        assert_eq!(b.events, [
+            ("main", 0x55, 8),
+            ("publish", STAGE70_BT_PUBLISH_BASE, 0x003F_FFFF),
+            ("publish", STAGE70_BT_PUBLISH_BASE + 4, 0xFFFF_C0FF),
+            ("status", STAGE70_BT_STATUS_BYTE_ADDR, 0),
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_freeze_the_multi_entry_shape() {
+        assert_eq!(STAGE72_CURRENT_BT_CALLBACK_B_ADDR, 0x16F4A8);
+        assert_eq!(STAGE72_CURRENT_BT_CALLBACK_B_THUMB, 0x16F4A9);
+        assert_eq!(STAGE72_BT_AMBIENT_STATE_ADDR, 0x209644);
+        assert_eq!(STAGE72_BT_SHARED_STAGE70_ADDR, 0x16F4AA);
+        assert_eq!(STAGE59_BT_CALLBACK_B_THUMB, STAGE72_CURRENT_BT_CALLBACK_B_THUMB);
+    }
+}

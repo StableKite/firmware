@@ -564,3 +564,11 @@ A material ordering edge occurs before dispatch: firmware unconditionally reads 
 For class two, selector six calls opaque `0x51800` with the entry register shape. Exact zero causes Stage 56 to run as `0x16F438(object, 0)`; a nonzero result skips Stage 56. Both paths then call `0x45624(object, &mut local_halfword)` and return literal one. Selector 20 requires gate byte `0x222708 == 1` and object byte `+0x2D == 0`; on success it ORs only bit 22 into dword `0x209644` and returns zero. Selector 21 first requires nonzero `0x8917C` return, then enters the same gate/object-byte/bit-22 update path. All other selectors return zero.
 
 The binary snapshots `*0x200890` on entry and compares it again before return, calling `0x94C0` on mismatch. That compiler hardening shape is recorded in provenance constants consistently with earlier reconstructed guarded functions; it is not promoted into additional callback business semantics.
+
+## Stage 72 — published callback-B multi-entry closure
+
+Stage 72 closes raw callback-B Thumb pointer `0x16F4A9` that Stage 59 publishes into object slot `+0x14`. The callable entry begins at even address `0x16F4A8`. Its first and only wrapper-specific instruction is a PC-relative `LDR R3` whose literal resolves to stable ambient state-pair address `0x209644`; execution then falls directly into the already recovered Stage-70 shared entry at `0x16F4AA`.
+
+The full callable region from `0x16F4A8` through the Stage-70 epilogue is 90 bytes. After masking the eight relocation bytes inherited from Stage 70, it has exactly one current hit at `0x16F4A8` and one public-legacy structural hit at `0x16C4DC`. Both entry literals resolve to the same state address `0x209644`. This proves a deliberate multi-entry shape rather than a separate duplicate implementation.
+
+The source model therefore specializes Stage 70 with the ambient two-dword state beginning at `0x209644` and delegates directly to `bt_stage70_masked_state_publish`. It adds no new gate, no hidden mutation, and no return transformation. All Stage-70 ordering, mode normalization, Stage-56 trigger, publication, post-publish predicate, and final-return behavior remain authoritative.
