@@ -8420,3 +8420,190 @@ mod stage68_tests {
         assert_eq!(STAGE68_BT_FINALIZE_BOUNDARY, 0x15180);
     }
 }
+
+/// Stage 69: current bounded callback/counter leaf at `0x172660`.
+///
+/// This callback is registered by Stage 68 through raw Thumb pointer `0x172661`.
+/// No public-legacy structural counterpart is promoted for this current-only body.
+pub const STAGE69_CURRENT_BT_BOUNDED_CALLBACK_ADDR: u32 = 0x0017_2660;
+pub const STAGE69_BT_SOURCE_BYTE_ADDR: u32 = 0x0020_2FD4;
+pub const STAGE69_BT_COUNTER_ADDR: u32 = 0x0022_3080;
+pub const STAGE69_BT_LIMIT_ADDR: u32 = 0x0022_3084;
+pub const STAGE69_BT_CONTROL_BYTE_ADDR: u32 = 0x0020_6800;
+pub const STAGE69_BT_CONTEXT_ADDR: u32 = 0x0022_3088;
+pub const STAGE69_BT_PROBE_BOUNDARY: u32 = 0x000B_AC7C;
+pub const STAGE69_BT_NOTIFY_BOUNDARY: u32 = 0x0007_2D00;
+pub const STAGE69_BT_CONTEXT_BOUNDARY: u32 = 0x0001_51BC;
+pub const STAGE69_BT_CLEAR_BOUNDARY: u32 = 0x0000_3D24;
+pub const STAGE69_BT_CLEAR_BYTES: u32 = 24;
+
+pub trait BtStage69Backend {
+    fn read_source_byte(&mut self) -> u8;
+    /// Current `0xBAC7C(source)`. Only the low returned byte is used locally.
+    fn probe_boundary(&mut self, source: u32) -> u32;
+    fn read_counter_byte(&mut self) -> u8;
+    fn read_limit_byte(&mut self) -> u8;
+    fn write_counter_byte(&mut self, value: u8);
+    fn read_control_byte(&mut self) -> u8;
+    /// Current `0x72D00(value)`; return is final only on the fast path.
+    fn notify_boundary(&mut self, value: u32) -> u32;
+    /// Current `0x151BC(context)`; return is ignored locally.
+    fn context_boundary(&mut self, context: u32) -> u32;
+    /// Current tail `0x3D24(context, 0, 24)` on the overflow path.
+    fn clear_boundary(&mut self, context: u32, value: u32, len: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x172660`.
+///
+/// Firmware writes the wrapped incremented counter before deciding the path.
+/// If `limit >= next`, it tail-notifies whether the low probe byte is zero.
+/// Otherwise it resets the counter, may emit one inverted-bit1 notification,
+/// runs the context boundary, and tail-clears exactly 24 bytes.
+pub fn bt_stage69_bounded_callback<B: BtStage69Backend>(backend: &mut B) -> u32 {
+    let source = backend.read_source_byte();
+    let probe = backend.probe_boundary(u32::from(source)) as u8;
+
+    let counter = backend.read_counter_byte();
+    let limit = backend.read_limit_byte();
+    let next = counter.wrapping_add(1);
+    backend.write_counter_byte(next);
+
+    if limit >= next {
+        let is_zero = u32::from(probe == 0);
+        return backend.notify_boundary(is_zero);
+    }
+
+    backend.write_counter_byte(0);
+    let control = backend.read_control_byte();
+    let bit1 = (control >> 1) & 1;
+    if bit1 == probe {
+        let inverted = u32::from(bit1 ^ 1);
+        let _ = backend.notify_boundary(inverted);
+    }
+
+    let _ = backend.context_boundary(STAGE69_BT_CONTEXT_ADDR);
+    backend.clear_boundary(
+        STAGE69_BT_CONTEXT_ADDR,
+        0,
+        STAGE69_BT_CLEAR_BYTES,
+    )
+}
+
+#[cfg(test)]
+mod stage69_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        source: u8,
+        probe: u32,
+        counter: u8,
+        limit: u8,
+        control: u8,
+        notify_return: u32,
+        clear_return: u32,
+        events: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage69Backend for B {
+        fn read_source_byte(&mut self) -> u8 {
+            self.events.push(("source", 0));
+            self.source
+        }
+        fn probe_boundary(&mut self, source: u32) -> u32 {
+            self.events.push(("probe", source));
+            self.probe
+        }
+        fn read_counter_byte(&mut self) -> u8 {
+            self.events.push(("counter", 0));
+            self.counter
+        }
+        fn read_limit_byte(&mut self) -> u8 {
+            self.events.push(("limit", 0));
+            self.limit
+        }
+        fn write_counter_byte(&mut self, value: u8) {
+            self.events.push(("write_counter", u32::from(value)));
+            self.counter = value;
+        }
+        fn read_control_byte(&mut self) -> u8 {
+            self.events.push(("control", 0));
+            self.control
+        }
+        fn notify_boundary(&mut self, value: u32) -> u32 {
+            self.events.push(("notify", value));
+            self.notify_return
+        }
+        fn context_boundary(&mut self, context: u32) -> u32 {
+            self.events.push(("context", context));
+            0xAAAA_AAAA
+        }
+        fn clear_boundary(&mut self, context: u32, value: u32, len: u32) -> u32 {
+            self.events.push(("clear_context", context));
+            self.events.push(("clear_value", value));
+            self.events.push(("clear_len", len));
+            self.clear_return
+        }
+    }
+
+    #[test]
+    fn fast_path_writes_counter_before_zero_probe_notify_and_returns_notify_result() {
+        let mut b = B { source: 9, probe: 0x100, counter: 1, limit: 2, notify_return: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage69_bounded_callback(&mut b), 0xDEAD_BEEF);
+        assert_eq!(b.counter, 2);
+        assert_eq!(b.events, [
+            ("source",0),("probe",9),("counter",0),("limit",0),
+            ("write_counter",2),("notify",1),
+        ]);
+    }
+
+    #[test]
+    fn fast_path_nonzero_probe_notifies_zero() {
+        let mut b = B { probe: 7, counter: 4, limit: 5, notify_return: 11, ..Default::default() };
+        assert_eq!(bt_stage69_bounded_callback(&mut b), 11);
+        assert_eq!(b.events.last(), Some(&("notify", 0)));
+    }
+
+    #[test]
+    fn wrapped_counter_can_reenter_fast_path() {
+        let mut b = B { probe: 1, counter: 255, limit: 0, notify_return: 3, ..Default::default() };
+        assert_eq!(bt_stage69_bounded_callback(&mut b), 3);
+        assert_eq!(b.counter, 0);
+        assert!(!b.events.iter().any(|x| x.0 == "control"));
+    }
+
+    #[test]
+    fn overflow_equal_bit1_emits_inverted_notify_then_context_and_clear() {
+        let mut b = B { probe: 1, counter: 5, limit: 5, control: 0b10, notify_return: 99, clear_return: 0xCAFE_BABE, ..Default::default() };
+        assert_eq!(bt_stage69_bounded_callback(&mut b), 0xCAFE_BABE);
+        assert_eq!(b.counter, 0);
+        assert_eq!(&b.events[b.events.len()-6..], [
+            ("control",0),("notify",0),("context",STAGE69_BT_CONTEXT_ADDR),
+            ("clear_context",STAGE69_BT_CONTEXT_ADDR),("clear_value",0),("clear_len",24),
+        ]);
+    }
+
+    #[test]
+    fn overflow_mismatch_skips_optional_notify() {
+        let mut b = B { probe: 1, counter: 9, limit: 3, control: 0, clear_return: 5, ..Default::default() };
+        assert_eq!(bt_stage69_bounded_callback(&mut b), 5);
+        assert_eq!(b.events.iter().filter(|x| x.0 == "notify").count(), 0);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE69_CURRENT_BT_BOUNDED_CALLBACK_ADDR, 0x172660);
+        assert_eq!(STAGE69_BT_SOURCE_BYTE_ADDR, 0x202FD4);
+        assert_eq!(STAGE69_BT_COUNTER_ADDR, 0x223080);
+        assert_eq!(STAGE69_BT_LIMIT_ADDR, 0x223084);
+        assert_eq!(STAGE69_BT_CONTROL_BYTE_ADDR, 0x206800);
+        assert_eq!(STAGE69_BT_CONTEXT_ADDR, 0x223088);
+        assert_eq!(STAGE69_BT_PROBE_BOUNDARY, 0xBAC7C);
+        assert_eq!(STAGE69_BT_NOTIFY_BOUNDARY, 0x72D00);
+        assert_eq!(STAGE69_BT_CONTEXT_BOUNDARY, 0x151BC);
+        assert_eq!(STAGE69_BT_CLEAR_BOUNDARY, 0x3D24);
+        assert_eq!(STAGE69_BT_CLEAR_BYTES, 24);
+    }
+}
