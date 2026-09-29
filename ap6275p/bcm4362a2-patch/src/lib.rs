@@ -10184,3 +10184,99 @@ mod stage76_tests {
         assert_eq!(STAGE76_BT_STATUS_BYTE_ADDR, 0x20D9A4);
     }
 }
+
+/// Stage 77: current fixed-byte post-boundary initializer at `0x170F48`.
+///
+/// The exact current 30-byte body contains one direct call followed by five
+/// byte stores. Masking the single four-byte call encoding leaves 26 fixed
+/// bytes and yields one current hit plus one public-legacy structural hit at
+/// `0x16D1A0`. Both images resolve the same two literal bases.
+pub const STAGE77_CURRENT_BT_FIXED_INIT_ADDR: u32 = 0x0017_0F48;
+pub const STAGE77_BT_BOUNDARY: u32 = 0x0000_E558;
+pub const STAGE77_BT_BASE_A: u32 = 0x0020_32F2;
+pub const STAGE77_BT_BASE_B: u32 = 0x0020_32DC;
+
+pub trait BtStage77Backend {
+    /// Current `0xE558` is entered before any R0-R3 mutation in this wrapper.
+    fn boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+    fn write_byte(&mut self, address: u32, value: u8);
+}
+
+/// Safe source-level model of current `0x170F48`.
+///
+/// The opaque boundary receives the four incoming argument registers exactly
+/// as they entered the wrapper. Its R0 return remains untouched through all
+/// following stores and is therefore the function's final return.
+pub fn bt_stage77_fixed_post_boundary_init<B: BtStage77Backend>(
+    r0: u32,
+    r1: u32,
+    r2: u32,
+    r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let result = backend.boundary(r0, r1, r2, r3);
+
+    backend.write_byte(STAGE77_BT_BASE_A + 1, 1);
+    backend.write_byte(STAGE77_BT_BASE_B + 2, 5);
+    backend.write_byte(STAGE77_BT_BASE_B + 3, 5);
+    backend.write_byte(STAGE77_BT_BASE_B + 0x0B, 0x82);
+    backend.write_byte(STAGE77_BT_BASE_B + 0x14, 0xB4);
+
+    result
+}
+
+#[cfg(test)]
+mod stage77_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        boundary_return: u32,
+        args: (u32, u32, u32, u32),
+        writes: Vec<(u32, u8)>,
+    }
+
+    impl BtStage77Backend for B {
+        fn boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32 {
+            self.args = (r0, r1, r2, r3);
+            self.boundary_return
+        }
+
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.writes.push((address, value));
+        }
+    }
+
+    #[test]
+    fn forwards_all_four_argument_registers_and_preserves_boundary_return() {
+        let mut b = B { boundary_return: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(
+            bt_stage77_fixed_post_boundary_init(1, 2, 3, 4, &mut b),
+            0xDEAD_BEEF
+        );
+        assert_eq!(b.args, (1, 2, 3, 4));
+    }
+
+    #[test]
+    fn writes_exact_bytes_in_binary_order() {
+        let mut b = B::default();
+        let _ = bt_stage77_fixed_post_boundary_init(0, 0, 0, 0, &mut b);
+        assert_eq!(b.writes, [
+            (0x2032F3, 1),
+            (0x2032DE, 5),
+            (0x2032DF, 5),
+            (0x2032E7, 0x82),
+            (0x2032F0, 0xB4),
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE77_CURRENT_BT_FIXED_INIT_ADDR, 0x170F48);
+        assert_eq!(STAGE77_BT_BOUNDARY, 0xE558);
+        assert_eq!(STAGE77_BT_BASE_A, 0x2032F2);
+        assert_eq!(STAGE77_BT_BASE_B, 0x2032DC);
+    }
+}

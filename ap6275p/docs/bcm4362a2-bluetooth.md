@@ -618,3 +618,11 @@ Every optional callback access re-reads dword `0x203488` before loading its slot
 When the second mode read is nonzero, optional slots `+0x0C` and `+0x10` run. When it is zero, optional slots `+0x14`, `+0x18`, `+0x1C`, `+0x20`, and `+0x24` run instead. After either branch firmware re-reads the callback-table root one final time and loads slot `+0x28`. A null final slot returns the current R0 token; a nonnull final slot is reached by frame restore plus `BX`, so its return is the function's final return.
 
 The PC-relative literal pool immediately after the body resolves to `0x201AF4`, `0x203488`, `0x20DAA5`, `0x20DA8C`, `0x20375C`, and `0x20D9A2`. The source model preserves local gate returns, the unguarded provider call, callback-root re-reads, two separate mode reads, R0 chaining, status-write placement, branch-specific slot order, and final tail-call behavior without assigning wider semantics to the indirect targets.
+
+## Stage 77 — fixed-byte post-boundary initializer
+
+Stage 77 reconstructs current `0x170F48`, an exact 30-byte wrapper consisting of one direct call followed by five byte stores. The current raw body has exactly one hit. Masking the single four-byte call encoding leaves 26 fixed bytes and yields exactly one current hit plus one public-legacy structural counterpart at `0x16D1A0`. The two literal bases are stable across both images: `0x2032F2` and `0x2032DC`.
+
+No incoming argument register is modified before the call, so opaque boundary `0xE558` receives the incoming R0, R1, R2, and R3 values exactly. The boundary's R0 return remains live through the rest of the wrapper because the post-call code uses only R2/R3 and memory stores; that boundary return is therefore the wrapper's final return.
+
+After the call returns, firmware writes the following bytes in order: `1` to `0x2032F3`; `5` to `0x2032DE`; `5` to `0x2032DF`; `0x82` to `0x2032E7`; and `0xB4` to `0x2032F0`. There are no local gates, conditional branches, or return transformations. The source model keeps `0xE558` opaque while freezing the exact argument forwarding, write order, values, addresses, and return preservation.
