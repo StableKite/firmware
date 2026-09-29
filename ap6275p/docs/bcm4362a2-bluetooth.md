@@ -656,3 +656,13 @@ Stage 80 reconstructs current `0x171B5C`, an exact 24-byte leaf with SHA-256 `8d
 The body contains no runtime calls and no conditional control flow. Four current literals resolve to `0x204B18`, `0x3D090`, `0x204B10`, and `0x352600`. Firmware first stores the same dword `0x3D090` into pointer slots `0x204B18` and `0x204B10`, then writes zero to dword `0x352600`, then writes literal `0x1FFF` to dword `0x352614`.
 
 R0 is never modified, so the function returns the incoming R0 value exactly. The source model exposes only the four ordered dword writes and preserves that return shape; no broader role is assigned to the pointed-to regions.
+
+## Stage 81 — current critical-state repair wrapper
+
+Stage 81 reconstructs current `0x171B84`, a 62-byte wrapper whose final wide branch restores the critical-state token rather than returning through a local `POP {pc}`. Masking the three four-byte control-transfer encodings leaves 50 fixed bytes and exactly one current structural hit. No public-legacy structural counterpart is promoted; this stage is current-HCD-first.
+
+The wrapper preserves incoming R0, then calls the already identified critical-state swap entry `0x780(1)` and retains its returned token. It reads dword `0x352614` and compares it with literal `0x1FFF`. Only on mismatch does it write zero to `0x352600` and `0x1FFF` to `0x352614`, in that order.
+
+After the repair gate it reads byte `0x2170EF`. A nonzero byte skips the optional call. A zero byte is first changed to one, then firmware calls opaque `0x15180` with the exact register shape `(0x217174, original incoming R0, 1)`. That call's return is ignored.
+
+Finally the saved critical token is restored into R0, the local frame is popped without PC, and firmware tail-branches to `0x780(token)`. The return from that restore boundary is therefore the function's final return. The source model preserves the critical enter/repair/flag/finalize/restore order and keeps the `0x15180` contract opaque.

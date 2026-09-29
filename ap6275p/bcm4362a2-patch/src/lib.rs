@@ -10754,3 +10754,169 @@ mod stage80_tests {
         assert_eq!(STAGE80_BT_STATE_WORD14_VALUE, 0x1FFF);
     }
 }
+
+/// Stage 81: current critical-state repair wrapper at `0x171B84`.
+///
+/// The exact current 62-byte body contains two calls/tail-transfers to the already
+/// identified critical-state swap boundary at `0x780` and one opaque call to
+/// `0x15180`. No public-legacy structural counterpart is promoted.
+pub const STAGE81_CURRENT_BT_CRITICAL_REPAIR_ADDR: u32 = 0x0017_1B84;
+pub const STAGE81_BT_CRITICAL_BOUNDARY: u32 = ROM_CRITICAL_STATE_SWAP_LIKE_ADDR;
+pub const STAGE81_BT_EXPECTED_WORD_ADDR: u32 = 0x0035_2614;
+pub const STAGE81_BT_EXPECTED_WORD_VALUE: u32 = 0x0000_1FFF;
+pub const STAGE81_BT_RESET_WORD_ADDR: u32 = 0x0035_2600;
+pub const STAGE81_BT_FLAG_ADDR: u32 = 0x0021_70EF;
+pub const STAGE81_BT_FINALIZE_CONTEXT_ADDR: u32 = 0x0021_7174;
+pub const STAGE81_BT_FINALIZE_BOUNDARY: u32 = 0x0001_5180;
+
+pub trait BtStage81Backend {
+    /// Current `0x780(value)`. The first call receives literal one; the final
+    /// tail call receives the token returned by the first call.
+    fn critical_swap(&mut self, value: u32) -> u32;
+    fn read_word(&mut self, address: u32) -> u32;
+    fn write_word(&mut self, address: u32, value: u32);
+    fn read_flag_byte(&mut self, address: u32) -> u8;
+    fn write_flag_byte(&mut self, address: u32, value: u8);
+
+    /// Current opaque `0x15180(0x217174, incoming_r0, 1)` call shape.
+    /// Its return is ignored locally.
+    fn finalize_boundary(&mut self, context: u32, incoming_r0: u32, literal_one: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171B84`.
+///
+/// Firmware enters the critical-state boundary with literal one and preserves
+/// the returned token. It repairs the two fixed dwords only when the expected
+/// word differs from `0x1FFF`. It then performs a one-time flag transition and
+/// optional opaque boundary call. Finally it tail-restores the critical state
+/// with the saved token; that restore return is the wrapper's final return.
+pub fn bt_stage81_critical_repair<B: BtStage81Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let token = backend.critical_swap(1);
+
+    if backend.read_word(STAGE81_BT_EXPECTED_WORD_ADDR) != STAGE81_BT_EXPECTED_WORD_VALUE {
+        backend.write_word(STAGE81_BT_RESET_WORD_ADDR, 0);
+        backend.write_word(STAGE81_BT_EXPECTED_WORD_ADDR, STAGE81_BT_EXPECTED_WORD_VALUE);
+    }
+
+    if backend.read_flag_byte(STAGE81_BT_FLAG_ADDR) == 0 {
+        backend.write_flag_byte(STAGE81_BT_FLAG_ADDR, 1);
+        let _ = backend.finalize_boundary(STAGE81_BT_FINALIZE_CONTEXT_ADDR, incoming_r0, 1);
+    }
+
+    backend.critical_swap(token)
+}
+
+#[cfg(test)]
+mod stage81_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        expected: u32,
+        flag: u8,
+        enter_token: u32,
+        restore_return: u32,
+        finalize_return: u32,
+        events: Vec<(&'static str, u32, u32, u32)>,
+    }
+
+    impl BtStage81Backend for B {
+        fn critical_swap(&mut self, value: u32) -> u32 {
+            self.events.push(("critical", value, 0, 0));
+            if value == 1 { self.enter_token } else { self.restore_return }
+        }
+        fn read_word(&mut self, address: u32) -> u32 {
+            self.events.push(("read_word", address, 0, 0));
+            self.expected
+        }
+        fn write_word(&mut self, address: u32, value: u32) {
+            self.events.push(("write_word", address, value, 0));
+            if address == STAGE81_BT_EXPECTED_WORD_ADDR { self.expected = value; }
+        }
+        fn read_flag_byte(&mut self, address: u32) -> u8 {
+            self.events.push(("read_flag", address, 0, 0));
+            self.flag
+        }
+        fn write_flag_byte(&mut self, address: u32, value: u8) {
+            self.events.push(("write_flag", address, u32::from(value), 0));
+            self.flag = value;
+        }
+        fn finalize_boundary(&mut self, context: u32, incoming_r0: u32, literal_one: u32) -> u32 {
+            self.events.push(("finalize", context, incoming_r0, literal_one));
+            self.finalize_return
+        }
+    }
+
+    #[test]
+    fn matching_word_and_set_flag_only_enter_and_restore_critical_state() {
+        let mut b = B {
+            expected: STAGE81_BT_EXPECTED_WORD_VALUE,
+            flag: 1,
+            enter_token: 0x55,
+            restore_return: 0xABCD,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage81_critical_repair(0x1234, &mut b), 0xABCD);
+        assert_eq!(b.events, [
+            ("critical", 1, 0, 0),
+            ("read_word", STAGE81_BT_EXPECTED_WORD_ADDR, 0, 0),
+            ("read_flag", STAGE81_BT_FLAG_ADDR, 0, 0),
+            ("critical", 0x55, 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn mismatch_and_zero_flag_preserve_repair_and_finalize_order() {
+        let mut b = B {
+            expected: 7,
+            flag: 0,
+            enter_token: 0xCAFE,
+            restore_return: 0xDEAD_BEEF,
+            finalize_return: 0x1111,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage81_critical_repair(0x2233_4455, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.expected, STAGE81_BT_EXPECTED_WORD_VALUE);
+        assert_eq!(b.flag, 1);
+        assert_eq!(b.events, [
+            ("critical", 1, 0, 0),
+            ("read_word", STAGE81_BT_EXPECTED_WORD_ADDR, 0, 0),
+            ("write_word", STAGE81_BT_RESET_WORD_ADDR, 0, 0),
+            ("write_word", STAGE81_BT_EXPECTED_WORD_ADDR, STAGE81_BT_EXPECTED_WORD_VALUE, 0),
+            ("read_flag", STAGE81_BT_FLAG_ADDR, 0, 0),
+            ("write_flag", STAGE81_BT_FLAG_ADDR, 1, 0),
+            ("finalize", STAGE81_BT_FINALIZE_CONTEXT_ADDR, 0x2233_4455, 1),
+            ("critical", 0xCAFE, 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn finalize_return_is_ignored_and_restore_return_is_final() {
+        let mut b = B {
+            expected: STAGE81_BT_EXPECTED_WORD_VALUE,
+            flag: 0,
+            enter_token: 9,
+            restore_return: 77,
+            finalize_return: u32::MAX,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage81_critical_repair(0, &mut b), 77);
+    }
+
+    #[test]
+    fn provenance_constants_are_current_only() {
+        assert_eq!(STAGE81_CURRENT_BT_CRITICAL_REPAIR_ADDR, 0x171B84);
+        assert_eq!(STAGE81_BT_CRITICAL_BOUNDARY, 0x780);
+        assert_eq!(STAGE81_BT_EXPECTED_WORD_ADDR, 0x352614);
+        assert_eq!(STAGE81_BT_EXPECTED_WORD_VALUE, 0x1FFF);
+        assert_eq!(STAGE81_BT_RESET_WORD_ADDR, 0x352600);
+        assert_eq!(STAGE81_BT_FLAG_ADDR, 0x2170EF);
+        assert_eq!(STAGE81_BT_FINALIZE_CONTEXT_ADDR, 0x217174);
+        assert_eq!(STAGE81_BT_FINALIZE_BOUNDARY, 0x15180);
+    }
+}
