@@ -9423,3 +9423,156 @@ mod stage73_tests {
         assert_eq!(STAGE73_BT_PUBLISH_DEST_ADDR,0x20A22A);
     }
 }
+
+/// Stage 74: current signed-threshold selector at `0x16F820`.
+///
+/// The exact current body is 76 bytes, contains no runtime calls and no literal loads,
+/// and has exactly one hit in the current executable range. No exact public-legacy body
+/// counterpart exists, so this reconstruction is current-HCD-first.
+///
+/// Firmware reads a record pointer from `context + 0x94 + selector*4`, scans record bytes
+/// 1 through 7 as signed i8 thresholds, and on the first threshold below the signed 32-bit
+/// target chooses the current or previous index using the exact signed-8-bit distance
+/// arithmetic. If no threshold qualifies it returns seven.
+pub const STAGE74_CURRENT_BT_SIGNED_THRESHOLD_SELECTOR_ADDR: u32 = 0x0016_F820;
+pub const STAGE74_BT_TABLE_PTR_OFFSET: u32 = 0x94;
+pub const STAGE74_BT_FIRST_INDEX: u8 = 1;
+pub const STAGE74_BT_SENTINEL_INDEX: u8 = 7;
+pub const STAGE74_BT_SCAN_LIMIT: u8 = 8;
+
+pub trait BtStage74Backend {
+    fn read_record_ptr(&mut self, address: u32) -> u32;
+    fn read_byte(&mut self, address: u32) -> u8;
+}
+
+/// Safe source-level model of current `0x16F820`.
+///
+/// The initial threshold comparison uses the full incoming R0 as signed i32. Only after a
+/// qualifying threshold is found does firmware truncate R0 to u8 for the distance math.
+/// That awkward split is preserved intentionally.
+pub fn bt_stage74_signed_threshold_selector<B: BtStage74Backend>(
+    target: u32,
+    selector: u32,
+    context: u32,
+    backend: &mut B,
+) -> u32 {
+    let cell = context
+        .wrapping_add(selector.wrapping_shl(2))
+        .wrapping_add(STAGE74_BT_TABLE_PTR_OFFSET);
+    let record = backend.read_record_ptr(cell);
+    let mut scan = record.wrapping_add(1);
+    let mut index = STAGE74_BT_FIRST_INDEX;
+
+    loop {
+        let scan_byte = backend.read_byte(scan);
+        scan = scan.wrapping_add(1);
+        let scan_signed = i32::from(scan_byte as i8);
+
+        if scan_signed >= target as i32 {
+            index = index.wrapping_add(1);
+            if index == STAGE74_BT_SCAN_LIMIT {
+                return u32::from(STAGE74_BT_SENTINEL_INDEX);
+            }
+            continue;
+        }
+
+        let base_byte = backend.read_byte(record);
+        let target_low = target as u8;
+
+        let mut base_distance = target_low.wrapping_sub(base_byte) as i8;
+        if base_distance < 0 {
+            base_distance = base_distance.wrapping_neg();
+        }
+
+        let scan_distance = target_low.wrapping_sub(scan_byte) as i8;
+        if base_distance > scan_distance {
+            return u32::from(index);
+        }
+        return u32::from(index.wrapping_sub(1));
+    }
+}
+
+#[cfg(test)]
+mod stage74_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    struct B {
+        cell: u32,
+        record: u32,
+        bytes: [u8; 8],
+        reads: Vec<(u32, u8)>,
+    }
+
+    impl B {
+        fn new(record: u32, bytes: [u8; 8]) -> Self {
+            Self { cell: 0, record, bytes, reads: Vec::new() }
+        }
+    }
+
+    impl BtStage74Backend for B {
+        fn read_record_ptr(&mut self, address: u32) -> u32 {
+            self.cell = address;
+            self.record
+        }
+        fn read_byte(&mut self, address: u32) -> u8 {
+            let offset = address.wrapping_sub(self.record) as usize;
+            let value = self.bytes[offset];
+            self.reads.push((address, value));
+            value
+        }
+    }
+
+    #[test]
+    fn pointer_cell_uses_context_plus_selector_times_four_plus_0x94() {
+        let mut b = B::new(0x5000, [0, 20, 20, 20, 20, 20, 20, 20]);
+        assert_eq!(bt_stage74_signed_threshold_selector(10, 3, 0x1000, &mut b), 7);
+        assert_eq!(b.cell, 0x1000 + 3 * 4 + 0x94);
+    }
+
+    #[test]
+    fn no_qualifying_threshold_reads_only_bytes_one_through_seven_and_returns_seven() {
+        let mut b = B::new(0x6000, [0xAA, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(bt_stage74_signed_threshold_selector(5, 0, 0, &mut b), 7);
+        assert_eq!(b.reads.len(), 7);
+        assert_eq!(b.reads[0].0, 0x6001);
+        assert_eq!(b.reads[6].0, 0x6007);
+        assert!(!b.reads.iter().any(|x|x.0 == 0x6000));
+    }
+
+    #[test]
+    fn qualifying_first_threshold_can_choose_previous_index() {
+        let mut b = B::new(0x7000, [8, 5, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bt_stage74_signed_threshold_selector(10, 0, 0, &mut b), 0);
+        assert_eq!(b.reads.as_slice(), &[(0x7001, 5), (0x7000, 8)]);
+    }
+
+    #[test]
+    fn qualifying_threshold_can_choose_current_index() {
+        let mut b = B::new(0x7100, [0, 9, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bt_stage74_signed_threshold_selector(10, 0, 0, &mut b), 1);
+    }
+
+    #[test]
+    fn full_signed_target_is_used_before_low_byte_distance_math() {
+        let mut b = B::new(0x7200, [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(bt_stage74_signed_threshold_selector(u32::MAX, 0, 0, &mut b), 7);
+        assert_eq!(b.reads.len(), 7);
+    }
+
+    #[test]
+    fn negative_base_distance_uses_wrapping_i8_absolute_shape() {
+        let mut b = B::new(0x7300, [5, 0xF9, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bt_stage74_signed_threshold_selector(250, 0, 0, &mut b), 1);
+    }
+
+    #[test]
+    fn provenance_constants_are_current_only() {
+        assert_eq!(STAGE74_CURRENT_BT_SIGNED_THRESHOLD_SELECTOR_ADDR, 0x16F820);
+        assert_eq!(STAGE74_BT_TABLE_PTR_OFFSET, 0x94);
+        assert_eq!(STAGE74_BT_FIRST_INDEX, 1);
+        assert_eq!(STAGE74_BT_SENTINEL_INDEX, 7);
+        assert_eq!(STAGE74_BT_SCAN_LIMIT, 8);
+    }
+}
