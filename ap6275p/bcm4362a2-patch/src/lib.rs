@@ -10280,3 +10280,150 @@ mod stage77_tests {
         assert_eq!(STAGE77_BT_BASE_B, 0x2032DC);
     }
 }
+
+/// Stage 78: current 16-bit-progress table fold at `0x1719B8`.
+///
+/// The exact current 34-byte body is byte-identical to the public-legacy
+/// structural counterpart at `0x16DB00`; both bodies are unique in their
+/// respective images. The table base itself relocates from legacy `0x2220A8`
+/// to current `0x222154`.
+pub const STAGE78_CURRENT_BT_TABLE_FOLD_ADDR: u32 = 0x0017_19B8;
+pub const STAGE78_BT_TABLE_BASE: u32 = 0x0022_2154;
+
+pub trait BtStage78Backend {
+    fn read_byte(&mut self, address: u32) -> u8;
+    fn read_table_word(&mut self, address: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x1719B8`.
+///
+/// Firmware computes `progress = UXTH(ptr - start)` on every iteration. That
+/// 16-bit truncation is semantically material: lengths above `0xFFFF` never
+/// satisfy the unsigned exit comparison, so the exact firmware loop does not
+/// terminate for such lengths. This model intentionally preserves that edge.
+pub fn bt_stage78_table_fold<B: BtStage78Backend>(
+    mut accumulator: u32,
+    start: u32,
+    length: u32,
+    backend: &mut B,
+) -> u32 {
+    let mut ptr = start;
+    loop {
+        let progress = ptr.wrapping_sub(start) as u16;
+        if length <= u32::from(progress) {
+            return accumulator;
+        }
+
+        let byte = backend.read_byte(ptr);
+        ptr = ptr.wrapping_add(1);
+
+        let index = ((u32::from(byte) ^ accumulator) & 0xFF) as u32;
+        let table_word = backend.read_table_word(
+            STAGE78_BT_TABLE_BASE.wrapping_add(index.wrapping_mul(4)),
+        );
+        accumulator = table_word ^ (accumulator >> 8);
+    }
+}
+
+#[cfg(test)]
+mod stage78_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        bytes: Vec<(u32, u8)>,
+        table: Vec<(u32, u32)>,
+        reads: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage78Backend for B {
+        fn read_byte(&mut self, address: u32) -> u8 {
+            self.reads.push(("byte", address));
+            self.bytes
+                .iter()
+                .find(|x| x.0 == address)
+                .map(|x| x.1)
+                .expect("missing byte")
+        }
+
+        fn read_table_word(&mut self, address: u32) -> u32 {
+            self.reads.push(("table", address));
+            self.table
+                .iter()
+                .find(|x| x.0 == address)
+                .map(|x| x.1)
+                .expect("missing table word")
+        }
+    }
+
+    #[test]
+    fn zero_length_returns_without_memory_reads() {
+        let mut b = B::default();
+        assert_eq!(bt_stage78_table_fold(0x1234_5678, 0x2000, 0, &mut b), 0x1234_5678);
+        assert!(b.reads.is_empty());
+    }
+
+    #[test]
+    fn one_byte_uses_low_xor_byte_as_table_index() {
+        let acc = 0x1234_5678;
+        let byte = 0xA5u8;
+        let index = (u32::from(byte) ^ acc) & 0xFF;
+        let addr = STAGE78_BT_TABLE_BASE + index * 4;
+        let mut b = B {
+            bytes: std::vec![(0x1000, byte)],
+            table: std::vec![(addr, 0xDEAD_BEEF)],
+            ..Default::default()
+        };
+        assert_eq!(
+            bt_stage78_table_fold(acc, 0x1000, 1, &mut b),
+            0xDEAD_BEEF ^ (acc >> 8)
+        );
+        assert_eq!(b.reads, [("byte", 0x1000), ("table", addr)]);
+    }
+
+    #[test]
+    fn multiple_bytes_preserve_pointer_order_and_accumulator_chaining() {
+        let start = 0x3000;
+        let first_acc = 0x0000_00AA;
+        let b0 = 0x10u8;
+        let idx0 = (u32::from(b0) ^ first_acc) & 0xFF;
+        let t0 = 0x1122_3344;
+        let acc1 = t0 ^ (first_acc >> 8);
+        let b1 = 0x20u8;
+        let idx1 = (u32::from(b1) ^ acc1) & 0xFF;
+        let t1 = 0x5566_7788;
+        let mut b = B {
+            bytes: std::vec![(start, b0), (start + 1, b1)],
+            table: std::vec![
+                (STAGE78_BT_TABLE_BASE + idx0 * 4, t0),
+                (STAGE78_BT_TABLE_BASE + idx1 * 4, t1),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            bt_stage78_table_fold(first_acc, start, 2, &mut b),
+            t1 ^ (acc1 >> 8)
+        );
+        assert_eq!(b.reads[0], ("byte", start));
+        assert_eq!(b.reads[2], ("byte", start + 1));
+    }
+
+    #[test]
+    fn progress_is_16_bit_truncated() {
+        // Freeze the arithmetic edge without executing the intentionally
+        // nonterminating >0xFFFF firmware case.
+        let start = 0xFFFF_FFFEu32;
+        let ptr = start.wrapping_add(0x1_0001);
+        let progress = ptr.wrapping_sub(start) as u16;
+        assert_eq!(progress, 1);
+        assert!(!(0x1_0000u32 <= u32::from(progress)));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE78_CURRENT_BT_TABLE_FOLD_ADDR, 0x1719B8);
+        assert_eq!(STAGE78_BT_TABLE_BASE, 0x222154);
+    }
+}

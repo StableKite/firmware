@@ -626,3 +626,13 @@ Stage 77 reconstructs current `0x170F48`, an exact 30-byte wrapper consisting of
 No incoming argument register is modified before the call, so opaque boundary `0xE558` receives the incoming R0, R1, R2, and R3 values exactly. The boundary's R0 return remains live through the rest of the wrapper because the post-call code uses only R2/R3 and memory stores; that boundary return is therefore the wrapper's final return.
 
 After the call returns, firmware writes the following bytes in order: `1` to `0x2032F3`; `5` to `0x2032DE`; `5` to `0x2032DF`; `0x82` to `0x2032E7`; and `0xB4` to `0x2032F0`. There are no local gates, conditional branches, or return transformations. The source model keeps `0xE558` opaque while freezing the exact argument forwarding, write order, values, addresses, and return preservation.
+
+## Stage 78 — 16-bit-progress table fold
+
+Stage 78 reconstructs current `0x1719B8`, an exact 34-byte leaf with no runtime calls. The body is byte-identical to the public-legacy structural counterpart at `0x16DB00` and appears exactly once in each image. The PC-relative table literal relocates from legacy `0x2220A8` to current `0x222154`.
+
+The function receives an accumulator in R0, a byte pointer in R1, and an unsigned length in R2. R4 is initialized to the start pointer. At the top of every loop iteration firmware computes `R4 - R1`, truncates that difference with `UXTH`, and performs an unsigned `R2 <= progress` exit test. This is not equivalent to comparing the full pointer delta. In particular, lengths greater than `0xFFFF` never satisfy the local exit condition because the observed progress is always a 16-bit value; the source model preserves that exact edge rather than silently widening the counter.
+
+When the loop continues, firmware reads one byte from the current pointer and post-increments the pointer. It XORs that byte with the current accumulator, keeps only the low eight bits as a table index, loads a dword from `0x222154 + index*4`, and computes the next accumulator as `table_word ^ (accumulator >> 8)`. The loop then repeats. Length zero returns immediately without reading input or table memory.
+
+The source model exposes only byte and table-word reads and preserves 32-bit wrapping pointer arithmetic, 16-bit progress truncation, low-byte index formation, accumulator chaining, and the exact return value.
