@@ -10674,3 +10674,83 @@ mod stage79_tests {
         assert_eq!(STAGE79_BT_COPY_SOURCE_PTR_ADDR,0x200748);
     }
 }
+
+/// Stage 80: current fixed global initializer at `0x171B5C`.
+///
+/// The exact current 24-byte leaf is unique in the current HCD. No public
+/// legacy structural counterpart is promoted, including after masking only
+/// the four PC-relative literal imm8 bytes.
+pub const STAGE80_CURRENT_BT_FIXED_GLOBAL_INIT_ADDR: u32 = 0x0017_1B5C;
+pub const STAGE80_BT_POINTER_SLOT_A_ADDR: u32 = 0x0020_4B18;
+pub const STAGE80_BT_POINTER_SLOT_B_ADDR: u32 = 0x0020_4B10;
+pub const STAGE80_BT_SHARED_POINTER_VALUE: u32 = 0x0003_D090;
+pub const STAGE80_BT_STATE_BASE_ADDR: u32 = 0x0035_2600;
+pub const STAGE80_BT_STATE_WORD14_ADDR: u32 = STAGE80_BT_STATE_BASE_ADDR + 0x14;
+pub const STAGE80_BT_STATE_WORD14_VALUE: u32 = 0x0000_1FFF;
+
+pub trait BtStage80Backend {
+    fn write32(&mut self, address: u32, value: u32);
+}
+
+/// Safe source-level model of current `0x171B5C`.
+///
+/// Firmware performs four writes in this exact order and never modifies R0,
+/// so the incoming R0 value is the final return.
+pub fn bt_stage80_fixed_global_init<B: BtStage80Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    backend.write32(STAGE80_BT_POINTER_SLOT_A_ADDR, STAGE80_BT_SHARED_POINTER_VALUE);
+    backend.write32(STAGE80_BT_POINTER_SLOT_B_ADDR, STAGE80_BT_SHARED_POINTER_VALUE);
+    backend.write32(STAGE80_BT_STATE_BASE_ADDR, 0);
+    backend.write32(STAGE80_BT_STATE_WORD14_ADDR, STAGE80_BT_STATE_WORD14_VALUE);
+    incoming_r0
+}
+
+#[cfg(test)]
+mod stage80_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        writes: Vec<(u32, u32)>,
+    }
+
+    impl BtStage80Backend for B {
+        fn write32(&mut self, address: u32, value: u32) {
+            self.writes.push((address, value));
+        }
+    }
+
+    #[test]
+    fn writes_exact_values_in_binary_order() {
+        let mut b = B::default();
+        assert_eq!(bt_stage80_fixed_global_init(0xAABB_CCDD, &mut b), 0xAABB_CCDD);
+        assert_eq!(b.writes, [
+            (STAGE80_BT_POINTER_SLOT_A_ADDR, STAGE80_BT_SHARED_POINTER_VALUE),
+            (STAGE80_BT_POINTER_SLOT_B_ADDR, STAGE80_BT_SHARED_POINTER_VALUE),
+            (STAGE80_BT_STATE_BASE_ADDR, 0),
+            (STAGE80_BT_STATE_WORD14_ADDR, STAGE80_BT_STATE_WORD14_VALUE),
+        ]);
+    }
+
+    #[test]
+    fn return_is_incoming_r0_even_for_zero() {
+        let mut b = B::default();
+        assert_eq!(bt_stage80_fixed_global_init(0, &mut b), 0);
+        assert_eq!(b.writes.len(), 4);
+    }
+
+    #[test]
+    fn provenance_constants_are_current_only() {
+        assert_eq!(STAGE80_CURRENT_BT_FIXED_GLOBAL_INIT_ADDR, 0x171B5C);
+        assert_eq!(STAGE80_BT_POINTER_SLOT_A_ADDR, 0x204B18);
+        assert_eq!(STAGE80_BT_POINTER_SLOT_B_ADDR, 0x204B10);
+        assert_eq!(STAGE80_BT_SHARED_POINTER_VALUE, 0x3D090);
+        assert_eq!(STAGE80_BT_STATE_BASE_ADDR, 0x352600);
+        assert_eq!(STAGE80_BT_STATE_WORD14_ADDR, 0x352614);
+        assert_eq!(STAGE80_BT_STATE_WORD14_VALUE, 0x1FFF);
+    }
+}

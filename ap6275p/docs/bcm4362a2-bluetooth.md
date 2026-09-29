@@ -648,3 +648,11 @@ Current dword `0x222DF4` selects the span. If nonzero, previous fold dword `0x22
 Both paths call already-recovered Stage 78 at `0x1719B8` as `(0xFFFFFFFF, 0x222E04, length)`. Stage 78 preserves R1/R2 and returns with R3 equal to terminating 16-bit progress; for local lengths 32 and 44 this is exactly `length`. The immediately following opaque `0x19318` therefore receives `(fold_result, 0x222E04, length, length)`. Its return is ignored. Finally firmware writes dword one to `0x222DF4`, stores the Stage-78 fold result to `0x222DFC`, and returns that fold result.
 
 Public-legacy literals retain the same external snapshot addresses and pointer cell but relocate the buffer/state block from current `0x222DF4/0x222DFC/0x222E04` to legacy `0x222C60/0x222C68/0x222C70`. The source model keeps `0x19754` and `0x19318` opaque and composes the known memcpy/Stage-78 behavior without assigning broader protocol meaning.
+
+## Stage 80 — current fixed global initializer
+
+Stage 80 reconstructs current `0x171B5C`, an exact 24-byte leaf with SHA-256 `8d7e0bc7b879564e498bf8d2d93e8717936a8149f7abfb214fe216586a9fc60b`. The exact body has one current hit. A public-legacy counterpart is not promoted: even after masking only the four PC-relative `LDR literal` imm8 bytes, the remaining 20-byte structural pattern has no legacy hit.
+
+The body contains no runtime calls and no conditional control flow. Four current literals resolve to `0x204B18`, `0x3D090`, `0x204B10`, and `0x352600`. Firmware first stores the same dword `0x3D090` into pointer slots `0x204B18` and `0x204B10`, then writes zero to dword `0x352600`, then writes literal `0x1FFF` to dword `0x352614`.
+
+R0 is never modified, so the function returns the incoming R0 value exactly. The source model exposes only the four ordered dword writes and preserves that return shape; no broader role is assigned to the pointed-to regions.
