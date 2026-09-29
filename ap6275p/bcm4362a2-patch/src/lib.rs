@@ -10427,3 +10427,250 @@ mod stage78_tests {
         assert_eq!(STAGE78_BT_TABLE_BASE, 0x222154);
     }
 }
+
+/// Stage 79: current snapshot-and-table-fold wrapper at `0x1719E0`.
+///
+/// The exact current 112-byte body is a relocation-normalized structural
+/// counterpart of public-legacy `0x16DB28`. The wrapper snapshots seven
+/// external dwords into a fixed buffer, chooses a 32- or 44-byte fold span,
+/// delegates the fold to already-recovered Stage 78, then publishes the result.
+pub const STAGE79_CURRENT_BT_SNAPSHOT_FOLD_ADDR: u32 = 0x0017_19E0;
+pub const STAGE79_BT_PRELUDE_BOUNDARY: u32 = 0x0001_9754;
+pub const STAGE79_BT_MEMCPY_BOUNDARY: u32 = 0x0000_3DB4;
+pub const STAGE79_BT_STAGE78_ADDR: u32 = STAGE78_CURRENT_BT_TABLE_FOLD_ADDR;
+pub const STAGE79_BT_POST_FOLD_BOUNDARY: u32 = 0x0001_9318;
+pub const STAGE79_BT_BUFFER_BASE: u32 = 0x0022_2E04;
+pub const STAGE79_BT_PREVIOUS_FOLD_ADDR: u32 = 0x0022_2DFC;
+pub const STAGE79_BT_INITIALIZED_ADDR: u32 = 0x0022_2DF4;
+pub const STAGE79_BT_COPY_SOURCE_PTR_ADDR: u32 = 0x0020_0748;
+pub const STAGE79_BT_SOURCE_WORD_ADDRS: [u32; 7] = [
+    0x0031_8088,
+    0x0032_A004,
+    0x0031_86A0,
+    0x0041_0434,
+    0x0041_079C,
+    0x0041_00AC,
+    0x0041_0548,
+];
+pub const STAGE79_BT_SHORT_LENGTH: u32 = 0x20;
+pub const STAGE79_BT_LONG_LENGTH: u32 = 0x2C;
+pub const STAGE79_BT_INITIAL_ACCUMULATOR: u32 = 0xFFFF_FFFF;
+
+pub trait BtStage79Backend {
+    /// Opaque current `0x19754`, called before every snapshot read.
+    fn prelude(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+    fn read_source_word(&mut self, address: u32) -> u32;
+    fn write_buffer_word(&mut self, address: u32, value: u32);
+    fn read_initialized_word(&mut self) -> u32;
+    fn read_previous_fold(&mut self) -> u32;
+    fn read_copy_source_ptr(&mut self) -> u32;
+
+    /// Current `0x3DB4(buffer+0x1C, source_ptr-4, 4)`.
+    /// Stage 6 already identified this runtime target as the memcpy primitive.
+    fn copy_four_bytes(&mut self, destination: u32, source: u32);
+
+    /// Already-recovered current Stage 78 at `0x1719B8`.
+    fn stage78_fold(&mut self, accumulator: u32, start: u32, length: u32) -> u32;
+
+    /// Opaque current `0x19318`. Stage 78 returns with R1/R2 preserved and
+    /// R3 equal to the terminating 16-bit progress; for local lengths 0x20
+    /// and 0x2C that value equals `length`.
+    fn post_fold(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+
+    fn write_initialized_word(&mut self, value: u32);
+    fn write_previous_fold(&mut self, value: u32);
+}
+
+/// Safe source-level model of current `0x1719E0`.
+///
+/// The prelude return and post-fold return are ignored. The final return is
+/// always the Stage-78 fold result. When the initialized word is nonzero,
+/// the previous fold is copied into buffer +0x1C and only the first 32 bytes
+/// are folded. When zero, firmware copies four bytes from
+/// `*(0x200748)-4` into buffer +0x1C and folds 44 bytes, intentionally
+/// exposing the existing ambient buffer tail +0x20..+0x2B.
+pub fn bt_stage79_snapshot_fold<B: BtStage79Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let _ = backend.prelude(incoming_r0, incoming_r1, incoming_r2, incoming_r3);
+
+    let mut index = 0usize;
+    while index < STAGE79_BT_SOURCE_WORD_ADDRS.len() {
+        let value = backend.read_source_word(STAGE79_BT_SOURCE_WORD_ADDRS[index]);
+        backend.write_buffer_word(
+            STAGE79_BT_BUFFER_BASE.wrapping_add((index as u32).wrapping_mul(4)),
+            value,
+        );
+        index += 1;
+    }
+
+    let length = if backend.read_initialized_word() != 0 {
+        let previous = backend.read_previous_fold();
+        backend.write_buffer_word(STAGE79_BT_BUFFER_BASE + 0x1C, previous);
+        STAGE79_BT_SHORT_LENGTH
+    } else {
+        let source = backend.read_copy_source_ptr().wrapping_sub(4);
+        backend.copy_four_bytes(STAGE79_BT_BUFFER_BASE + 0x1C, source);
+        STAGE79_BT_LONG_LENGTH
+    };
+
+    let fold = backend.stage78_fold(
+        STAGE79_BT_INITIAL_ACCUMULATOR,
+        STAGE79_BT_BUFFER_BASE,
+        length,
+    );
+
+    let _ = backend.post_fold(fold, STAGE79_BT_BUFFER_BASE, length, length);
+    backend.write_initialized_word(1);
+    backend.write_previous_fold(fold);
+    fold
+}
+
+#[cfg(test)]
+mod stage79_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        source_words: [u32; 7],
+        initialized: u32,
+        previous: u32,
+        copy_source_ptr: u32,
+        fold_return: u32,
+        post_return: u32,
+        events: Vec<(&'static str, u32, u32, u32, u32)>,
+    }
+
+    impl BtStage79Backend for B {
+        fn prelude(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->u32 {
+            self.events.push(("prelude",r0,r1,r2,r3)); 0xAAAA_AAAA
+        }
+        fn read_source_word(&mut self,address:u32)->u32 {
+            self.events.push(("read_word",address,0,0,0));
+            let i=STAGE79_BT_SOURCE_WORD_ADDRS.iter().position(|&x|x==address).unwrap();
+            self.source_words[i]
+        }
+        fn write_buffer_word(&mut self,address:u32,value:u32) {
+            self.events.push(("write_buffer",address,value,0,0));
+        }
+        fn read_initialized_word(&mut self)->u32 {
+            self.events.push(("read_init",STAGE79_BT_INITIALIZED_ADDR,0,0,0));
+            self.initialized
+        }
+        fn read_previous_fold(&mut self)->u32 {
+            self.events.push(("read_prev",STAGE79_BT_PREVIOUS_FOLD_ADDR,0,0,0));
+            self.previous
+        }
+        fn read_copy_source_ptr(&mut self)->u32 {
+            self.events.push(("read_copy_ptr",STAGE79_BT_COPY_SOURCE_PTR_ADDR,0,0,0));
+            self.copy_source_ptr
+        }
+        fn copy_four_bytes(&mut self,destination:u32,source:u32) {
+            self.events.push(("copy4",destination,source,4,0));
+        }
+        fn stage78_fold(&mut self,accumulator:u32,start:u32,length:u32)->u32 {
+            self.events.push(("stage78",accumulator,start,length,0));
+            self.fold_return
+        }
+        fn post_fold(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->u32 {
+            self.events.push(("post_fold",r0,r1,r2,r3));
+            self.post_return
+        }
+        fn write_initialized_word(&mut self,value:u32) {
+            self.events.push(("write_init",STAGE79_BT_INITIALIZED_ADDR,value,0,0));
+            self.initialized=value;
+        }
+        fn write_previous_fold(&mut self,value:u32) {
+            self.events.push(("write_prev",STAGE79_BT_PREVIOUS_FOLD_ADDR,value,0,0));
+            self.previous=value;
+        }
+    }
+
+    #[test]
+    fn initialized_path_snapshots_after_prelude_then_folds_32_bytes() {
+        let mut b=B {
+            source_words:[1,2,3,4,5,6,7],
+            initialized:1,
+            previous:0x1122_3344,
+            fold_return:0xDEAD_BEEF,
+            post_return:0xAAAA_5555,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage79_snapshot_fold(10,11,12,13,&mut b),0xDEAD_BEEF);
+        assert_eq!(b.events[0],("prelude",10,11,12,13));
+        for i in 0..7 {
+            assert_eq!(b.events[1+i*2],("read_word",STAGE79_BT_SOURCE_WORD_ADDRS[i],0,0,0));
+            assert_eq!(b.events[2+i*2],("write_buffer",STAGE79_BT_BUFFER_BASE+(i as u32)*4,(i+1) as u32,0,0));
+        }
+        assert!(b.events.iter().any(|e| *e==("write_buffer",STAGE79_BT_BUFFER_BASE+0x1C,0x1122_3344,0,0)));
+        assert!(b.events.iter().any(|e| *e==("stage78",0xFFFF_FFFF,STAGE79_BT_BUFFER_BASE,0x20,0)));
+        assert!(b.events.iter().any(|e| *e==("post_fold",0xDEAD_BEEF,STAGE79_BT_BUFFER_BASE,0x20,0x20)));
+        assert_eq!(b.previous,0xDEAD_BEEF);
+        assert_eq!(b.initialized,1);
+    }
+
+    #[test]
+    fn zero_initialized_path_copies_source_minus_four_and_folds_44_bytes() {
+        let mut b=B {
+            initialized:0,
+            copy_source_ptr:2,
+            fold_return:0x0102_0304,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage79_snapshot_fold(0,0,0,0,&mut b),0x0102_0304);
+        assert!(b.events.iter().any(|e| *e==(
+            "copy4",
+            STAGE79_BT_BUFFER_BASE+0x1C,
+            0xFFFF_FFFE,
+            4,
+            0
+        )));
+        assert!(b.events.iter().any(|e| *e==(
+            "stage78",
+            0xFFFF_FFFF,
+            STAGE79_BT_BUFFER_BASE,
+            0x2C,
+            0
+        )));
+        assert!(b.events.iter().any(|e| *e==(
+            "post_fold",
+            0x0102_0304,
+            STAGE79_BT_BUFFER_BASE,
+            0x2C,
+            0x2C
+        )));
+    }
+
+    #[test]
+    fn post_fold_return_is_ignored_and_publish_order_is_exact() {
+        let mut b=B {
+            initialized:1,
+            fold_return:0x1234_5678,
+            post_return:0xFFFF_FFFF,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage79_snapshot_fold(0,0,0,0,&mut b),0x1234_5678);
+        let p=b.events.iter().position(|e|e.0=="post_fold").unwrap();
+        assert_eq!(b.events[p+1],("write_init",STAGE79_BT_INITIALIZED_ADDR,1,0,0));
+        assert_eq!(b.events[p+2],("write_prev",STAGE79_BT_PREVIOUS_FOLD_ADDR,0x1234_5678,0,0));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE79_CURRENT_BT_SNAPSHOT_FOLD_ADDR,0x1719E0);
+        assert_eq!(STAGE79_BT_PRELUDE_BOUNDARY,0x19754);
+        assert_eq!(STAGE79_BT_MEMCPY_BOUNDARY,0x3DB4);
+        assert_eq!(STAGE79_BT_STAGE78_ADDR,0x1719B8);
+        assert_eq!(STAGE79_BT_POST_FOLD_BOUNDARY,0x19318);
+        assert_eq!(STAGE79_BT_BUFFER_BASE,0x222E04);
+        assert_eq!(STAGE79_BT_PREVIOUS_FOLD_ADDR,0x222DFC);
+        assert_eq!(STAGE79_BT_INITIALIZED_ADDR,0x222DF4);
+        assert_eq!(STAGE79_BT_COPY_SOURCE_PTR_ADDR,0x200748);
+    }
+}

@@ -636,3 +636,15 @@ The function receives an accumulator in R0, a byte pointer in R1, and an unsigne
 When the loop continues, firmware reads one byte from the current pointer and post-increments the pointer. It XORs that byte with the current accumulator, keeps only the low eight bits as a table index, loads a dword from `0x222154 + index*4`, and computes the next accumulator as `table_word ^ (accumulator >> 8)`. The loop then repeats. Length zero returns immediately without reading input or table memory.
 
 The source model exposes only byte and table-word reads and preserves 32-bit wrapping pointer arithmetic, 16-bit progress truncation, low-byte index formation, accumulator chaining, and the exact return value.
+
+## Stage 79 — current snapshot/table-fold publisher
+
+Stage 79 closes current `0x1719E0`, an exact 112-byte wrapper with public-legacy structural counterpart `0x16DB28`. The current body SHA-256 is `391f49f43ec468505bebb0a5c6670b4866ff49e8bdac1434c367d1a938cb0d4c`; legacy raw SHA-256 is `b3f07511f63248cc22e54be20b342b6a6b91dbc2b2c5ee7d78d160341b27c133`. Only seven bytes differ, all inside relocation encodings for the three external direct calls. Masking those seven bytes leaves 105 fixed bytes, normalized SHA-256 `13d25e6a39c44c2cebd9b9539107411f9a45c82569392e8e76962aa549d888e0`, with exactly one current hit and one legacy hit.
+
+The wrapper first calls opaque current `0x19754` with the incoming R0-R3 unchanged. Its return is ignored, but the ordering is observable because all snapshot loads occur afterwards. Firmware then copies seven dwords into fixed current buffer `0x222E04`: sources `0x318088`, `0x32A004`, `0x3186A0`, `0x410434`, `0x41079C`, `0x4100AC`, and `0x410548` map in order to buffer offsets `+0x00..+0x18`.
+
+Current dword `0x222DF4` selects the span. If nonzero, previous fold dword `0x222DFC` is written to buffer `+0x1C` and the fold length is 32 bytes. If zero, firmware reads pointer dword `0x200748`, subtracts four with wrapping arithmetic, and calls the already-proven `0x3DB4` memcpy primitive to copy four bytes into buffer `+0x1C`; the fold length is then 44 bytes. The bytes at buffer `+0x20..+0x2B` are not initialized locally before the 44-byte path and therefore remain ambient state.
+
+Both paths call already-recovered Stage 78 at `0x1719B8` as `(0xFFFFFFFF, 0x222E04, length)`. Stage 78 preserves R1/R2 and returns with R3 equal to terminating 16-bit progress; for local lengths 32 and 44 this is exactly `length`. The immediately following opaque `0x19318` therefore receives `(fold_result, 0x222E04, length, length)`. Its return is ignored. Finally firmware writes dword one to `0x222DF4`, stores the Stage-78 fold result to `0x222DFC`, and returns that fold result.
+
+Public-legacy literals retain the same external snapshot addresses and pointer cell but relocate the buffer/state block from current `0x222DF4/0x222DFC/0x222E04` to legacy `0x222C60/0x222C68/0x222C70`. The source model keeps `0x19754` and `0x19318` opaque and composes the known memcpy/Stage-78 behavior without assigning broader protocol meaning.
