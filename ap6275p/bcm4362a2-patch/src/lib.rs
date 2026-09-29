@@ -9576,3 +9576,271 @@ mod stage74_tests {
         assert_eq!(STAGE74_BT_SCAN_LIMIT, 8);
     }
 }
+
+/// Stage 75: current conditional publish selector at `0x16F874`.
+///
+/// The exact current 76-byte body is unique in the current Orange Pi HCD. The
+/// public legacy HCD does not contain a relocation-normalized structural
+/// counterpart, so Stage 75 is current-HCD-first only.
+///
+/// A candidate byte at `incoming_r1 + incoming_r2 + 4` is read before the
+/// context type is inspected. Type `0x13` replaces that candidate through an
+/// opaque boundary plus a sign-bit-selected addressing path. The selected
+/// value is published as a dword to the primary output, and optionally to a
+/// secondary output when the gate byte is nonzero.
+pub const STAGE75_CURRENT_BT_CONDITIONAL_PUBLISH_ADDR: u32 = 0x0016_F874;
+pub const STAGE75_BT_CONTEXT_ROOT_BASE: u32 = 0x0020_6EA0;
+pub const STAGE75_BT_CONTEXT_PTR_ADDR: u32 = STAGE75_BT_CONTEXT_ROOT_BASE + 8;
+pub const STAGE75_BT_SPECIAL_BOUNDARY: u32 = 0x0008_8414;
+pub const STAGE75_BT_PRIMARY_OUTPUT_ADDR: u32 = 0x0060_019C;
+pub const STAGE75_BT_SECONDARY_GATE_ADDR: u32 = 0x0020_B265;
+pub const STAGE75_BT_SECONDARY_OUTPUT_ADDR: u32 = 0x0060_0164;
+pub const STAGE75_BT_SPECIAL_TYPE: u8 = 0x13;
+pub const STAGE75_BT_SPECIAL_EARLY_MASK: u32 = 0x80;
+
+pub trait BtStage75Backend {
+    /// Byte read from an arbitrary current-memory address.
+    fn read_memory_byte(&mut self, address: u32) -> u8;
+    /// Dword at `0x206EA8`.
+    fn read_context_ptr(&mut self) -> u32;
+    fn read_context_byte(&mut self, context: u32, offset: u32) -> u8;
+    fn read_context_halfword(&mut self, context: u32, offset: u32) -> u16;
+
+    /// Current opaque `0x88414(context + 0x28)`.
+    fn special_boundary(&mut self, argument: u32) -> u32;
+
+    fn write_primary_output(&mut self, value: u32);
+    fn read_secondary_gate(&mut self) -> u8;
+    fn write_secondary_output(&mut self, value: u32);
+}
+
+/// Safe source-level model of current `0x16F874`.
+///
+/// Ordering is intentionally explicit:
+/// 1. Read the candidate byte from `r1 + r2 + 4`.
+/// 2. Load the context pointer and type byte.
+/// 3. For non-`0x13`, publish the original candidate and return incoming R0.
+/// 4. For `0x13`, call the opaque boundary on `context + 0x28` and mask its
+///    return with `0xF0`. Masked `0x80` returns immediately without outputs.
+/// 5. Otherwise choose the published byte by context byte `+0x27A` bit 7:
+///    clear => `[incoming_r0 + incoming_r2 + 0x14]`;
+///    set => `[incoming_r0 + halfword(context+0x258) + 0x24]`.
+/// 6. Publish primary first, then read the secondary gate, then optionally
+///    publish secondary. The function returns the masked boundary result.
+pub fn bt_stage75_conditional_publish<B: BtStage75Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    backend: &mut B,
+) -> u32 {
+    let candidate_addr = incoming_r1
+        .wrapping_add(incoming_r2)
+        .wrapping_add(4);
+    let mut selected = u32::from(backend.read_memory_byte(candidate_addr));
+
+    let context = backend.read_context_ptr();
+    let ty = backend.read_context_byte(context, 0x10);
+
+    let result = if ty == STAGE75_BT_SPECIAL_TYPE {
+        let masked = backend
+            .special_boundary(context.wrapping_add(0x28))
+            & 0xF0;
+        if masked == STAGE75_BT_SPECIAL_EARLY_MASK {
+            return masked;
+        }
+
+        let sign_byte = backend.read_context_byte(context, 0x27A);
+        let address = if (sign_byte & 0x80) == 0 {
+            incoming_r0
+                .wrapping_add(incoming_r2)
+                .wrapping_add(0x14)
+        } else {
+            incoming_r0
+                .wrapping_add(u32::from(
+                    backend.read_context_halfword(context, 0x258),
+                ))
+                .wrapping_add(0x24)
+        };
+        selected = u32::from(backend.read_memory_byte(address));
+        masked
+    } else {
+        incoming_r0
+    };
+
+    backend.write_primary_output(selected);
+    if backend.read_secondary_gate() != 0 {
+        backend.write_secondary_output(selected);
+    }
+    result
+}
+
+#[cfg(test)]
+mod stage75_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        context: u32,
+        ty: u8,
+        sign_byte: u8,
+        halfword: u16,
+        ordinary_addr: u32,
+        ordinary_value: u8,
+        special_addr: u32,
+        special_value: u8,
+        boundary_return: u32,
+        gate: u8,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage75Backend for B {
+        fn read_memory_byte(&mut self, address: u32) -> u8 {
+            self.events.push(("read_mem", address, 0));
+            if address == self.ordinary_addr {
+                self.ordinary_value
+            } else if address == self.special_addr {
+                self.special_value
+            } else {
+                panic!("unexpected memory byte address {address:#x}")
+            }
+        }
+
+        fn read_context_ptr(&mut self) -> u32 {
+            self.events.push(("context_ptr", STAGE75_BT_CONTEXT_PTR_ADDR, 0));
+            self.context
+        }
+
+        fn read_context_byte(&mut self, context: u32, offset: u32) -> u8 {
+            self.events.push(("context_byte", context, offset));
+            match offset {
+                0x10 => self.ty,
+                0x27A => self.sign_byte,
+                _ => panic!("unexpected context byte offset {offset:#x}"),
+            }
+        }
+
+        fn read_context_halfword(&mut self, context: u32, offset: u32) -> u16 {
+            self.events.push(("context_half", context, offset));
+            assert_eq!(offset, 0x258);
+            self.halfword
+        }
+
+        fn special_boundary(&mut self, argument: u32) -> u32 {
+            self.events.push(("boundary", argument, 0));
+            self.boundary_return
+        }
+
+        fn write_primary_output(&mut self, value: u32) {
+            self.events.push(("primary", STAGE75_BT_PRIMARY_OUTPUT_ADDR, value));
+        }
+
+        fn read_secondary_gate(&mut self) -> u8 {
+            self.events.push(("gate", STAGE75_BT_SECONDARY_GATE_ADDR, 0));
+            self.gate
+        }
+
+        fn write_secondary_output(&mut self, value: u32) {
+            self.events.push(("secondary", STAGE75_BT_SECONDARY_OUTPUT_ADDR, value));
+        }
+    }
+
+    #[test]
+    fn ordinary_path_reads_candidate_before_type_and_returns_incoming_r0() {
+        let mut b = B {
+            context: 0x1000,
+            ty: 0x12,
+            ordinary_addr: 0x2000 + 0x30 + 4,
+            ordinary_value: 0xA5,
+            gate: 0,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage75_conditional_publish(0xCAFE_BABE, 0x2000, 0x30, &mut b), 0xCAFE_BABE);
+        assert_eq!(b.events, [
+            ("read_mem", 0x2034, 0),
+            ("context_ptr", STAGE75_BT_CONTEXT_PTR_ADDR, 0),
+            ("context_byte", 0x1000, 0x10),
+            ("primary", STAGE75_BT_PRIMARY_OUTPUT_ADDR, 0xA5),
+            ("gate", STAGE75_BT_SECONDARY_GATE_ADDR, 0),
+        ]);
+    }
+
+    #[test]
+    fn special_mask_80_returns_early_after_candidate_read_without_outputs() {
+        let mut b = B {
+            context: 0x5000,
+            ty: STAGE75_BT_SPECIAL_TYPE,
+            ordinary_addr: 0x1024,
+            ordinary_value: 9,
+            boundary_return: 0x18F,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage75_conditional_publish(7, 0x1000, 0x20, &mut b), 0x80);
+        assert_eq!(b.events, [
+            ("read_mem", 0x1024, 0),
+            ("context_ptr", STAGE75_BT_CONTEXT_PTR_ADDR, 0),
+            ("context_byte", 0x5000, 0x10),
+            ("boundary", 0x5028, 0),
+        ]);
+    }
+
+    #[test]
+    fn special_nonnegative_flag_uses_incoming_r2_base_and_optional_secondary_publish() {
+        let mut b = B {
+            context: 0x7000,
+            ty: STAGE75_BT_SPECIAL_TYPE,
+            sign_byte: 0x7F,
+            ordinary_addr: 0x3044,
+            ordinary_value: 1,
+            special_addr: 0x4000 + 0x40 + 0x14,
+            special_value: 0x5A,
+            boundary_return: 0x12F,
+            gate: 1,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage75_conditional_publish(0x4000, 0x3000, 0x40, &mut b), 0x20);
+        assert_eq!(b.events, [
+            ("read_mem", 0x3044, 0),
+            ("context_ptr", STAGE75_BT_CONTEXT_PTR_ADDR, 0),
+            ("context_byte", 0x7000, 0x10),
+            ("boundary", 0x7028, 0),
+            ("context_byte", 0x7000, 0x27A),
+            ("read_mem", 0x4054, 0),
+            ("primary", STAGE75_BT_PRIMARY_OUTPUT_ADDR, 0x5A),
+            ("gate", STAGE75_BT_SECONDARY_GATE_ADDR, 0),
+            ("secondary", STAGE75_BT_SECONDARY_OUTPUT_ADDR, 0x5A),
+        ]);
+    }
+
+    #[test]
+    fn special_negative_flag_uses_context_halfword_offset() {
+        let mut b = B {
+            context: 0x9000,
+            ty: STAGE75_BT_SPECIAL_TYPE,
+            sign_byte: 0x80,
+            halfword: 0x123,
+            ordinary_addr: 0x1118,
+            ordinary_value: 2,
+            special_addr: 0x8000 + 0x123 + 0x24,
+            special_value: 0x6B,
+            boundary_return: 0x31,
+            gate: 0,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage75_conditional_publish(0x8000, 0x1100, 0x14, &mut b), 0x30);
+        assert!(b.events.contains(&("context_half", 0x9000, 0x258)));
+        assert!(b.events.contains(&("read_mem", 0x8147, 0)));
+        assert!(b.events.contains(&("primary", STAGE75_BT_PRIMARY_OUTPUT_ADDR, 0x6B)));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE75_CURRENT_BT_CONDITIONAL_PUBLISH_ADDR, 0x16F874);
+        assert_eq!(STAGE75_BT_CONTEXT_PTR_ADDR, 0x206EA8);
+        assert_eq!(STAGE75_BT_SPECIAL_BOUNDARY, 0x88414);
+        assert_eq!(STAGE75_BT_PRIMARY_OUTPUT_ADDR, 0x60019C);
+        assert_eq!(STAGE75_BT_SECONDARY_GATE_ADDR, 0x20B265);
+        assert_eq!(STAGE75_BT_SECONDARY_OUTPUT_ADDR, 0x600164);
+    }
+}
