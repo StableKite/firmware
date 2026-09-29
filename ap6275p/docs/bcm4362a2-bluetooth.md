@@ -604,3 +604,17 @@ For context type values other than `0x13`, the initial candidate byte is zero-ex
 For context type `0x13`, firmware calls opaque current boundary `0x88414(context + 0x28)` and masks its R0 return with `0xF0`. Masked value `0x80` is a strict early return: neither output address nor the secondary gate is touched. Other masked values continue to a sign-bit-controlled byte selection. Firmware reads context byte `+0x27A`; when bit 7 is clear the selected byte comes from `incoming_R0 + incoming_R2 + 0x14`. When bit 7 is set, firmware reads context halfword `+0x258` and selects from `incoming_R0 + halfword + 0x24`. The selected byte is zero-extended and published primary-first, followed by the same gate-controlled secondary publication. The final return on this non-early special path is the masked `0x88414` result, not the selected byte or incoming R0.
 
 Current PC-relative literals resolve to `0x206EA0` (with the actual context-pointer dword at `+8`), `0x60019C`, `0x20B265`, and `0x600164`. The source model keeps `0x88414` opaque and freezes only the exact local ordering, offsets, address arithmetic, output gates, and return shapes visible in the current HCD.
+
+## Stage 76 — current indirect callback orchestrator
+
+Stage 76 reconstructs current `0x16F970`, an exact 160-byte function ending at `0x16FA0E`. The exact body occurs once in the current Orange Pi HCD and contains no direct `BL`/`B.W` runtime call: all runtime transfers are `BLX`/tail `BX` through current-memory function-pointer tables. No public-legacy exact body is promoted, so semantics are current-HCD-first.
+
+The first gate reads byte `0x201AF4` and requires bit zero. Firmware then reads callback-table root dword `0x203488`; a null root returns immediately. When mode byte `0x20DAA5` is nonzero, firmware additionally requires all three dwords at `0x20DA8C`, `+4`, and `+8` to be nonzero. All these local gate exits preserve incoming R0.
+
+On the active path firmware loads provider root dword `0x20375C`, stores the low byte of incoming R0 to `0x20D9A2`, then loads the function pointer at provider `+8` and executes `BLX` without a local null check. A zero provider-call return exits with zero. A nonzero return becomes the live R0 token for the remaining callback chain.
+
+Every optional callback access re-reads dword `0x203488` before loading its slot, preserving callback-table replacement or mutation visibility. Nonzero slot pointers are called with the currently-live R0; null slots leave R0 unchanged. Slot `+0x00` runs first, firmware writes literal two to status byte `0x20D9A4`, then slots `+0x04` and `+0x08` run. Mode byte `0x20DAA5` is then read again, so those earlier callbacks may change the later branch.
+
+When the second mode read is nonzero, optional slots `+0x0C` and `+0x10` run. When it is zero, optional slots `+0x14`, `+0x18`, `+0x1C`, `+0x20`, and `+0x24` run instead. After either branch firmware re-reads the callback-table root one final time and loads slot `+0x28`. A null final slot returns the current R0 token; a nonnull final slot is reached by frame restore plus `BX`, so its return is the function's final return.
+
+The PC-relative literal pool immediately after the body resolves to `0x201AF4`, `0x203488`, `0x20DAA5`, `0x20DA8C`, `0x20375C`, and `0x20D9A2`. The source model preserves local gate returns, the unguarded provider call, callback-root re-reads, two separate mode reads, R0 chaining, status-write placement, branch-specific slot order, and final tail-call behavior without assigning wider semantics to the indirect targets.

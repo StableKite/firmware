@@ -9844,3 +9844,343 @@ mod stage75_tests {
         assert_eq!(STAGE75_BT_SECONDARY_OUTPUT_ADDR, 0x600164);
     }
 }
+
+/// Stage 76: current indirect callback orchestrator at `0x16F970`.
+///
+/// The exact current 160-byte body is unique in the current Orange Pi HCD and
+/// contains no direct BL/B.W runtime call. All runtime calls are indirect BLX
+/// through current-memory tables. Public legacy does not provide an exact
+/// structural counterpart, so semantics are current-HCD-first.
+pub const STAGE76_CURRENT_BT_INDIRECT_ORCHESTRATOR_ADDR: u32 = 0x0016_F970;
+pub const STAGE76_BT_ENABLE_FLAGS_ADDR: u32 = 0x0020_1AF4;
+pub const STAGE76_BT_CALLBACK_TABLE_ROOT_ADDR: u32 = 0x0020_3488;
+pub const STAGE76_BT_MODE_ADDR: u32 = 0x0020_DAA5;
+pub const STAGE76_BT_REQUIRED_TABLE_BASE: u32 = 0x0020_DA8C;
+pub const STAGE76_BT_PROVIDER_ROOT_ADDR: u32 = 0x0020_375C;
+pub const STAGE76_BT_REQUEST_BYTE_ADDR: u32 = 0x0020_D9A2;
+pub const STAGE76_BT_STATUS_BYTE_ADDR: u32 = 0x0020_D9A4;
+
+pub trait BtStage76Backend {
+    fn read_enable_flags(&mut self) -> u8;
+    fn read_callback_table_root(&mut self) -> u32;
+    fn read_mode_byte(&mut self) -> u8;
+    fn read_required_word(&mut self, index: u32) -> u32;
+    fn read_provider_root(&mut self) -> u32;
+    fn write_request_byte(&mut self, value: u8);
+    fn write_status_byte(&mut self, value: u8);
+
+    /// Read a function-pointer dword at `base + offset`.
+    fn read_indirect_ptr(&mut self, base: u32, offset: u32) -> u32;
+
+    /// Invoke the raw indirect target with the currently-live R0 token.
+    fn call_indirect(&mut self, target: u32, current_r0: u32) -> u32;
+}
+
+fn bt_stage76_optional_call<B: BtStage76Backend>(
+    backend: &mut B,
+    offset: u32,
+    current_r0: u32,
+) -> u32 {
+    let table = backend.read_callback_table_root();
+    let target = backend.read_indirect_ptr(table, offset);
+    if target == 0 {
+        current_r0
+    } else {
+        backend.call_indirect(target, current_r0)
+    }
+}
+
+/// Safe source-level model of current `0x16F970`.
+///
+/// Early local gates return the incoming R0 unchanged. The provider call
+/// through `[(*0x20375C) + 8]` has no local null check; its zero return exits
+/// with zero. Every optional callback re-reads the callback-table root from
+/// `0x203488`, preserving table replacement/mutation visibility. The current
+/// R0 token flows through each callback that is actually invoked.
+///
+/// The mode byte is read twice: once for the three-word preflight requirement
+/// and again after slots 0/4/8 have run, so callback mutations can change the
+/// branch. The final slot `+0x28` is a tail-call when nonzero.
+pub fn bt_stage76_indirect_orchestrator<B: BtStage76Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    if (backend.read_enable_flags() & 1) == 0 {
+        return incoming_r0;
+    }
+
+    if backend.read_callback_table_root() == 0 {
+        return incoming_r0;
+    }
+
+    if backend.read_mode_byte() != 0 {
+        let mut index = 0u32;
+        while index < 3 {
+            if backend.read_required_word(index) == 0 {
+                return incoming_r0;
+            }
+            index += 1;
+        }
+    }
+
+    let provider = backend.read_provider_root();
+    backend.write_request_byte(incoming_r0 as u8);
+
+    // Firmware performs this BLX without a local null test.
+    let provider_target = backend.read_indirect_ptr(provider, 8);
+    let mut current = backend.call_indirect(provider_target, incoming_r0);
+    if current == 0 {
+        return 0;
+    }
+
+    current = bt_stage76_optional_call(backend, 0x00, current);
+    backend.write_status_byte(2);
+    current = bt_stage76_optional_call(backend, 0x04, current);
+    current = bt_stage76_optional_call(backend, 0x08, current);
+
+    if backend.read_mode_byte() != 0 {
+        current = bt_stage76_optional_call(backend, 0x0C, current);
+        current = bt_stage76_optional_call(backend, 0x10, current);
+    } else {
+        current = bt_stage76_optional_call(backend, 0x14, current);
+        current = bt_stage76_optional_call(backend, 0x18, current);
+        current = bt_stage76_optional_call(backend, 0x1C, current);
+        current = bt_stage76_optional_call(backend, 0x20, current);
+        current = bt_stage76_optional_call(backend, 0x24, current);
+    }
+
+    // Final slot is loaded after all prior callbacks. A null pointer returns
+    // the currently-live R0; a nonnull pointer is tail-called.
+    let table = backend.read_callback_table_root();
+    let tail = backend.read_indirect_ptr(table, 0x28);
+    if tail == 0 {
+        current
+    } else {
+        backend.call_indirect(tail, current)
+    }
+}
+
+#[cfg(test)]
+mod stage76_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::vec::Vec;
+
+    struct B {
+        enable: u8,
+        mode_reads: Vec<u8>,
+        mode_index: usize,
+        roots: Vec<u32>,
+        root_index: usize,
+        required: [u32; 3],
+        provider: u32,
+        ptrs: BTreeMap<(u32, u32), u32>,
+        returns: BTreeMap<u32, u32>,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                enable: 0,
+                mode_reads: std::vec![0],
+                mode_index: 0,
+                roots: std::vec![0x1000],
+                root_index: 0,
+                required: [1; 3],
+                provider: 0x2000,
+                ptrs: BTreeMap::new(),
+                returns: BTreeMap::new(),
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl B {
+        fn mode(&mut self) -> u8 {
+            let i = core::cmp::min(self.mode_index, self.mode_reads.len() - 1);
+            self.mode_index += 1;
+            self.mode_reads[i]
+        }
+
+        fn root(&mut self) -> u32 {
+            let i = core::cmp::min(self.root_index, self.roots.len() - 1);
+            self.root_index += 1;
+            self.roots[i]
+        }
+    }
+
+    impl BtStage76Backend for B {
+        fn read_enable_flags(&mut self) -> u8 {
+            self.events.push(("enable", STAGE76_BT_ENABLE_FLAGS_ADDR, 0));
+            self.enable
+        }
+        fn read_callback_table_root(&mut self) -> u32 {
+            let value = self.root();
+            self.events.push(("root", STAGE76_BT_CALLBACK_TABLE_ROOT_ADDR, value));
+            value
+        }
+        fn read_mode_byte(&mut self) -> u8 {
+            let value = self.mode();
+            self.events.push(("mode", STAGE76_BT_MODE_ADDR, value as u32));
+            value
+        }
+        fn read_required_word(&mut self, index: u32) -> u32 {
+            let value = self.required[index as usize];
+            self.events.push(("required", index, value));
+            value
+        }
+        fn read_provider_root(&mut self) -> u32 {
+            self.events.push(("provider", STAGE76_BT_PROVIDER_ROOT_ADDR, self.provider));
+            self.provider
+        }
+        fn write_request_byte(&mut self, value: u8) {
+            self.events.push(("request", STAGE76_BT_REQUEST_BYTE_ADDR, value as u32));
+        }
+        fn write_status_byte(&mut self, value: u8) {
+            self.events.push(("status", STAGE76_BT_STATUS_BYTE_ADDR, value as u32));
+        }
+        fn read_indirect_ptr(&mut self, base: u32, offset: u32) -> u32 {
+            let value = *self.ptrs.get(&(base, offset)).unwrap_or(&0);
+            self.events.push(("ptr", base.wrapping_add(offset), value));
+            value
+        }
+        fn call_indirect(&mut self, target: u32, current_r0: u32) -> u32 {
+            self.events.push(("call", target, current_r0));
+            *self.returns.get(&target).unwrap_or(&current_r0)
+        }
+    }
+
+    #[test]
+    fn early_local_gates_preserve_incoming_r0() {
+        let mut b = B::default();
+        assert_eq!(bt_stage76_indirect_orchestrator(0xAA55, &mut b), 0xAA55);
+        assert_eq!(b.events, [("enable", STAGE76_BT_ENABLE_FLAGS_ADDR, 0)]);
+
+        let mut b = B { enable: 1, roots: std::vec![0], ..Default::default() };
+        assert_eq!(bt_stage76_indirect_orchestrator(7, &mut b), 7);
+        assert_eq!(b.events.len(), 2);
+    }
+
+    #[test]
+    fn nonzero_mode_preflight_can_return_before_provider_side_effects() {
+        let mut b = B {
+            enable: 1,
+            mode_reads: std::vec![1],
+            required: [1, 0, 1],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage76_indirect_orchestrator(9, &mut b), 9);
+        assert!(!b.events.iter().any(|e| e.0 == "provider"));
+        assert!(!b.events.iter().any(|e| e.0 == "request"));
+    }
+
+    #[test]
+    fn provider_call_is_unconditional_and_zero_return_exits_zero() {
+        let mut b = B {
+            enable: 1,
+            ptrs: BTreeMap::from([((0x2000, 8), 0x3000)]),
+            returns: BTreeMap::from([(0x3000, 0)]),
+            ..Default::default()
+        };
+        assert_eq!(bt_stage76_indirect_orchestrator(0x1234, &mut b), 0);
+        assert!(b.events.contains(&("request", STAGE76_BT_REQUEST_BYTE_ADDR, 0x34)));
+        assert!(b.events.contains(&("call", 0x3000, 0x1234)));
+        assert!(!b.events.iter().any(|e| e.0 == "status"));
+    }
+
+    #[test]
+    fn root_and_mode_are_reread_and_r0_flows_through_zero_mode_chain_and_tail() {
+        let roots = std::vec![
+            0x1000, // initial nonnull gate
+            0x1000, // slot 0
+            0x1004, // slot 4
+            0x1008, // slot 8
+            0x1014, // slot 14
+            0x1018, // slot 18
+            0x101C, // slot 1c
+            0x1020, // slot 20
+            0x1024, // slot 24
+            0x1028, // tail 28
+        ];
+        let mut ptrs = BTreeMap::new();
+        ptrs.insert((0x2000, 8), 0x3000);
+        for (root, off, target) in [
+            (0x1000, 0x00, 0x4000),
+            (0x1004, 0x04, 0x4004),
+            (0x1008, 0x08, 0x4008),
+            (0x1014, 0x14, 0x4014),
+            (0x1018, 0x18, 0),
+            (0x101C, 0x1C, 0x401C),
+            (0x1020, 0x20, 0),
+            (0x1024, 0x24, 0x4024),
+            (0x1028, 0x28, 0x4028),
+        ] {
+            ptrs.insert((root, off), target);
+        }
+        let mut returns = BTreeMap::new();
+        returns.insert(0x3000, 10);
+        returns.insert(0x4000, 11);
+        returns.insert(0x4004, 12);
+        returns.insert(0x4008, 13);
+        returns.insert(0x4014, 14);
+        returns.insert(0x401C, 15);
+        returns.insert(0x4024, 16);
+        returns.insert(0x4028, 17);
+
+        let mut b = B {
+            enable: 1,
+            mode_reads: std::vec![0, 0],
+            roots,
+            ptrs,
+            returns,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage76_indirect_orchestrator(5, &mut b), 17);
+        assert!(b.events.contains(&("status", STAGE76_BT_STATUS_BYTE_ADDR, 2)));
+        assert!(b.events.contains(&("call", 0x4000, 10)));
+        assert!(b.events.contains(&("call", 0x4004, 11)));
+        assert!(b.events.contains(&("call", 0x4008, 12)));
+        assert!(b.events.contains(&("call", 0x4014, 13)));
+        assert!(b.events.contains(&("call", 0x401C, 14)));
+        assert!(b.events.contains(&("call", 0x4024, 15)));
+        assert!(b.events.contains(&("call", 0x4028, 16)));
+    }
+
+    #[test]
+    fn second_mode_read_can_switch_to_nonzero_branch_after_early_callbacks() {
+        let roots = std::vec![0x1000,0x1000,0x1000,0x1000,0x1000,0x1000,0x1000];
+        let mut ptrs = BTreeMap::new();
+        ptrs.insert((0x2000, 8), 0x3000);
+        ptrs.insert((0x1000, 0x0C), 0x400C);
+        ptrs.insert((0x1000, 0x10), 0x4010);
+        let mut returns = BTreeMap::new();
+        returns.insert(0x3000, 1);
+        returns.insert(0x400C, 2);
+        returns.insert(0x4010, 3);
+        let mut b = B {
+            enable: 1,
+            mode_reads: std::vec![0, 1],
+            roots,
+            ptrs,
+            returns,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage76_indirect_orchestrator(9, &mut b), 3);
+        assert!(b.events.iter().any(|e| *e == ("ptr", 0x100C, 0x400C)));
+        assert!(!b.events.iter().any(|e| e.0 == "ptr" && e.1 == 0x1014));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE76_CURRENT_BT_INDIRECT_ORCHESTRATOR_ADDR, 0x16F970);
+        assert_eq!(STAGE76_BT_ENABLE_FLAGS_ADDR, 0x201AF4);
+        assert_eq!(STAGE76_BT_CALLBACK_TABLE_ROOT_ADDR, 0x203488);
+        assert_eq!(STAGE76_BT_MODE_ADDR, 0x20DAA5);
+        assert_eq!(STAGE76_BT_REQUIRED_TABLE_BASE, 0x20DA8C);
+        assert_eq!(STAGE76_BT_PROVIDER_ROOT_ADDR, 0x20375C);
+        assert_eq!(STAGE76_BT_REQUEST_BYTE_ADDR, 0x20D9A2);
+        assert_eq!(STAGE76_BT_STATUS_BYTE_ADDR, 0x20D9A4);
+    }
+}
