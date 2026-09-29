@@ -9131,3 +9131,295 @@ mod stage72_tests {
         assert_eq!(STAGE59_BT_CALLBACK_B_THUMB, STAGE72_CURRENT_BT_CALLBACK_B_THUMB);
     }
 }
+
+/// Stage 73: published callback-C periodic maintenance entry at `0x16F33C`.
+///
+/// Stage 59 publishes this routine as raw Thumb pointer `0x16F33D`. The exact current
+/// body is 198 bytes and ends at the `POP {...,pc}` at `0x16F400`. Masking only the
+/// nine four-byte direct-call encodings leaves 162 fixed bytes and yields exactly one
+/// current hit plus one public-legacy structural counterpart at `0x16C370`.
+///
+/// The model preserves local memory ordering and arithmetic. The second modulo path uses
+/// an unchecked hardware UDIV in firmware, so divisor-zero behavior is deliberately left
+/// behind `unchecked_remainder` rather than inventing a source-level zero guard.
+pub const STAGE73_CURRENT_BT_CALLBACK_C_ADDR: u32 = 0x0016_F33C;
+pub const STAGE73_CURRENT_BT_CALLBACK_C_THUMB: u32 = 0x0016_F33D;
+pub const STAGE73_BT_COUNTER_ADDR: u32 = 0x0020_9694;
+pub const STAGE73_BT_PERIODIC_DIVISOR_ADDR: u32 = 0x0020_964C;
+pub const STAGE73_BT_TRIGGER_ADDR: u32 = 0x0020_9596;
+pub const STAGE73_BT_AUX_BASE_ADDR: u32 = 0x0020_2A06;
+pub const STAGE73_BT_AUX_BYTE5_ADDR: u32 = 0x0020_2A0B;
+pub const STAGE73_BT_COUNTDOWN_ADDR: u32 = 0x0020_963B;
+pub const STAGE73_BT_MODULO_DIVISOR_ADDR: u32 = 0x0020_2A83;
+pub const STAGE73_BT_NIBBLE_GATE_A_ADDR: u32 = 0x0020_9711;
+pub const STAGE73_BT_NIBBLE_GATE_B_ADDR: u32 = 0x0020_9639;
+pub const STAGE73_BT_STATUS_PTR_ADDR: u32 = 0x0020_3381;
+pub const STAGE73_BT_SNAPSHOT_SOURCE_ADDR: u32 = 0x0065_0064;
+pub const STAGE73_BT_SNAPSHOT_DEST_ADDR: u32 = 0x0020_959C;
+pub const STAGE73_BT_PUBLISH_SOURCE_ADDR: u32 = 0x0022_2709;
+pub const STAGE73_BT_PUBLISH_DEST_ADDR: u32 = 0x0020_A22A;
+
+pub const STAGE73_BT_PERIODIC_FIRST_BOUNDARY: u32 = 0x0004_5DD4;
+pub const STAGE73_BT_PERIODIC_SECOND_BOUNDARY: u32 = 0x0004_5F54;
+pub const STAGE73_BT_TRIGGER_PRIMARY_BOUNDARY: u32 = 0x0004_51A0;
+pub const STAGE73_BT_PREDICATE_SOURCE_BOUNDARY: u32 = 0x0004_69C0;
+pub const STAGE73_BT_BOOLEAN_NOTIFY_BOUNDARY: u32 = 0x0004_6C48;
+pub const STAGE73_BT_MODULO_BOUNDARY: u32 = 0x0004_58CC;
+pub const STAGE73_BT_NIBBLE_BOUNDARY: u32 = 0x0004_5918;
+pub const STAGE73_BT_STATUS_BOUNDARY: u32 = 0x0004_599C;
+pub const STAGE73_BT_AUX_BOUNDARY: u32 = 0x0004_6C70;
+
+pub trait BtStage73Backend {
+    fn read_counter(&mut self) -> u32;
+    fn write_counter(&mut self, value: u32);
+    fn read_periodic_divisor(&mut self) -> u8;
+
+    /// Current `0x45DD4(0, 3)` on the first periodic gate.
+    fn periodic_first_boundary(&mut self, zero: u32, selector: u32) -> u32;
+    /// Current `0x45F54`, with the first call's R0 forwarded directly.
+    fn periodic_second_boundary(&mut self, forwarded_r0: u32) -> u32;
+
+    fn read_trigger_byte(&mut self) -> u8;
+    fn write_trigger_byte(&mut self, value: u8);
+    fn trigger_primary_boundary(&mut self) -> u32;
+    fn read_aux_byte5(&mut self) -> u8;
+    fn predicate_source_boundary(&mut self) -> u32;
+    fn boolean_notify_boundary(&mut self, value: u32) -> u32;
+
+    fn read_countdown_byte(&mut self) -> u8;
+    fn write_countdown_byte(&mut self, value: u8);
+
+    fn read_modulo_divisor(&mut self) -> u8;
+    /// Firmware performs UDIV/MLS without a local zero-divisor check on this path.
+    /// The backend therefore owns the architecture/runtime contract for divisor zero.
+    fn unchecked_remainder(&mut self, numerator: u32, divisor: u8) -> u32;
+    fn modulo_boundary(&mut self) -> u32;
+
+    fn read_nibble_gate_a(&mut self) -> u8;
+    fn read_nibble_gate_b(&mut self) -> u8;
+    fn nibble_boundary(&mut self) -> u32;
+
+    fn read_status_object_ptr(&mut self) -> u32;
+    fn read_status_word(&mut self, object: u32, offset: u32) -> u32;
+    fn status_boundary(&mut self) -> u32;
+    fn aux_boundary(&mut self) -> u32;
+
+    fn read_snapshot_source_word(&mut self) -> u32;
+    fn write_snapshot_word(&mut self, value: u32);
+    fn read_publish_source_byte(&mut self) -> u8;
+    fn write_publish_dest_byte(&mut self, value: u8);
+}
+
+/// Safe source-level model of current callback-C `0x16F33C`.
+///
+/// The routine always returns literal one. All opaque boundary returns except the first
+/// periodic-call R0 forwarding and predicate-source equality test are ignored locally.
+pub fn bt_stage73_published_callback_c<B: BtStage73Backend>(backend: &mut B) -> u32 {
+    let counter = backend.read_counter().wrapping_add(1);
+    backend.write_counter(counter);
+
+    let periodic_divisor = backend.read_periodic_divisor();
+    if periodic_divisor != 0
+        && counter > 40
+        && counter % u32::from(periodic_divisor) == 0
+    {
+        let forwarded = backend.periodic_first_boundary(0, 3);
+        let _ = backend.periodic_second_boundary(forwarded);
+    }
+
+    if backend.read_trigger_byte() != 0 && counter == 3 {
+        backend.write_trigger_byte(0);
+        let _ = backend.trigger_primary_boundary();
+
+        if backend.read_aux_byte5() != 0 {
+            let predicate = backend.predicate_source_boundary();
+            let exact_one = if predicate == 1 { 1 } else { 0 };
+            let _ = backend.boolean_notify_boundary(exact_one);
+        }
+    }
+
+    let countdown = backend.read_countdown_byte();
+    if countdown != 0 {
+        backend.write_countdown_byte(countdown.wrapping_sub(1));
+    }
+
+    let modulo_divisor = backend.read_modulo_divisor();
+    if backend.unchecked_remainder(counter, modulo_divisor) == 0 {
+        let _ = backend.modulo_boundary();
+    }
+
+    if counter & 0x0F == 0
+        && backend.read_nibble_gate_a() != 0
+        && backend.read_nibble_gate_b() != 0
+    {
+        let _ = backend.nibble_boundary();
+    }
+
+    let status_object = backend.read_status_object_ptr();
+    let status_word = backend.read_status_word(status_object, 0x1C);
+    if status_word & 0x10 != 0 {
+        let _ = backend.status_boundary();
+    }
+
+    if backend.read_aux_byte5() != 0 {
+        let _ = backend.aux_boundary();
+    }
+
+    if counter & 0x0F == 0 {
+        let snapshot = backend.read_snapshot_source_word();
+        backend.write_snapshot_word(snapshot);
+
+        let nibble = (snapshot >> 12) & 0x0F;
+        let value = if (1..=14).contains(&nibble) {
+            1
+        } else {
+            backend.read_publish_source_byte()
+        };
+        backend.write_publish_dest_byte(value);
+    }
+
+    1
+}
+
+#[cfg(test)]
+mod stage73_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        counter: u32,
+        periodic_divisor: u8,
+        trigger: u8,
+        aux5: u8,
+        countdown: u8,
+        modulo_divisor: u8,
+        remainder_result: u32,
+        gate_a: u8,
+        gate_b: u8,
+        status_object: u32,
+        status_word: u32,
+        snapshot: u32,
+        publish_source: u8,
+        publish_dest: u8,
+        periodic_first_return: u32,
+        predicate_source_return: u32,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage73Backend for B {
+        fn read_counter(&mut self) -> u32 { self.events.push(("read_counter",0,0)); self.counter }
+        fn write_counter(&mut self, value: u32) { self.events.push(("write_counter",value,0)); self.counter=value; }
+        fn read_periodic_divisor(&mut self) -> u8 { self.events.push(("periodic_divisor",0,0)); self.periodic_divisor }
+        fn periodic_first_boundary(&mut self, zero:u32, selector:u32)->u32 {
+            self.events.push(("periodic_first",zero,selector)); self.periodic_first_return
+        }
+        fn periodic_second_boundary(&mut self, forwarded_r0:u32)->u32 {
+            self.events.push(("periodic_second",forwarded_r0,0)); 0
+        }
+        fn read_trigger_byte(&mut self)->u8 { self.events.push(("trigger_read",0,0)); self.trigger }
+        fn write_trigger_byte(&mut self,value:u8){ self.events.push(("trigger_write",value as u32,0)); self.trigger=value; }
+        fn trigger_primary_boundary(&mut self)->u32 { self.events.push(("trigger_primary",0,0)); 0 }
+        fn read_aux_byte5(&mut self)->u8 { self.events.push(("aux5_read",0,0)); self.aux5 }
+        fn predicate_source_boundary(&mut self)->u32 { self.events.push(("predicate_source",0,0)); self.predicate_source_return }
+        fn boolean_notify_boundary(&mut self,value:u32)->u32 { self.events.push(("boolean_notify",value,0)); 0 }
+        fn read_countdown_byte(&mut self)->u8 { self.events.push(("countdown_read",0,0)); self.countdown }
+        fn write_countdown_byte(&mut self,value:u8){ self.events.push(("countdown_write",value as u32,0)); self.countdown=value; }
+        fn read_modulo_divisor(&mut self)->u8 { self.events.push(("mod_divisor",0,0)); self.modulo_divisor }
+        fn unchecked_remainder(&mut self,numerator:u32,divisor:u8)->u32 {
+            self.events.push(("unchecked_remainder",numerator,divisor as u32)); self.remainder_result
+        }
+        fn modulo_boundary(&mut self)->u32 { self.events.push(("modulo_boundary",0,0)); 0 }
+        fn read_nibble_gate_a(&mut self)->u8 { self.events.push(("gate_a",0,0)); self.gate_a }
+        fn read_nibble_gate_b(&mut self)->u8 { self.events.push(("gate_b",0,0)); self.gate_b }
+        fn nibble_boundary(&mut self)->u32 { self.events.push(("nibble_boundary",0,0)); 0 }
+        fn read_status_object_ptr(&mut self)->u32 { self.events.push(("status_ptr",0,0)); self.status_object }
+        fn read_status_word(&mut self,object:u32,offset:u32)->u32 {
+            self.events.push(("status_word",object,offset)); self.status_word
+        }
+        fn status_boundary(&mut self)->u32 { self.events.push(("status_boundary",0,0)); 0 }
+        fn aux_boundary(&mut self)->u32 { self.events.push(("aux_boundary",0,0)); 0 }
+        fn read_snapshot_source_word(&mut self)->u32 { self.events.push(("snapshot_read",0,0)); self.snapshot }
+        fn write_snapshot_word(&mut self,value:u32){ self.events.push(("snapshot_write",value,0)); }
+        fn read_publish_source_byte(&mut self)->u8 { self.events.push(("publish_source",0,0)); self.publish_source }
+        fn write_publish_dest_byte(&mut self,value:u8){ self.events.push(("publish_dest",value as u32,0)); self.publish_dest=value; }
+    }
+
+    #[test]
+    fn periodic_gate_forwards_first_return_into_second_boundary() {
+        let mut b=B{counter:40,periodic_divisor:41,modulo_divisor:7,remainder_result:1,
+                    periodic_first_return:0x1234_5678,..Default::default()};
+        assert_eq!(bt_stage73_published_callback_c(&mut b),1);
+        assert_eq!(b.counter,41);
+        assert!(b.events.contains(&("periodic_first",0,3)));
+        assert!(b.events.contains(&("periodic_second",0x1234_5678,0)));
+    }
+
+    #[test]
+    fn trigger_three_clears_before_calls_and_exact_one_notifies_one() {
+        let mut b=B{counter:2,periodic_divisor:0,trigger:1,aux5:1,countdown:2,
+                    modulo_divisor:5,remainder_result:1,predicate_source_return:1,..Default::default()};
+        assert_eq!(bt_stage73_published_callback_c(&mut b),1);
+        assert_eq!(b.counter,3);
+        assert_eq!(b.trigger,0);
+        assert_eq!(b.countdown,1);
+        let tw=b.events.iter().position(|x|x.0=="trigger_write").unwrap();
+        let tp=b.events.iter().position(|x|x.0=="trigger_primary").unwrap();
+        let ps=b.events.iter().position(|x|x.0=="predicate_source").unwrap();
+        let bn=b.events.iter().position(|x|x.0=="boolean_notify").unwrap();
+        assert!(tw<tp && tp<ps && ps<bn);
+        assert_eq!(b.events[bn],("boolean_notify",1,0));
+    }
+
+    #[test]
+    fn predicate_values_other_than_one_notify_zero() {
+        let mut b=B{counter:2,trigger:1,aux5:1,modulo_divisor:2,remainder_result:1,
+                    predicate_source_return:2,..Default::default()};
+        let _=bt_stage73_published_callback_c(&mut b);
+        assert!(b.events.contains(&("boolean_notify",0,0)));
+    }
+
+    #[test]
+    fn zero_modulo_divisor_is_forwarded_without_inventing_a_guard() {
+        let mut b=B{counter:6,modulo_divisor:0,remainder_result:0,..Default::default()};
+        assert_eq!(bt_stage73_published_callback_c(&mut b),1);
+        assert!(b.events.contains(&("unchecked_remainder",7,0)));
+        assert!(b.events.contains(&("modulo_boundary",0,0)));
+    }
+
+    #[test]
+    fn low_nibble_status_aux_and_snapshot_paths_preserve_order_and_value_rule() {
+        let mut b=B{counter:15,modulo_divisor:3,remainder_result:1,gate_a:1,gate_b:1,
+                    aux5:1,status_object:0x5000,status_word:0x10,snapshot:0x0000_A000,
+                    publish_source:0x5A,..Default::default()};
+        assert_eq!(bt_stage73_published_callback_c(&mut b),1);
+        assert!(b.events.contains(&("nibble_boundary",0,0)));
+        assert!(b.events.contains(&("status_word",0x5000,0x1C)));
+        assert!(b.events.contains(&("status_boundary",0,0)));
+        assert!(b.events.contains(&("aux_boundary",0,0)));
+        assert_eq!(b.publish_dest,1);
+        assert!(!b.events.iter().any(|x|x.0=="publish_source"));
+    }
+
+    #[test]
+    fn edge_nibbles_zero_and_fifteen_copy_publish_source_byte() {
+        for snapshot in [0u32,0x0000_F000] {
+            let mut b=B{counter:15,modulo_divisor:7,remainder_result:1,snapshot,
+                        publish_source:0xA6,..Default::default()};
+            assert_eq!(bt_stage73_published_callback_c(&mut b),1);
+            assert_eq!(b.publish_dest,0xA6);
+            assert!(b.events.iter().any(|x|x.0=="publish_source"));
+        }
+    }
+
+    #[test]
+    fn provenance_constants_close_stage59_callback_c() {
+        assert_eq!(STAGE73_CURRENT_BT_CALLBACK_C_ADDR,0x16F33C);
+        assert_eq!(STAGE73_CURRENT_BT_CALLBACK_C_THUMB,0x16F33D);
+        assert_eq!(STAGE59_BT_CALLBACK_C_THUMB,STAGE73_CURRENT_BT_CALLBACK_C_THUMB);
+        assert_eq!(STAGE73_BT_COUNTER_ADDR,0x209694);
+        assert_eq!(STAGE73_BT_PUBLISH_SOURCE_ADDR,0x222709);
+        assert_eq!(STAGE73_BT_PUBLISH_DEST_ADDR,0x20A22A);
+    }
+}
