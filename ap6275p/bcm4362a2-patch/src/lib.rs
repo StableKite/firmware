@@ -12834,3 +12834,121 @@ mod stage94_tests {
         assert_eq!(STAGE94_BT_FIELD_MASK, 7);
     }
 }
+
+/// Stage 95: encode two incoming values then tail Stage 90 at current `0x171EAC`.
+///
+/// The executable body is exactly 22 bytes. The following `NOP` is alignment.
+/// Public-legacy structural `0x16DDFC` is byte-identical.
+pub const STAGE95_CURRENT_BT_ENCODE_AND_POLL_ADDR: u32 = 0x0017_1EAC;
+pub const STAGE95_BT_VALUE_WORD_ADDR: u32 = 0x0065_0328;
+pub const STAGE95_BT_STATUS_WORD_ADDR: u32 = 0x0065_0318;
+pub const STAGE95_BT_INPUT_MASK: u32 = 0x0001_FF00;
+pub const STAGE95_BT_STATUS_BASE: u32 = 0x8500_0000;
+pub const STAGE95_BT_STAGE90_ADDR: u32 = STAGE90_CURRENT_BT_BOUNDED_STATUS_POLL_ADDR;
+
+pub trait BtStage95Backend {
+    fn write_stage95_word(&mut self, address: u32, value: u32);
+}
+
+/// Safe local model of current `0x171EAC`.
+///
+/// Incoming R0 is first published as a dword. Incoming R1 is shifted left by
+/// eight, masked with `0x1FF00`, ORed with `0x85000000`, and published to the
+/// Stage-90 status word. The final wide branch is a tail transfer to Stage 90,
+/// so its return is the function return.
+pub fn bt_stage95_encode_and_poll<B>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    backend: &mut B,
+) -> u32
+where
+    B: BtStage95Backend + BtStage90Backend,
+{
+    backend.write_stage95_word(STAGE95_BT_VALUE_WORD_ADDR, incoming_r0);
+    let encoded = ((incoming_r1 << 8) & STAGE95_BT_INPUT_MASK)
+        | STAGE95_BT_STATUS_BASE;
+    backend.write_stage95_word(STAGE95_BT_STATUS_WORD_ADDR, encoded);
+    bt_stage90_bounded_status_poll(backend)
+}
+
+#[cfg(test)]
+mod stage95_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec;
+    use std::vec::Vec;
+
+    struct B {
+        status_reads: VecDeque<u32>,
+        writes: Vec<(u32, u32)>,
+    }
+
+    impl BtStage95Backend for B {
+        fn write_stage95_word(&mut self, address: u32, value: u32) {
+            self.writes.push((address, value));
+        }
+    }
+
+    impl BtStage90Backend for B {
+        fn read_status_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE90_BT_STATUS_WORD_ADDR);
+            self.status_reads.pop_front().unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn publishes_r0_then_encoded_r1_in_binary_order() {
+        let mut b = B {
+            status_reads: VecDeque::from(vec![0]),
+            writes: Vec::new(),
+        };
+        assert_eq!(bt_stage95_encode_and_poll(0x1234_5678, 0xABCD_01FF, &mut b), 1);
+        assert_eq!(
+            b.writes,
+            vec![
+                (STAGE95_BT_VALUE_WORD_ADDR, 0x1234_5678),
+                (
+                    STAGE95_BT_STATUS_WORD_ADDR,
+                    ((0xABCD_01FFu32 << 8) & STAGE95_BT_INPUT_MASK)
+                        | STAGE95_BT_STATUS_BASE,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn tail_return_is_exact_stage90_return() {
+        let mut b = B {
+            status_reads: VecDeque::from(vec![0xFFFF_FFFF; 100]),
+            writes: Vec::new(),
+        };
+        assert_eq!(bt_stage95_encode_and_poll(9, 0, &mut b), 0);
+    }
+
+    #[test]
+    fn high_r1_bits_are_discarded_by_shift_and_mask() {
+        let mut b = B {
+            status_reads: VecDeque::from(vec![0]),
+            writes: Vec::new(),
+        };
+        let _ = bt_stage95_encode_and_poll(0, 0xFFFF_FFFF, &mut b);
+        assert_eq!(
+            b.writes[1],
+            (
+                STAGE95_BT_STATUS_WORD_ADDR,
+                STAGE95_BT_STATUS_BASE | STAGE95_BT_INPUT_MASK,
+            )
+        );
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE95_CURRENT_BT_ENCODE_AND_POLL_ADDR, 0x171EAC);
+        assert_eq!(STAGE95_BT_VALUE_WORD_ADDR, 0x650328);
+        assert_eq!(STAGE95_BT_STATUS_WORD_ADDR, 0x650318);
+        assert_eq!(STAGE95_BT_INPUT_MASK, 0x1FF00);
+        assert_eq!(STAGE95_BT_STATUS_BASE, 0x85000000);
+        assert_eq!(STAGE95_BT_STAGE90_ADDR, 0x171DEC);
+    }
+}

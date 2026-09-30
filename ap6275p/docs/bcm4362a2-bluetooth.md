@@ -770,3 +770,9 @@ The leaf reads `*0x650314`, clears only bit 3 with `BIC`, writes the dword back,
 Stage 94 closes current `0x171E9C`. Its executable body is exactly 10 bytes and is byte-identical to public-legacy structural `0x16DDEC`, with SHA-256 `46b411d628c7bbce798d1ae39f81ebbbfab01286aa370d51c6c1abde4025a5d6` and one exact hit in each image. The `NOP` immediately after `BX LR` is alignment and is deliberately excluded from the function body. The following literal resolves to stable dword `0x65031C` in both images.
 
 Firmware performs one dword load from `0x65031C` and returns `UBFX(word, 16, 3)`, i.e. bits 16 through 18 as a value from zero through seven. No extra masking, gate, or second read is introduced by the source model.
+
+## Stage 95 — encode-and-poll tail wrapper
+
+Stage 95 closes current `0x171EAC`. The executable body is exactly 22 bytes; the following `NOP` is alignment and is not part of the function. Public-legacy structural `0x16DDFC` is byte-identical, with SHA-256 `acab3c9b7c879c535a4d96d0100b8bed9b79f93db92626e4a3cd74a026b842e2` and one exact hit in each image. Its literal pool resolves identically in both images to `0x650328`, `0x0001FF00`, and `0x650318`.
+
+Firmware stores incoming R0 to dword `0x650328`, computes `((incoming_R1 << 8) & 0x0001FF00) | 0x85000000`, and stores that dword to `0x650318`. The final wide branch is a tail transfer directly to the already recovered Stage-90 bounded signed-status poll at `0x171DEC`; therefore Stage 90's return is this wrapper's final return. The source model preserves the two-store order, 32-bit shift/mask behavior, and tail-return shape.
