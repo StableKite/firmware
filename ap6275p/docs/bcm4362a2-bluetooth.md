@@ -694,3 +694,11 @@ Stage 84 reconstructs current `0x1720D8`, an eight-byte leaf that loads two PC-r
 The authoritative structural signature is the 16-byte body-plus-literal context. Current bytes are `014b024a1a607047d4662100d91f1700`; the public-legacy structural context at `0x16E028` is `014b024a1a607047d466210029df1600`. Both resolve the destination slot to `0x2166D4`; only the callback Thumb pointer relocates, current `0x171FD9` versus legacy `0x16DF29`. Masking those four callback-pointer bytes leaves 12 fixed bytes and exactly one current and one legacy structural hit.
 
 The local semantics are exact and intentionally narrow: write raw current Thumb pointer `0x171FD9` as one dword to fixed slot `0x2166D4`, do not touch any other state, and return incoming R0 unchanged. No semantic role is assigned to the callback beyond the literal publication visible in the firmware.
+
+## Stage 85 — two-halfword circular-distance helper
+
+Stage 85 reconstructs current `0x17192C`, a 26-byte no-call leaf. Including the two PC-relative literal dwords produces a 34-byte context that is byte-identical to public-legacy structural `0x16DA74` and unique in both images. The executable-body SHA-256 is `aaba7d066a004a9249d95a66a76d359728a66bf0037a895adca855480b79f025`; the 34-byte body-plus-literals SHA-256 is `85cedc18833adb94022772de089afa8d4ac60577260cd7740f6c6dea6d319393`.
+
+Firmware reads halfword `0x2170EC` first and halfword `0x217170` second. Both are zero-extended for the arithmetic. If the first value is lower, the return is `second-first`. Equality returns zero. If the first is greater, firmware adds literal 100 to the second value and then subtracts the first. These are ordinary 32-bit `ADDS`/`SUBS` operations; no local bounds check or explicit modulo normalization exists, so values outside the presumed 0..99 domain can produce a wrapping u32 result and the source model preserves that edge.
+
+The helper has no runtime calls, no memory writes, and no dependency on incoming R0 because R0 is overwritten by the second halfword load before any use.

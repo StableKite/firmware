@@ -11374,3 +11374,96 @@ mod stage84_tests {
         assert_eq!(STAGE84_BT_CALLBACK_THUMB, 0x171FD9);
     }
 }
+
+/// Stage 85: current two-halfword circular-distance helper at `0x17192C`.
+///
+/// The exact 26-byte leaf plus its two literal dwords forms a unique 34-byte
+/// current/public-legacy identity. The helper reads two fixed halfwords, uses
+/// unsigned comparisons, and applies literal 100 only when the first value is
+/// strictly greater than the second.
+pub const STAGE85_CURRENT_BT_CIRCULAR_DISTANCE_ADDR: u32 = 0x0017_192C;
+pub const STAGE85_BT_FIRST_HALFWORD_ADDR: u32 = 0x0021_70EC;
+pub const STAGE85_BT_SECOND_HALFWORD_ADDR: u32 = 0x0021_7170;
+pub const STAGE85_BT_WRAP_ADDEND: u32 = 100;
+
+pub trait BtStage85Backend {
+    fn read_halfword(&mut self, address: u32) -> u16;
+}
+
+/// Safe source-level model of current `0x17192C`.
+///
+/// Firmware reads the first halfword before the second. When first < second it
+/// returns `second-first`; equality returns zero. When first > second it first
+/// adds literal 100 to the zero-extended second value and then subtracts the
+/// first using ordinary 32-bit arithmetic. No local range/modulo guard is
+/// invented, so out-of-range values preserve the observable wrapping result.
+pub fn bt_stage85_circular_distance<B: BtStage85Backend>(backend: &mut B) -> u32 {
+    let first = u32::from(backend.read_halfword(STAGE85_BT_FIRST_HALFWORD_ADDR));
+    let second = u32::from(backend.read_halfword(STAGE85_BT_SECOND_HALFWORD_ADDR));
+
+    if first < second {
+        second.wrapping_sub(first)
+    } else if first == second {
+        0
+    } else {
+        second
+            .wrapping_add(STAGE85_BT_WRAP_ADDEND)
+            .wrapping_sub(first)
+    }
+}
+
+#[cfg(test)]
+mod stage85_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    struct B {
+        first: u16,
+        second: u16,
+        reads: Vec<u32>,
+    }
+
+    impl BtStage85Backend for B {
+        fn read_halfword(&mut self, address: u32) -> u16 {
+            self.reads.push(address);
+            if address == STAGE85_BT_FIRST_HALFWORD_ADDR { self.first } else { self.second }
+        }
+    }
+
+    #[test]
+    fn reads_first_then_second_and_plain_difference_when_first_is_lower() {
+        let mut b = B { first: 20, second: 70, reads: Vec::new() };
+        assert_eq!(bt_stage85_circular_distance(&mut b), 50);
+        assert_eq!(b.reads, [STAGE85_BT_FIRST_HALFWORD_ADDR, STAGE85_BT_SECOND_HALFWORD_ADDR]);
+    }
+
+    #[test]
+    fn equality_returns_zero() {
+        let mut b = B { first: 55, second: 55, reads: Vec::new() };
+        assert_eq!(bt_stage85_circular_distance(&mut b), 0);
+    }
+
+    #[test]
+    fn greater_first_uses_literal_hundred_before_subtract() {
+        let mut b = B { first: 90, second: 10, reads: Vec::new() };
+        assert_eq!(bt_stage85_circular_distance(&mut b), 20);
+    }
+
+    #[test]
+    fn out_of_range_greater_case_preserves_u32_wrap() {
+        let mut b = B { first: 500, second: 10, reads: Vec::new() };
+        assert_eq!(
+            bt_stage85_circular_distance(&mut b),
+            10u32.wrapping_add(100).wrapping_sub(500)
+        );
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE85_CURRENT_BT_CIRCULAR_DISTANCE_ADDR, 0x17192C);
+        assert_eq!(STAGE85_BT_FIRST_HALFWORD_ADDR, 0x2170EC);
+        assert_eq!(STAGE85_BT_SECOND_HALFWORD_ADDR, 0x217170);
+        assert_eq!(STAGE85_BT_WRAP_ADDEND, 100);
+    }
+}
