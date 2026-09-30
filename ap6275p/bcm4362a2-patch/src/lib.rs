@@ -12394,3 +12394,88 @@ mod stage90_tests {
         assert_eq!(STAGE90_BT_MAX_POLLS, 100);
     }
 }
+
+/// Stage 91: bounded bit-30 poll at `0x171E04`.
+///
+/// Firmware loads the fixed dword at `0x650310`, shifts the live value left by
+/// one, and branches on the resulting N flag. That tests original bit 30.
+/// The read is repeated at most 100 times.
+pub const STAGE91_CURRENT_BT_BOUNDED_BIT30_POLL_ADDR: u32 = 0x0017_1E04;
+pub const STAGE91_BT_STATUS_WORD_ADDR: u32 = 0x0065_0310;
+pub const STAGE91_BT_MAX_POLLS: u32 = 100;
+pub const STAGE91_BT_TEST_BIT: u32 = 1 << 30;
+
+pub trait BtStage91Backend {
+    fn read_status_word(&mut self, address: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171E04`.
+///
+/// A set original bit 30 returns literal one immediately. Otherwise firmware
+/// reloads the same dword until the 100-read budget is exhausted, then returns
+/// zero. No delay or cached snapshot is introduced.
+pub fn bt_stage91_bounded_bit30_poll<B: BtStage91Backend>(backend: &mut B) -> u32 {
+    let mut remaining = STAGE91_BT_MAX_POLLS;
+    loop {
+        let value = backend.read_status_word(STAGE91_BT_STATUS_WORD_ADDR);
+        if (value & STAGE91_BT_TEST_BIT) != 0 {
+            return 1;
+        }
+        remaining -= 1;
+        if remaining == 0 {
+            return 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod stage91_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        values: Vec<u32>,
+        reads: usize,
+    }
+
+    impl BtStage91Backend for B {
+        fn read_status_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE91_BT_STATUS_WORD_ADDR);
+            let v = self.values.get(self.reads).copied().unwrap_or(0);
+            self.reads += 1;
+            v
+        }
+    }
+
+    #[test]
+    fn bit30_set_returns_one_immediately() {
+        let mut b = B { values: vec![1 << 30], ..Default::default() };
+        assert_eq!(bt_stage91_bounded_bit30_poll(&mut b), 1);
+        assert_eq!(b.reads, 1);
+    }
+
+    #[test]
+    fn bit31_does_not_satisfy_the_shifted_sign_test() {
+        let mut b = B { values: vec![1 << 31, 1 << 30], ..Default::default() };
+        assert_eq!(bt_stage91_bounded_bit30_poll(&mut b), 1);
+        assert_eq!(b.reads, 2);
+    }
+
+    #[test]
+    fn one_hundred_clear_reads_return_zero() {
+        let mut b = B { values: vec![0; 100], ..Default::default() };
+        assert_eq!(bt_stage91_bounded_bit30_poll(&mut b), 0);
+        assert_eq!(b.reads, 100);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE91_CURRENT_BT_BOUNDED_BIT30_POLL_ADDR, 0x171E04);
+        assert_eq!(STAGE91_BT_STATUS_WORD_ADDR, 0x650310);
+        assert_eq!(STAGE91_BT_TEST_BIT, 1 << 30);
+        assert_eq!(STAGE91_BT_MAX_POLLS, 100);
+    }
+}

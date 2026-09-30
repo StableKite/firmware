@@ -744,3 +744,9 @@ The eight-byte body SHA-256 is `751b89e29eacb8def3bac515e947e9332028d7171646ed7f
 Stage 90 reconstructs current `0x171DEC`, an exact 20-byte leaf. The adjacent PC-relative literal resolves to fixed dword address `0x650318`. The body is byte-identical to the public-legacy structural counterpart at `0x16DD3C`.
 
 Firmware initializes R0 to decimal 100 and reloads `*0x650318` each iteration. The loaded dword is compared with zero using signed condition codes. Any signed-nonnegative value returns literal one immediately. A negative value decrements R0 and repeats while the counter is nonzero. Therefore an all-negative stream performs exactly 100 loads and returns zero. The source model preserves repeated live reads and does not invent a delay, snapshot, or side effect.
+
+## Stage 91 — bounded bit-30 poll
+
+Stage 91 reconstructs current `0x171E04`, an exact 20-byte leaf that is byte-identical to public-legacy structural counterpart `0x16DD54`. The adjacent literal resolves to fixed dword address `0x650310`.
+
+Each iteration reloads `*0x650310`, executes `LSLS R3,R3,#1`, and branches on the N flag. The N flag after that shift reflects original bit 30, not bit 31. A set bit 30 returns literal one immediately. Otherwise the loop decrements an initial count of 100 and rereads the dword; after exactly 100 clear observations it returns zero. The model keeps this live-read behavior and does not invent any delay or snapshot.
