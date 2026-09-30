@@ -17069,3 +17069,259 @@ mod stage111_tests {
         assert_eq!(STAGE111_BT_BUFFER_BOUNDARY,0x3D24);
     }
 }
+pub const STAGE112_CURRENT_BT_RECORD_UPDATE_ADDR: u32 = 0x0016_DD22;
+pub const STAGE112_LEGACY_BT_RECORD_UPDATE_ADDR: u32 = 0x0016_AD56;
+pub const STAGE112_CURRENT_BODY_LEN: u32 = 136;
+pub const STAGE112_RECORD_STRIDE: u32 = 0x19;
+
+pub const STAGE112_BT_FIRST_BOUNDARY: u32 = 0x0001_7E2C;
+pub const STAGE112_BT_GATE_BOUNDARY: u32 = 0x0003_AF86;
+pub const STAGE112_BT_OBJECT_BOUNDARY: u32 = 0x0003_C7C2;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage112Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage112Backend {
+    fn read_object_byte(&mut self, object: u32, offset: u32) -> u8;
+    fn read_state_byte(&mut self, state: u32, offset: u32) -> u8;
+    fn read_state_halfword(&mut self, state: u32, offset: u32) -> u16;
+    fn write_state_byte(&mut self, state: u32, offset: u32, value: u8);
+    fn write_state_halfword(&mut self, state: u32, offset: u32, value: u16);
+    fn write_state_word(&mut self, state: u32, offset: u32, value: u32);
+
+    fn boundary_17e2c(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage112Regs;
+    fn boundary_3af86(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage112Regs;
+    fn boundary_3c7c2(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage112Regs;
+}
+
+/// Exact register-state model of current `0x16DD22..0x16DDAA`.
+///
+/// State byte +1 is snapshotted before the first opaque boundary and selects a
+/// 0x19-byte record. The first boundary's R0 remains live through the local
+/// gates and becomes both the record word source (`R0 << 1`) and, on some
+/// paths, the final function return.
+pub fn bt_stage112_record_update<B: BtStage112Backend>(
+    object: u32,
+    incoming_r1: u32,
+    state: u32,
+    incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let object0e = backend.read_object_byte(object, 0x0E);
+    let state1_snapshot = backend.read_state_byte(state, 1);
+
+    let mut regs = backend.boundary_17e2c(
+        u32::from(object0e),
+        incoming_r1,
+        state,
+        incoming_r3,
+    );
+
+    let object98 = backend.read_object_byte(object, 0x98);
+    regs.r3 = u32::from((object98 >> 3) & 0x0F);
+    if regs.r3 <= 2 {
+        return regs.r0;
+    }
+
+    let object9a = backend.read_object_byte(object, 0x9A);
+    regs.r3 = u32::from(object9a & 0x03).wrapping_sub(1);
+    if regs.r3 > 1 {
+        return regs.r0;
+    }
+
+    let record = state.wrapping_add(
+        STAGE112_RECORD_STRIDE.wrapping_mul(u32::from(state1_snapshot))
+    );
+    regs.r3 = regs.r0.wrapping_shl(1);
+    backend.write_state_word(record, 0x35, regs.r3);
+
+    if incoming_r1 == 0 {
+        let state14 = backend.read_state_byte(state, 0x14);
+        regs.r2 = u32::from(state14);
+        regs.r3 = ((regs.r2 >> 5).wrapping_add(1)) & 7;
+        let mut next = (state14 & 0x1F) | ((regs.r3 as u8) << 5);
+        backend.write_state_byte(state, 0x14, next);
+        if regs.r3 > 3 {
+            next |= 1;
+            backend.write_state_byte(state, 0x14, next);
+        }
+        return regs.r0;
+    }
+
+    regs.r1 = state;
+    regs = backend.boundary_3af86(regs.r0, regs.r1, regs.r2, regs.r3);
+    if regs.r0 != 0 {
+        let object0f = backend.read_object_byte(object, 0x0F);
+        regs.r3 = u32::from(object0f);
+        backend.write_state_byte(state, 0x12, object0f);
+
+        regs.r0 = object;
+        regs = backend.boundary_3c7c2(regs.r0, regs.r1, regs.r2, regs.r3);
+
+        let state4 = backend.read_state_halfword(state, 4);
+        backend.write_state_halfword(state, 0x10, state4);
+
+        let state14 = backend.read_state_byte(state, 0x14);
+        let zero_result = u32::from(regs.r0 == 0);
+        regs.r0 = zero_result;
+        backend.write_state_byte(state, 0x14, state14.wrapping_add(0x20));
+        backend.write_state_byte(state, 0x13, zero_result as u8);
+        backend.write_state_byte(state, 0x0F, 1);
+    }
+
+    backend.write_state_byte(state, 0x0E, 1);
+    regs.r0
+}
+
+#[cfg(test)]
+mod stage112_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone,Debug,PartialEq,Eq)]
+    enum E {
+        Read(&'static str,u32,u32),
+        Write(&'static str,u32,u32),
+        Call(&'static str,u32,u32,u32,u32),
+    }
+
+    struct B {
+        object0e:u8, object98:u8, object9a:u8, object0f:u8,
+        state1:u8, state14:VecDeque<u8>, state4:u16,
+        q17e2c:VecDeque<BtStage112Regs>,
+        q3af86:VecDeque<BtStage112Regs>,
+        q3c7c2:VecDeque<BtStage112Regs>,
+        e:Vec<E>,
+    }
+
+    impl Default for B {
+        fn default()->Self { Self {
+            object0e:0x0E, object98:0x18, object9a:1, object0f:0x0F,
+            state1:2, state14:VecDeque::from([0]), state4:0x1234,
+            q17e2c:VecDeque::from([BtStage112Regs{r0:5,r1:0x11,r2:0x22,r3:0x33}]),
+            q3af86:VecDeque::from([BtStage112Regs{r0:1,r1:0x41,r2:0x42,r3:0x43}]),
+            q3c7c2:VecDeque::from([BtStage112Regs{r0:7,r1:0x51,r2:0x52,r3:0x53}]),
+            e:Vec::new(),
+        }}
+    }
+
+    impl B {
+        fn pop(q:&mut VecDeque<BtStage112Regs>)->BtStage112Regs { q.pop_front().unwrap() }
+    }
+
+    impl BtStage112Backend for B {
+        fn read_object_byte(&mut self,o:u32,off:u32)->u8 {
+            let v=match off {0x0e=>self.object0e,0x98=>self.object98,0x9a=>self.object9a,0x0f=>self.object0f,_=>panic!()};
+            self.e.push(E::Read("ob",o.wrapping_add(off),u32::from(v)));v
+        }
+        fn read_state_byte(&mut self,s:u32,off:u32)->u8 {
+            let v=match off {1=>self.state1,0x14=>self.state14.pop_front().unwrap(),_=>panic!()};
+            self.e.push(E::Read("sb",s.wrapping_add(off),u32::from(v)));v
+        }
+        fn read_state_halfword(&mut self,s:u32,off:u32)->u16 {
+            assert_eq!(off,4);self.e.push(E::Read("sh",s.wrapping_add(off),u32::from(self.state4)));self.state4
+        }
+        fn write_state_byte(&mut self,s:u32,off:u32,v:u8){self.e.push(E::Write("sb",s.wrapping_add(off),u32::from(v)))}
+        fn write_state_halfword(&mut self,s:u32,off:u32,v:u16){self.e.push(E::Write("sh",s.wrapping_add(off),u32::from(v)))}
+        fn write_state_word(&mut self,s:u32,off:u32,v:u32){self.e.push(E::Write("sw",s.wrapping_add(off),v))}
+        fn boundary_17e2c(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage112Regs{
+            self.e.push(E::Call("17e2c",a,b,c,d));Self::pop(&mut self.q17e2c)
+        }
+        fn boundary_3af86(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage112Regs{
+            self.e.push(E::Call("3af86",a,b,c,d));Self::pop(&mut self.q3af86)
+        }
+        fn boundary_3c7c2(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage112Regs{
+            self.e.push(E::Call("3c7c2",a,b,c,d));Self::pop(&mut self.q3c7c2)
+        }
+    }
+
+    #[test]
+    fn first_boundary_gets_exact_entry_args_and_low_object98_exits_with_live_r0() {
+        let mut b=B::default();b.object98=0x10;
+        b.q17e2c=VecDeque::from([BtStage112Regs{r0:0xCAFE,r1:2,r2:3,r3:4}]);
+        assert_eq!(bt_stage112_record_update(0x1000,0x2000,0x3000,0x4444,&mut b),0xCAFE);
+        assert!(b.e.contains(&E::Call("17e2c",0x0E,0x2000,0x3000,0x4444)));
+        assert!(!b.e.iter().any(|e|matches!(e,E::Write("sw",..))));
+    }
+
+    #[test]
+    fn invalid_low2_gate_exits_before_record_write() {
+        let mut b=B::default();b.object9a=0;
+        assert_eq!(bt_stage112_record_update(0x1000,1,0x3000,4,&mut b),5);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Write("sw",..)|E::Call("3af86",..))));
+    }
+
+    #[test]
+    fn record_uses_preboundary_state1_snapshot_and_doubled_first_return() {
+        let mut b=B::default();b.state1=3;b.object98=0x18;b.object9a=2;
+        let _=bt_stage112_record_update(0x1000,0,0x3000,4,&mut b);
+        assert!(b.e.contains(&E::Write("sw",0x3000+3*0x19+0x35,10)));
+    }
+
+    #[test]
+    fn zero_incoming_r1_rotates_high3_field_without_opaque_followups() {
+        let mut b=B::default();b.state14=VecDeque::from([0x65]);
+        assert_eq!(bt_stage112_record_update(0x1000,0,0x3000,4,&mut b),5);
+        assert!(b.e.contains(&E::Write("sb",0x3014,0x85)));
+        assert!(b.e.contains(&E::Write("sb",0x3014,0x85)));
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("3af86",..)|E::Call("3c7c2",..))));
+    }
+
+    #[test]
+    fn zero_incoming_r1_wraps_high3_field_and_preserves_low5() {
+        let mut b=B::default();b.state14=VecDeque::from([0xE5]);
+        let _=bt_stage112_record_update(0x1000,0,0x3000,4,&mut b);
+        assert!(b.e.contains(&E::Write("sb",0x3014,0x05)));
+    }
+
+    #[test]
+    fn gate_boundary_gets_live_r2_and_doubled_first_return_and_zero_sets_only_byte0e() {
+        let mut b=B::default();
+        b.q17e2c=VecDeque::from([BtStage112Regs{r0:7,r1:8,r2:0xCAFE,r3:0xDEAD}]);
+        b.q3af86=VecDeque::from([BtStage112Regs{r0:0,r1:0x41,r2:0x42,r3:0x43}]);
+        assert_eq!(bt_stage112_record_update(0x1000,1,0x3000,4,&mut b),0);
+        assert!(b.e.contains(&E::Call("3af86",7,0x3000,0xCAFE,14)));
+        assert!(b.e.contains(&E::Write("sb",0x300E,1)));
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("3c7c2",..))));
+    }
+
+    #[test]
+    fn object_boundary_chain_copies_state_and_returns_zero_boolean_for_nonzero_result() {
+        let mut b=B::default();b.object0f=0xA5;b.state4=0xBEEF;b.state14=VecDeque::from([0xF1]);
+        b.q3af86=VecDeque::from([BtStage112Regs{r0:2,r1:0xAAAA,r2:0xBBBB,r3:0xCCCC}]);
+        b.q3c7c2=VecDeque::from([BtStage112Regs{r0:9,r1:0x51,r2:0x52,r3:0x53}]);
+        assert_eq!(bt_stage112_record_update(0x1000,1,0x3000,4,&mut b),0);
+        assert!(b.e.contains(&E::Write("sb",0x3012,0xA5)));
+        assert!(b.e.contains(&E::Call("3c7c2",0x1000,0xAAAA,0xBBBB,0xA5)));
+        assert!(b.e.contains(&E::Write("sh",0x3010,0xBEEF)));
+        assert!(b.e.contains(&E::Write("sb",0x3014,0x11)));
+        assert!(b.e.contains(&E::Write("sb",0x3013,0)));
+        assert!(b.e.contains(&E::Write("sb",0x300F,1)));
+        assert!(b.e.contains(&E::Write("sb",0x300E,1)));
+    }
+
+    #[test]
+    fn zero_object_boundary_return_becomes_literal_one_and_sets_state13() {
+        let mut b=B::default();b.state14=VecDeque::from([0x20]);
+        b.q3af86=VecDeque::from([BtStage112Regs{r0:2,r1:3,r2:4,r3:5}]);
+        b.q3c7c2=VecDeque::from([BtStage112Regs{r0:0,r1:6,r2:7,r3:8}]);
+        assert_eq!(bt_stage112_record_update(0x1000,1,0x3000,4,&mut b),1);
+        assert!(b.e.contains(&E::Write("sb",0x3013,1)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact() {
+        assert_eq!(STAGE112_CURRENT_BT_RECORD_UPDATE_ADDR,0x16DD22);
+        assert_eq!(STAGE112_LEGACY_BT_RECORD_UPDATE_ADDR,0x16AD56);
+        assert_eq!(STAGE112_CURRENT_BODY_LEN,136);
+        assert_eq!(STAGE112_BT_FIRST_BOUNDARY,0x17E2C);
+        assert_eq!(STAGE112_BT_GATE_BOUNDARY,0x3AF86);
+        assert_eq!(STAGE112_BT_OBJECT_BOUNDARY,0x3C7C2);
+    }
+}
