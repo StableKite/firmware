@@ -16404,3 +16404,257 @@ mod stage109_tests {
         assert_eq!(STAGE109_BT_FINAL_TAIL,0x2CF64);
     }
 }
+pub const STAGE110_CURRENT_BT_STATE_COUNTER_ADDR: u32 = 0x0016_DB4C;
+pub const STAGE110_LEGACY_BT_STATE_COUNTER_ADDR: u32 = 0x0016_AB80;
+pub const STAGE110_CURRENT_BODY_LEN: u32 = 136;
+pub const STAGE110_WORD_MASK: u32 = 0x0300_7800;
+pub const STAGE110_WORD_EXPECTED: u32 = 0x0300_1800;
+pub const STAGE110_BT_NOTIFY_BOUNDARY: u32 = 0x0003_B04A;
+pub const STAGE110_BT_BUFFER_BOUNDARY: u32 = 0x0000_3D24;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage110Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage110Backend {
+    fn read_input_byte(&mut self, input: u32, offset: u32) -> u8;
+    fn read_input_word(&mut self, input: u32, offset: u32) -> u32;
+    fn read_state_byte(&mut self, state: u32, offset: u32) -> u8;
+    fn write_state_byte(&mut self, state: u32, offset: u32, value: u8);
+
+    fn boundary_3b04a(&mut self, r0:u32,r1:u32,r2:u32,r3:u32) -> BtStage110Regs;
+    fn boundary_3d24(&mut self, r0:u32,r1:u32,r2:u32,r3:u32) -> BtStage110Regs;
+}
+
+/// Exact register-state model of current `0x16DB4C..0x16DBD4`.
+///
+/// R4 saves incoming R1 as the state pointer. Local instructions deliberately
+/// leave path-dependent caller-volatile R1-R3 live into `0x3B04A`; when state
+/// byte +0x0E is zero, that boundary's R0 can become the final function return.
+/// The `0x3D24` path overwrites R0-R2 but forwards raw state byte +0x0E in R3.
+pub fn bt_stage110_state_counter<B: BtStage110Backend>(
+    input: u32,
+    state: u32,
+    incoming_r2: u32,
+    _incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let byte95 = backend.read_input_byte(input, 0x95);
+    let mut regs = BtStage110Regs {
+        r0: input,
+        r1: state,
+        r2: incoming_r2,
+        r3: u32::from(byte95),
+    };
+
+    if byte95 == 2 {
+        let word90 = backend.read_input_word(input, 0x90);
+        regs.r2 = word90;
+        regs.r3 = word90 & STAGE110_WORD_MASK;
+        regs.r2 = STAGE110_WORD_EXPECTED;
+
+        if regs.r3 == STAGE110_WORD_EXPECTED {
+            let state16 = backend.read_state_byte(state, 0x16);
+            regs.r3 = u32::from(state16).wrapping_add(1);
+            backend.write_state_byte(state, 0x16, regs.r3 as u8);
+
+            let state14 = backend.read_state_byte(state, 0x14);
+            regs.r3 = u32::from(state14 | 0x10);
+            backend.write_state_byte(state, 0x14, regs.r3 as u8);
+        } else {
+            let byte90 = backend.read_input_byte(input, 0x90);
+            regs.r3 = u32::from((byte90 >> 3) & 0x0F);
+
+            if regs.r3 > 2 {
+                let byte92 = backend.read_input_byte(input, 0x92);
+                regs.r2 = u32::from(byte92);
+                regs.r3 = u32::from(byte92 & 0x03).wrapping_sub(1);
+
+                if regs.r3 <= 1 {
+                    regs.r2 = u32::from(byte92) << 29;
+                    if (regs.r2 as i32) >= 0 {
+                        let state14 = backend.read_state_byte(state, 0x14);
+                        regs.r3 = u32::from(state14 | 0x04);
+                        backend.write_state_byte(state, 0x14, regs.r3 as u8);
+                    }
+                }
+            }
+        }
+    }
+
+    let byte0f = backend.read_state_byte(state, 0x0F);
+    regs.r3 = u32::from(byte0f);
+    if byte0f != 0 {
+        regs.r3 = 0;
+        backend.write_state_byte(state, 0x0F, 0);
+        regs.r0 = state;
+        regs = backend.boundary_3b04a(regs.r0, regs.r1, regs.r2, regs.r3);
+    }
+
+    let byte0e = backend.read_state_byte(state, 0x0E);
+    regs.r3 = u32::from(byte0e);
+    if byte0e != 0 {
+        backend.write_state_byte(state, 0x0E, 0);
+        regs.r2 = 0x74;
+        regs.r1 = 0;
+        regs.r0 = state.wrapping_add(0x10);
+        regs = backend.boundary_3d24(regs.r0, regs.r1, regs.r2, regs.r3);
+        backend.write_state_byte(state, 1, 0);
+        return regs.r0;
+    }
+
+    let state14 = backend.read_state_byte(state, 0x14);
+    regs.r2 = u32::from(state14);
+    regs.r3 = regs.r2 << 31;
+    if state14 & 1 == 0 {
+        let counter = backend.read_state_byte(state, 1);
+        regs.r3 = u32::from(counter);
+        let limit = u32::from(state14) >> 5;
+        if regs.r3 < limit {
+            regs.r3 = regs.r3.wrapping_add(1);
+            backend.write_state_byte(state, 1, regs.r3 as u8);
+        }
+    }
+
+    regs.r0
+}
+
+#[cfg(test)]
+mod stage110_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum E {
+        Read(&'static str,u32,u32),
+        Write(&'static str,u32,u32),
+        Call(&'static str,u32,u32,u32,u32),
+    }
+
+    struct B {
+        in95:u8, word90:u32, in90:u8, in92:u8,
+        state14:VecDeque<u8>, state16:u8, state0f:u8, state0e:u8, counter:u8,
+        q3b04a:VecDeque<BtStage110Regs>, q3d24:VecDeque<BtStage110Regs>,
+        e:Vec<E>,
+    }
+
+    impl Default for B {
+        fn default()->Self { Self {
+            in95:0, word90:0, in90:0, in92:0,
+            state14:VecDeque::from([0]), state16:0, state0f:0, state0e:0, counter:0,
+            q3b04a:VecDeque::from([BtStage110Regs{r0:0xB04A,r1:0xB1,r2:0xB2,r3:0xB3}]),
+            q3d24:VecDeque::from([BtStage110Regs{r0:0x3D24,r1:0xD1,r2:0xD2,r3:0xD3}]),
+            e:Vec::new(),
+        }}
+    }
+
+    impl B {
+        fn pop(q:&mut VecDeque<BtStage110Regs>)->BtStage110Regs { q.pop_front().unwrap() }
+    }
+
+    impl BtStage110Backend for B {
+        fn read_input_byte(&mut self,o:u32,off:u32)->u8 {
+            let v=match off {0x95=>self.in95,0x90=>self.in90,0x92=>self.in92,_=>panic!()};
+            self.e.push(E::Read("ib",o.wrapping_add(off),u32::from(v))); v
+        }
+        fn read_input_word(&mut self,o:u32,off:u32)->u32 {
+            assert_eq!(off,0x90); self.e.push(E::Read("iw",o.wrapping_add(off),self.word90)); self.word90
+        }
+        fn read_state_byte(&mut self,s:u32,off:u32)->u8 {
+            let v=match off {
+                0x14=>self.state14.pop_front().unwrap(),
+                0x16=>self.state16,
+                0x0f=>self.state0f,
+                0x0e=>self.state0e,
+                1=>self.counter,
+                _=>panic!(),
+            };
+            self.e.push(E::Read("sb",s.wrapping_add(off),u32::from(v))); v
+        }
+        fn write_state_byte(&mut self,s:u32,off:u32,v:u8) {
+            if off==1 { self.counter=v; }
+            self.e.push(E::Write("sb",s.wrapping_add(off),u32::from(v)));
+        }
+        fn boundary_3b04a(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage110Regs {
+            self.e.push(E::Call("3b04a",a,b,c,d)); Self::pop(&mut self.q3b04a)
+        }
+        fn boundary_3d24(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage110Regs {
+            self.e.push(E::Call("3d24",a,b,c,d)); Self::pop(&mut self.q3d24)
+        }
+    }
+
+    #[test]
+    fn byte95_not_two_preserves_incoming_r2_and_byte95_r3_into_notify() {
+        let mut b=B::default(); b.in95=7; b.state0f=1;
+        assert_eq!(bt_stage110_state_counter(0x1000,0x2000,0xAAAA,0xBBBB,&mut b),0xB04A);
+        assert!(b.e.contains(&E::Call("3b04a",0x2000,0x2000,0xAAAA,0)));
+    }
+
+    #[test]
+    fn exact_word_match_increments_byte16_and_sets_bit4_with_expected_literal_live_in_r2() {
+        let mut b=B::default(); b.in95=2; b.word90=STAGE110_WORD_EXPECTED; b.state16=0xFF;
+        b.state14=VecDeque::from([0x21,0x31]); b.state0f=1;
+        let _=bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b);
+        assert!(b.e.contains(&E::Write("sb",0x2016,0)));
+        assert!(b.e.contains(&E::Write("sb",0x2014,0x31)));
+        assert!(b.e.contains(&E::Call("3b04a",0x2000,0x2000,STAGE110_WORD_EXPECTED,0)));
+    }
+
+    #[test]
+    fn alternate_gate_sets_bit2_and_preserves_shifted_byte92_in_r2() {
+        let mut b=B::default(); b.in95=2; b.word90=0; b.in90=0x18; b.in92=0x02;
+        b.state14=VecDeque::from([0x10,0x14]); b.state0f=1;
+        let _=bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b);
+        assert!(b.e.contains(&E::Write("sb",0x2014,0x14)));
+        assert!(b.e.contains(&E::Call("3b04a",0x2000,0x2000,0x4000_0000,0)));
+    }
+
+    #[test]
+    fn alternate_gate_failure_leaves_raw_local_register_shape_for_notify() {
+        let mut b=B::default(); b.in95=2; b.word90=0; b.in90=0x10; b.state0f=1;
+        let _=bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("3b04a",0x2000,0x2000,STAGE110_WORD_EXPECTED,0)));
+    }
+
+    #[test]
+    fn notify_return_r0_is_final_when_byte0e_zero_and_bit0_suppresses_counter() {
+        let mut b=B::default(); b.in95=9; b.state0f=1; b.state0e=0; b.state14=VecDeque::from([1]);
+        assert_eq!(bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b),0xB04A);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("3d24",..))));
+    }
+
+    #[test]
+    fn buffer_boundary_gets_raw_byte0e_in_r3_and_its_r0_is_final() {
+        let mut b=B::default(); b.in95=9; b.state0f=1; b.state0e=0xA5;
+        assert_eq!(bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b),0x3D24);
+        assert!(b.e.contains(&E::Call("3d24",0x2010,0,0x74,0xA5)));
+        assert!(b.e.contains(&E::Write("sb",0x2001,0)));
+    }
+
+    #[test]
+    fn counter_increments_only_below_state14_high3_limit() {
+        let mut b=B::default(); b.in95=9; b.state14=VecDeque::from([0x60]); b.counter=2;
+        assert_eq!(bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b),0x1000);
+        assert_eq!(b.counter,3);
+
+        let mut b=B::default(); b.in95=9; b.state14=VecDeque::from([0x60]); b.counter=3;
+        let _=bt_stage110_state_counter(0x1000,0x2000,3,4,&mut b);
+        assert_eq!(b.counter,3);
+    }
+
+    #[test]
+    fn provenance_constants_are_exact() {
+        assert_eq!(STAGE110_CURRENT_BT_STATE_COUNTER_ADDR,0x16DB4C);
+        assert_eq!(STAGE110_LEGACY_BT_STATE_COUNTER_ADDR,0x16AB80);
+        assert_eq!(STAGE110_CURRENT_BODY_LEN,136);
+        assert_eq!(STAGE110_WORD_MASK,0x03007800);
+        assert_eq!(STAGE110_WORD_EXPECTED,0x03001800);
+        assert_eq!(STAGE110_BT_NOTIFY_BOUNDARY,0x3B04A);
+        assert_eq!(STAGE110_BT_BUFFER_BOUNDARY,0x3D24);
+    }
+}
