@@ -12479,3 +12479,210 @@ mod stage91_tests {
         assert_eq!(STAGE91_BT_MAX_POLLS, 100);
     }
 }
+
+/// Stage 92: guarded four-byte transfer sequence at `0x171E1C`.
+///
+/// This wrapper composes the already reconstructed Stage-90 and Stage-91 poll
+/// leaves. It also preserves the stack-canary check visible in the binary.
+pub const STAGE92_CURRENT_BT_GUARDED_TRANSFER_ADDR: u32 = 0x0017_1E1C;
+pub const STAGE92_BT_GUARD_ADDR: u32 = 0x0020_0890;
+pub const STAGE92_BT_SNAPSHOT_ADDR: u32 = 0x0022_2554;
+pub const STAGE92_BT_MODE_WORD_ADDR: u32 = 0x0065_0310;
+pub const STAGE92_BT_BYTE_PUBLISH_ADDR: u32 = 0x0065_0328;
+pub const STAGE92_BT_STAGE90_WORD_ADDR: u32 = 0x0065_0318;
+pub const STAGE92_BT_CONTROL_WORD_ADDR: u32 = 0x0065_0314;
+pub const STAGE92_BT_GUARD_FAIL_BOUNDARY: u32 = 0x0000_94C0;
+pub const STAGE92_BT_STAGE90_WRITE_VALUE: u32 = 0x8100_0000;
+
+pub trait BtStage92Backend {
+    fn read_word(&mut self, address: u32) -> u32;
+    fn write_word(&mut self, address: u32, value: u32);
+    fn guard_fail_boundary(
+        &mut self,
+        current_r0: u32,
+        current_r1: u32,
+        saved_guard: u32,
+        live_guard: u32,
+    ) -> u32;
+}
+
+/// Safe source-level model of current `0x171E1C`.
+///
+/// The initial bit-4 gate is read from `0x650310`. On the active path the
+/// snapshot at `0x222554` is consumed little-endian, one byte per iteration.
+/// Each byte is widened to a dword at `0x650328`, `0x81000000` is written to
+/// `0x650318`, then Stage 90 is invoked and its return ignored. Stage 91 is
+/// invoked after all four bytes; its return is also ignored. Bit 3 is finally
+/// ORed into `0x650314`.
+///
+/// The stack guard is checked on both result paths. If it changed, opaque
+/// boundary `0x94C0` is called; if that boundary were to return, its R0 becomes
+/// the wrapper's final return, matching the machine code.
+pub fn bt_stage92_guarded_transfer<B>(
+    backend: &mut B,
+) -> u32
+where
+    B: BtStage92Backend + BtStage90Backend + BtStage91Backend,
+{
+    let saved_guard = backend.read_word(STAGE92_BT_GUARD_ADDR);
+    let snapshot = backend.read_word(STAGE92_BT_SNAPSHOT_ADDR);
+    let mode_word = <B as BtStage91Backend>::read_status_word(
+        backend,
+        STAGE92_BT_MODE_WORD_ADDR,
+    );
+    let active = (mode_word & 0x10) == 0;
+
+    let (mut result, guard_r1) = if active {
+        for byte in snapshot.to_le_bytes() {
+            backend.write_word(STAGE92_BT_BYTE_PUBLISH_ADDR, u32::from(byte));
+            backend.write_word(
+                STAGE92_BT_STAGE90_WORD_ADDR,
+                STAGE92_BT_STAGE90_WRITE_VALUE,
+            );
+            let _ = bt_stage90_bounded_status_poll(backend);
+        }
+
+        let _ = bt_stage91_bounded_bit30_poll(backend);
+
+        let control = backend.read_word(STAGE92_BT_CONTROL_WORD_ADDR);
+        backend.write_word(STAGE92_BT_CONTROL_WORD_ADDR, control | 0x8);
+        (1u32, 4u32)
+    } else {
+        (0u32, 0x10u32)
+    };
+
+    let live_guard = backend.read_word(STAGE92_BT_GUARD_ADDR);
+    if live_guard != saved_guard {
+        result = backend.guard_fail_boundary(result, guard_r1, saved_guard, live_guard);
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod stage92_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec;
+    use std::vec::Vec;
+
+    struct B {
+        guard: u32,
+        guard_reads: VecDeque<u32>,
+        snapshot: u32,
+        mode_reads: VecDeque<u32>,
+        stage90_reads: VecDeque<u32>,
+        control: u32,
+        guard_fail_ret: u32,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                guard: 0x1122_3344,
+                guard_reads: VecDeque::new(),
+                snapshot: 0x4433_2211,
+                mode_reads: VecDeque::from(vec![0, 1 << 30]),
+                stage90_reads: VecDeque::from(vec![0, 0, 0, 0]),
+                control: 0,
+                guard_fail_ret: 0xDEAD_BEEF,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl BtStage92Backend for B {
+        fn read_word(&mut self, address: u32) -> u32 {
+            let value = match address {
+                STAGE92_BT_GUARD_ADDR => self.guard_reads.pop_front().unwrap_or(self.guard),
+                STAGE92_BT_SNAPSHOT_ADDR => self.snapshot,
+                STAGE92_BT_CONTROL_WORD_ADDR => self.control,
+                _ => panic!("unexpected read {address:#x}"),
+            };
+            self.events.push(("read", address, value));
+            value
+        }
+        fn write_word(&mut self, address: u32, value: u32) {
+            if address == STAGE92_BT_CONTROL_WORD_ADDR {
+                self.control = value;
+            }
+            self.events.push(("write", address, value));
+        }
+        fn guard_fail_boundary(
+            &mut self,
+            current_r0: u32,
+            current_r1: u32,
+            saved_guard: u32,
+            live_guard: u32,
+        ) -> u32 {
+            self.events.push(("guard_fail_r0", current_r0, current_r1));
+            self.events.push(("guard_fail_guard", saved_guard, live_guard));
+            self.guard_fail_ret
+        }
+    }
+
+    impl BtStage90Backend for B {
+        fn read_status_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE90_BT_STATUS_WORD_ADDR);
+            self.stage90_reads.pop_front().unwrap_or(0)
+        }
+    }
+
+    impl BtStage91Backend for B {
+        fn read_status_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE91_BT_STATUS_WORD_ADDR);
+            self.mode_reads.pop_front().unwrap_or(1 << 30)
+        }
+    }
+
+    #[test]
+    fn active_path_publishes_snapshot_bytes_in_little_endian_order() {
+        let mut b = B::default();
+        assert_eq!(bt_stage92_guarded_transfer(&mut b), 1);
+        let pubs: Vec<u32> = b.events.iter()
+            .filter(|e| e.0 == "write" && e.1 == STAGE92_BT_BYTE_PUBLISH_ADDR)
+            .map(|e| e.2)
+            .collect();
+        assert_eq!(pubs, vec![0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(b.control & 8, 8);
+    }
+
+    #[test]
+    fn bit4_gate_skips_transfer_and_returns_zero_when_guard_matches() {
+        let mut b = B::default();
+        b.mode_reads = VecDeque::from(vec![0x10]);
+        assert_eq!(bt_stage92_guarded_transfer(&mut b), 0);
+        assert!(!b.events.iter().any(|e| e.0 == "write"));
+    }
+
+    #[test]
+    fn guard_mismatch_replaces_local_result_with_boundary_return() {
+        let mut b = B::default();
+        b.mode_reads = VecDeque::from(vec![0x10]);
+        let saved = b.guard;
+        b.guard_reads = VecDeque::from(vec![saved, saved ^ 1]);
+
+        assert_eq!(bt_stage92_guarded_transfer(&mut b), 0xDEAD_BEEF);
+        assert_eq!(
+            b.events.iter().rev().take(2).copied().collect::<Vec<_>>(),
+            vec![
+                ("guard_fail_guard", saved, saved ^ 1),
+                ("guard_fail_r0", 0, 0x10),
+            ]
+        );
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE92_CURRENT_BT_GUARDED_TRANSFER_ADDR, 0x171E1C);
+        assert_eq!(STAGE92_BT_GUARD_ADDR, 0x200890);
+        assert_eq!(STAGE92_BT_SNAPSHOT_ADDR, 0x222554);
+        assert_eq!(STAGE92_BT_MODE_WORD_ADDR, 0x650310);
+        assert_eq!(STAGE92_BT_BYTE_PUBLISH_ADDR, 0x650328);
+        assert_eq!(STAGE92_BT_STAGE90_WORD_ADDR, 0x650318);
+        assert_eq!(STAGE92_BT_CONTROL_WORD_ADDR, 0x650314);
+        assert_eq!(STAGE92_BT_GUARD_FAIL_BOUNDARY, 0x94C0);
+    }
+}

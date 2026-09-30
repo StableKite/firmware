@@ -750,3 +750,11 @@ Firmware initializes R0 to decimal 100 and reloads `*0x650318` each iteration. T
 Stage 91 reconstructs current `0x171E04`, an exact 20-byte leaf that is byte-identical to public-legacy structural counterpart `0x16DD54`. The adjacent literal resolves to fixed dword address `0x650310`.
 
 Each iteration reloads `*0x650310`, executes `LSLS R3,R3,#1`, and branches on the N flag. The N flag after that shift reflects original bit 30, not bit 31. A set bit 30 returns literal one immediately. Otherwise the loop decrements an initial count of 100 and rereads the dword; after exactly 100 clear observations it returns zero. The model keeps this live-read behavior and does not invent any delay or snapshot.
+
+## Stage 92 — guarded four-byte transfer sequence
+
+Stage 92 reconstructs current `0x171E1C`, an exact 88-byte wrapper with public-legacy structural counterpart `0x16DD6C`. The current literal pool resolves to guard `0x200890`, source snapshot `0x222554`, mode/poll dword `0x650310`, byte publication dword `0x650328`, Stage-90 status dword `0x650318`, and control dword `0x650314`. The legacy pool is identical except the source snapshot is the older relocated address `0x2224A8`.
+
+The wrapper snapshots the stack guard and source dword before testing bit 4 of `*0x650310`. When that bit is set, the local result is zero and the active transfer is skipped. When clear, firmware consumes the four bytes of the saved source dword in little-endian order. For each byte it writes the zero-extended byte to `0x650328`, writes `0x81000000` to `0x650318`, and calls the already recovered Stage-90 bounded signed poll; each Stage-90 return is ignored. After four bytes it calls Stage 91 once, ignores that return, then ORs only bit 3 into dword `0x650314` and sets local result one.
+
+The stack guard is reread on both paths. A mismatch calls hardening boundary `0x94C0`. If that boundary returns, its R0 is the wrapper's final return because the epilogue does not restore the prior local result. The source model preserves that observable machine-code shape without assigning business meaning to the hardening boundary.
