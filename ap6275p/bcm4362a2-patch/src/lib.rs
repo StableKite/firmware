@@ -11138,3 +11138,181 @@ mod stage82_tests {
         assert_eq!(STAGE82_BT_CHAIN_REPEAT_BOUNDARY, 0xBA988);
     }
 }
+
+/// Stage 83: current low-20/full-word gate wrapper at `0x171D08`.
+///
+/// The exact current 62-byte body has one public-legacy structural counterpart at
+/// `0x16D92C`. Two four-byte control-transfer encodings are relocation-masked.
+/// The input word addressed by incoming R2 is deliberately read twice on the
+/// match path: the first snapshot supplies only low 20 bits for comparison with
+/// full incoming R1, while the second snapshot is compared against exact
+/// `0x200FFFFF`.
+pub const STAGE83_CURRENT_BT_LOW20_GATE_ADDR: u32 = 0x0017_1D08;
+pub const STAGE83_BT_SPECIAL_BOUNDARY: u32 = 0x000B_AA08;
+pub const STAGE83_BT_STAGE81_TAIL_ADDR: u32 = STAGE81_CURRENT_BT_CRITICAL_REPAIR_ADDR;
+pub const STAGE83_BT_EXACT_WORD: u32 = 0x200F_FFFF;
+pub const STAGE83_BT_LOW20_MASK: u32 = 0x000F_FFFF;
+pub const STAGE83_BT_SPECIAL_INPUT_ADDR: u32 = 0x0035_2608;
+pub const STAGE83_BT_PUBLISH_WORD_ADDR: u32 = 0x0022_2E00;
+pub const STAGE83_BT_READY_FLAG_ADDR: u32 = 0x0021_70EE;
+pub const STAGE83_BT_REJECT_FLAG_ADDR: u32 = 0x0021_70EF;
+pub const STAGE83_BT_REPAIR_INPUT_ADDR: u32 = 0x0020_4B10;
+
+pub trait BtStage83Backend {
+    /// Loads the dword pointed to by incoming R2. Firmware can perform this twice.
+    fn read_input_word(&mut self, input_ptr: u32) -> u32;
+    fn read_word(&mut self, address: u32) -> u32;
+    fn write_word(&mut self, address: u32, value: u32);
+    fn write_byte(&mut self, address: u32, value: u8);
+
+    /// Current opaque `0xBAA08(value)`.
+    fn special_boundary(&mut self, value: u32) -> u32;
+
+    /// Already recovered Stage-81 tail at current `0x171B84`.
+    fn stage81_tail(&mut self, value: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171D08`.
+///
+/// On low-20 mismatch the local wrapper clears `0x2170EF`, reads fixed repair
+/// input `0x204B10`, logical-shifts it right by one, and tail-forwards that value
+/// into Stage 81. On low-20 match firmware rereads the full input dword. Exact
+/// `0x200FFFFF` invokes `0xBAA08(*0x352608)` and writes one to dword `0x222E00`;
+/// either way the match path then writes one to byte `0x2170EE`. The special
+/// boundary return remains final through those stores; a non-special match
+/// returns incoming R0 unchanged.
+pub fn bt_stage83_low20_fullword_gate<B: BtStage83Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    input_ptr: u32,
+    backend: &mut B,
+) -> u32 {
+    let first = backend.read_input_word(input_ptr);
+    if (first & STAGE83_BT_LOW20_MASK) != incoming_r1 {
+        backend.write_byte(STAGE83_BT_REJECT_FLAG_ADDR, 0);
+        let repair = backend.read_word(STAGE83_BT_REPAIR_INPUT_ADDR);
+        return backend.stage81_tail(repair >> 1);
+    }
+
+    let full = backend.read_input_word(input_ptr);
+    let result = if full == STAGE83_BT_EXACT_WORD {
+        let value = backend.read_word(STAGE83_BT_SPECIAL_INPUT_ADDR);
+        let result = backend.special_boundary(value);
+        backend.write_word(STAGE83_BT_PUBLISH_WORD_ADDR, 1);
+        result
+    } else {
+        incoming_r0
+    };
+
+    backend.write_byte(STAGE83_BT_READY_FLAG_ADDR, 1);
+    result
+}
+
+#[cfg(test)]
+mod stage83_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        input_reads: Vec<u32>,
+        input_values: Vec<u32>,
+        repair: u32,
+        special_input: u32,
+        special_return: u32,
+        stage81_return: u32,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage83Backend for B {
+        fn read_input_word(&mut self, input_ptr: u32) -> u32 {
+            self.events.push(("read_input", input_ptr, 0));
+            let value = self.input_values[self.input_reads.len()];
+            self.input_reads.push(value);
+            value
+        }
+        fn read_word(&mut self, address: u32) -> u32 {
+            self.events.push(("read_word", address, 0));
+            if address == STAGE83_BT_REPAIR_INPUT_ADDR { self.repair } else { self.special_input }
+        }
+        fn write_word(&mut self, address: u32, value: u32) {
+            self.events.push(("write_word", address, value));
+        }
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.events.push(("write_byte", address, u32::from(value)));
+        }
+        fn special_boundary(&mut self, value: u32) -> u32 {
+            self.events.push(("special", value, 0));
+            self.special_return
+        }
+        fn stage81_tail(&mut self, value: u32) -> u32 {
+            self.events.push(("stage81", value, 0));
+            self.stage81_return
+        }
+    }
+
+    #[test]
+    fn low20_mismatch_is_one_read_then_clear_shift_and_stage81_tail() {
+        let mut b = B { input_values: std::vec![0x1234_5678], repair: 0x8000_0003, stage81_return: 77, ..Default::default() };
+        assert_eq!(bt_stage83_low20_fullword_gate(9, 0x45679, 0x1000, &mut b), 77);
+        assert_eq!(b.input_reads, [0x1234_5678]);
+        assert_eq!(b.events, [
+            ("read_input", 0x1000, 0),
+            ("write_byte", STAGE83_BT_REJECT_FLAG_ADDR, 0),
+            ("read_word", STAGE83_BT_REPAIR_INPUT_ADDR, 0),
+            ("stage81", 0x4000_0001, 0),
+        ]);
+    }
+
+    #[test]
+    fn matching_low20_rereads_full_word_and_non_special_returns_incoming_r0() {
+        let mut b = B { input_values: std::vec![0xABCF_FFFF, 0x111F_FFFF], ..Default::default() };
+        assert_eq!(bt_stage83_low20_fullword_gate(0xCAFE, 0xF_FFFF, 0x2000, &mut b), 0xCAFE);
+        assert_eq!(b.input_reads, [0xABCF_FFFF, 0x111F_FFFF]);
+        assert_eq!(b.events, [
+            ("read_input", 0x2000, 0),
+            ("read_input", 0x2000, 0),
+            ("write_byte", STAGE83_BT_READY_FLAG_ADDR, 1),
+        ]);
+    }
+
+    #[test]
+    fn exact_second_read_calls_special_publishes_then_sets_ready_and_preserves_return() {
+        let mut b = B {
+            input_values: std::vec![0xAA0F_FFFF, STAGE83_BT_EXACT_WORD],
+            special_input: 0x1234_5678,
+            special_return: 0xDEAD_BEEF,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage83_low20_fullword_gate(5, 0xF_FFFF, 0x3000, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.events, [
+            ("read_input", 0x3000, 0),
+            ("read_input", 0x3000, 0),
+            ("read_word", STAGE83_BT_SPECIAL_INPUT_ADDR, 0),
+            ("special", 0x1234_5678, 0),
+            ("write_word", STAGE83_BT_PUBLISH_WORD_ADDR, 1),
+            ("write_byte", STAGE83_BT_READY_FLAG_ADDR, 1),
+        ]);
+    }
+
+    #[test]
+    fn full_r1_is_compared_against_only_low20_snapshot() {
+        let mut b = B { input_values: std::vec![0x000F_FFFF], repair: 2, stage81_return: 11, ..Default::default() };
+        assert_eq!(bt_stage83_low20_fullword_gate(0, 0x001F_FFFF, 7, &mut b), 11);
+        assert_eq!(b.input_reads.len(), 1);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE83_CURRENT_BT_LOW20_GATE_ADDR, 0x171D08);
+        assert_eq!(STAGE83_BT_SPECIAL_BOUNDARY, 0xBAA08);
+        assert_eq!(STAGE83_BT_STAGE81_TAIL_ADDR, 0x171B84);
+        assert_eq!(STAGE83_BT_EXACT_WORD, 0x200F_FFFF);
+        assert_eq!(STAGE83_BT_SPECIAL_INPUT_ADDR, 0x352608);
+        assert_eq!(STAGE83_BT_PUBLISH_WORD_ADDR, 0x222E00);
+        assert_eq!(STAGE83_BT_READY_FLAG_ADDR, 0x2170EE);
+        assert_eq!(STAGE83_BT_REJECT_FLAG_ADDR, 0x2170EF);
+        assert_eq!(STAGE83_BT_REPAIR_INPUT_ADDR, 0x204B10);
+    }
+}
