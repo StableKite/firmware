@@ -666,3 +666,13 @@ The wrapper preserves incoming R0, then calls the already identified critical-st
 After the repair gate it reads byte `0x2170EF`. A nonzero byte skips the optional call. A zero byte is first changed to one, then firmware calls opaque `0x15180` with the exact register shape `(0x217174, original incoming R0, 1)`. That call's return is ignored.
 
 Finally the saved critical token is restored into R0, the local frame is popped without PC, and firmware tail-branches to `0x780(token)`. The return from that restore boundary is therefore the function's final return. The source model preserves the critical enter/repair/flag/finalize/restore order and keeps the `0x15180` contract opaque.
+
+## Stage 82 — reset/gate/dispatch sequence
+
+Stage 82 reconstructs current `0x171BD4`, an exact 112-byte function with a public-legacy structural counterpart at `0x16D98C`. Masking the seven four-byte direct-call encodings leaves 84 fixed bytes and exactly one current plus one legacy structural hit. Current direct targets are opaque setup entries `0x151E0` and `0x15214`, recovered Stage 81 at `0x171B84`, opaque `0xBAA08`, and opaque `0xBA988` called three times.
+
+The function begins with `0x151E0(0x217174, 0x171D05, 0)` followed by `0x15214(0x217174, 1)`. The first return is ignored; the second return remains live in R0 unless a later Stage-81 or chain call replaces it. It then performs four fixed stores in binary order: byte `0x2170EF = 0`, halfword `0x2170EC = 0`, halfword `0x217170 = 0`, and halfword `0x204B14 = 0x50`.
+
+Firmware reads dword `0x352604` and compares only its low 20 bits with `0xFFFFF`. A match writes byte `0x2170EE = 1`. A mismatch instead loads dword `0x204B18`, calls recovered Stage 81 with that value, and keeps the Stage-81 return in R0. The status dword at `0x352604` is then re-read after that optional call, preserving mutation visibility.
+
+The second gate compares the full re-read status with exact literal `0x200FFFFF`. On mismatch firmware writes dword zero to `0x222E00` and returns the current R0. On exact match it loads dword `0x352608`, calls `0xBAA08`, then threads R0 through three consecutive calls to `0xBA988`, writes dword one to `0x222E00`, and returns the third `0xBA988` result. The source model preserves the reset order, two distinct status tests, post-Stage81 reread, live-R0 return shape, and four-call chain while keeping unresolved boundaries opaque.

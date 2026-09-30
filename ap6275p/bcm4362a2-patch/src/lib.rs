@@ -10920,3 +10920,221 @@ mod stage81_tests {
         assert_eq!(STAGE81_BT_FINALIZE_BOUNDARY, 0x15180);
     }
 }
+
+/// Stage 82: current reset/gate/dispatch sequence at `0x171BD4`.
+///
+/// The exact 112-byte current body has one public-legacy structural counterpart at
+/// `0x16D98C`. Masking seven four-byte direct-call encodings leaves 84 fixed bytes.
+/// The two setup boundaries and the two late chain boundaries remain opaque; the
+/// already recovered Stage-81 call is represented explicitly as a boundary here so
+/// its possible ambient-memory effects remain visible to the mandatory status reread.
+pub const STAGE82_CURRENT_BT_RESET_GATE_SEQUENCE_ADDR: u32 = 0x0017_1BD4;
+pub const STAGE82_BT_SETUP_ZERO_BOUNDARY: u32 = 0x0001_51E0;
+pub const STAGE82_BT_SETUP_ONE_BOUNDARY: u32 = 0x0001_5214;
+pub const STAGE82_BT_SETUP_CONTEXT_ADDR: u32 = 0x0021_7174;
+pub const STAGE82_BT_SETUP_CALLBACK_THUMB: u32 = 0x0017_1D05;
+pub const STAGE82_BT_RESET_BYTE_ADDR: u32 = 0x0021_70EF;
+pub const STAGE82_BT_RESET_HALFWORD_A_ADDR: u32 = 0x0021_70EC;
+pub const STAGE82_BT_RESET_HALFWORD_B_ADDR: u32 = 0x0021_7170;
+pub const STAGE82_BT_HALFWORD_50_ADDR: u32 = 0x0020_4B14;
+pub const STAGE82_BT_STATUS_WORD_ADDR: u32 = 0x0035_2604;
+pub const STAGE82_BT_LOW20_EXPECTED: u32 = 0x000F_FFFF;
+pub const STAGE82_BT_MATCH_FLAG_ADDR: u32 = 0x0021_70EE;
+pub const STAGE82_BT_STAGE81_INPUT_ADDR: u32 = 0x0020_4B18;
+pub const STAGE82_BT_STAGE81_BOUNDARY: u32 = STAGE81_CURRENT_BT_CRITICAL_REPAIR_ADDR;
+pub const STAGE82_BT_FULL_EXPECTED: u32 = 0x200F_FFFF;
+pub const STAGE82_BT_CHAIN_INPUT_ADDR: u32 = 0x0035_2608;
+pub const STAGE82_BT_CHAIN_FIRST_BOUNDARY: u32 = 0x000B_AA08;
+pub const STAGE82_BT_CHAIN_REPEAT_BOUNDARY: u32 = 0x000B_A988;
+pub const STAGE82_BT_RESULT_WORD_ADDR: u32 = 0x0022_2E00;
+
+pub trait BtStage82Backend {
+    fn setup_zero(&mut self, context: u32, callback_thumb: u32, zero: u32) -> u32;
+    fn setup_one(&mut self, context: u32, one: u32) -> u32;
+
+    fn write_byte(&mut self, address: u32, value: u8);
+    fn write_halfword(&mut self, address: u32, value: u16);
+    fn read_word(&mut self, address: u32) -> u32;
+    fn write_word(&mut self, address: u32, value: u32);
+
+    /// Current direct call to recovered Stage 81. Its return becomes current R0.
+    /// Implementations may also mutate ambient state, which is why firmware rereads
+    /// `STAGE82_BT_STATUS_WORD_ADDR` after this call.
+    fn stage81_boundary(&mut self, value: u32) -> u32;
+
+    fn chain_first(&mut self, value: u32) -> u32;
+    fn chain_repeat(&mut self, value: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171BD4`.
+///
+/// The return from setup-zero is ignored. The setup-one return stays live unless
+/// replaced by Stage 81 or by the late four-call chain. The status word is read once
+/// for the low-20-bit gate and read again after the optional Stage-81 call for the
+/// full-word equality gate. The final result dword is always written as zero or one,
+/// and that store does not alter the current R0 return value.
+pub fn bt_stage82_reset_gate_sequence<B: BtStage82Backend>(
+    backend: &mut B,
+) -> u32 {
+    let _ = backend.setup_zero(STAGE82_BT_SETUP_CONTEXT_ADDR, STAGE82_BT_SETUP_CALLBACK_THUMB, 0);
+    let mut current_r0 = backend.setup_one(STAGE82_BT_SETUP_CONTEXT_ADDR, 1);
+
+    backend.write_byte(STAGE82_BT_RESET_BYTE_ADDR, 0);
+    backend.write_halfword(STAGE82_BT_RESET_HALFWORD_A_ADDR, 0);
+    backend.write_halfword(STAGE82_BT_RESET_HALFWORD_B_ADDR, 0);
+    backend.write_halfword(STAGE82_BT_HALFWORD_50_ADDR, 0x50);
+
+    let first_status = backend.read_word(STAGE82_BT_STATUS_WORD_ADDR);
+    if (first_status & STAGE82_BT_LOW20_EXPECTED) == STAGE82_BT_LOW20_EXPECTED {
+        backend.write_byte(STAGE82_BT_MATCH_FLAG_ADDR, 1);
+    } else {
+        let value = backend.read_word(STAGE82_BT_STAGE81_INPUT_ADDR);
+        current_r0 = backend.stage81_boundary(value);
+    }
+
+    let final_status = backend.read_word(STAGE82_BT_STATUS_WORD_ADDR);
+    let matched = final_status == STAGE82_BT_FULL_EXPECTED;
+    if matched {
+        let value = backend.read_word(STAGE82_BT_CHAIN_INPUT_ADDR);
+        current_r0 = backend.chain_first(value);
+        current_r0 = backend.chain_repeat(current_r0);
+        current_r0 = backend.chain_repeat(current_r0);
+        current_r0 = backend.chain_repeat(current_r0);
+    }
+
+    backend.write_word(STAGE82_BT_RESULT_WORD_ADDR, if matched { 1 } else { 0 });
+    current_r0
+}
+
+#[cfg(test)]
+mod stage82_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        status: u32,
+        stage81_status_after: Option<u32>,
+        stage81_input: u32,
+        chain_input: u32,
+        setup_one_return: u32,
+        stage81_return: u32,
+        chain_returns: [u32; 4],
+        chain_index: usize,
+        events: Vec<(&'static str, u32, u32, u32)>,
+    }
+
+    impl BtStage82Backend for B {
+        fn setup_zero(&mut self, context: u32, callback_thumb: u32, zero: u32) -> u32 {
+            self.events.push(("setup_zero", context, callback_thumb, zero));
+            0xAAAA_AAAA
+        }
+        fn setup_one(&mut self, context: u32, one: u32) -> u32 {
+            self.events.push(("setup_one", context, one, 0));
+            self.setup_one_return
+        }
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.events.push(("write_byte", address, u32::from(value), 0));
+        }
+        fn write_halfword(&mut self, address: u32, value: u16) {
+            self.events.push(("write_halfword", address, u32::from(value), 0));
+        }
+        fn read_word(&mut self, address: u32) -> u32 {
+            self.events.push(("read_word", address, 0, 0));
+            match address {
+                STAGE82_BT_STATUS_WORD_ADDR => self.status,
+                STAGE82_BT_STAGE81_INPUT_ADDR => self.stage81_input,
+                STAGE82_BT_CHAIN_INPUT_ADDR => self.chain_input,
+                _ => 0,
+            }
+        }
+        fn write_word(&mut self, address: u32, value: u32) {
+            self.events.push(("write_word", address, value, 0));
+        }
+        fn stage81_boundary(&mut self, value: u32) -> u32 {
+            self.events.push(("stage81", value, 0, 0));
+            if let Some(v) = self.stage81_status_after { self.status = v; }
+            self.stage81_return
+        }
+        fn chain_first(&mut self, value: u32) -> u32 {
+            self.events.push(("chain_first", value, 0, 0));
+            self.chain_index = 1;
+            self.chain_returns[0]
+        }
+        fn chain_repeat(&mut self, value: u32) -> u32 {
+            self.events.push(("chain_repeat", value, 0, 0));
+            let out = self.chain_returns[self.chain_index];
+            self.chain_index += 1;
+            out
+        }
+    }
+
+    #[test]
+    fn low20_match_sets_flag_and_nonfull_status_preserves_setup_return() {
+        let mut b = B {
+            status: STAGE82_BT_LOW20_EXPECTED,
+            setup_one_return: 0x1234,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage82_reset_gate_sequence(&mut b), 0x1234);
+        assert!(b.events.contains(&("write_byte", STAGE82_BT_MATCH_FLAG_ADDR, 1, 0)));
+        assert!(!b.events.iter().any(|x| x.0 == "stage81"));
+        assert_eq!(b.events.last(), Some(&("write_word", STAGE82_BT_RESULT_WORD_ADDR, 0, 0)));
+    }
+
+    #[test]
+    fn stage81_mutation_is_visible_to_full_status_reread_and_chain_threads_r0() {
+        let mut b = B {
+            status: 0,
+            stage81_status_after: Some(STAGE82_BT_FULL_EXPECTED),
+            stage81_input: 0x55,
+            stage81_return: 0x100,
+            chain_input: 0x77,
+            chain_returns: [0x10, 0x20, 0x30, 0x40],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage82_reset_gate_sequence(&mut b), 0x40);
+        assert_eq!(b.events.iter().filter(|x| x.0 == "read_word" && x.1 == STAGE82_BT_STATUS_WORD_ADDR).count(), 2);
+        assert_eq!(b.events.iter().filter(|x| x.0 == "chain_repeat").map(|x| x.1).collect::<Vec<_>>(), [0x10, 0x20, 0x30]);
+        assert_eq!(b.events.last(), Some(&("write_word", STAGE82_BT_RESULT_WORD_ADDR, 1, 0)));
+    }
+
+    #[test]
+    fn full_match_without_stage81_runs_chain_and_overrides_setup_return() {
+        let mut b = B {
+            status: STAGE82_BT_FULL_EXPECTED,
+            setup_one_return: 0x9999,
+            chain_input: 5,
+            chain_returns: [6, 7, 8, 9],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage82_reset_gate_sequence(&mut b), 9);
+        assert!(!b.events.iter().any(|x| x.0 == "stage81"));
+        assert!(b.events.contains(&("write_byte", STAGE82_BT_MATCH_FLAG_ADDR, 1, 0)));
+    }
+
+    #[test]
+    fn reset_writes_precede_status_gate_in_binary_order() {
+        let mut b = B { status: STAGE82_BT_LOW20_EXPECTED, ..Default::default() };
+        let _ = bt_stage82_reset_gate_sequence(&mut b);
+        let names = b.events.iter().map(|x| x.0).collect::<Vec<_>>();
+        assert_eq!(&names[..7], [
+            "setup_zero", "setup_one",
+            "write_byte", "write_halfword", "write_halfword", "write_halfword",
+            "read_word",
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE82_CURRENT_BT_RESET_GATE_SEQUENCE_ADDR, 0x171BD4);
+        assert_eq!(STAGE82_BT_STAGE81_BOUNDARY, 0x171B84);
+        assert_eq!(STAGE82_BT_STATUS_WORD_ADDR, 0x352604);
+        assert_eq!(STAGE82_BT_LOW20_EXPECTED, 0xFFFFF);
+        assert_eq!(STAGE82_BT_FULL_EXPECTED, 0x200FFFFF);
+        assert_eq!(STAGE82_BT_RESULT_WORD_ADDR, 0x222E00);
+        assert_eq!(STAGE82_BT_CHAIN_FIRST_BOUNDARY, 0xBAA08);
+        assert_eq!(STAGE82_BT_CHAIN_REPEAT_BOUNDARY, 0xBA988);
+    }
+}
