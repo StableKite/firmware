@@ -12952,3 +12952,202 @@ mod stage95_tests {
         assert_eq!(STAGE95_BT_STAGE90_ADDR, 0x171DEC);
     }
 }
+
+/// Stage 96: implementation closure for the Stage-25 raw mode-one target at `0x17218C`.
+///
+/// The routine installs a callback pointer and mode byte, runs a fixed opaque-boundary
+/// sequence, then chooses between the Stage-25 mode-two target and a primary `(22, 19)` tail.
+pub const STAGE96_CURRENT_BT_MODE1_TARGET_ADDR: u32 = 0x0017_218C;
+pub const STAGE96_BT_CALLBACK_SLOT_ADDR: u32 = 0x0021_66D4;
+pub const STAGE96_BT_CALLBACK_THUMB: u32 = 0x0017_1FD9;
+pub const STAGE96_BT_MODE_ADDR: u32 = 0x0022_3064;
+pub const STAGE96_BT_FALLBACK_GATE_BYTE_ADDR: u32 = 0x0020_CEDD;
+
+pub const STAGE96_BT_BOUNDARY_86184: u32 = 0x0008_6184;
+pub const STAGE96_BT_BOUNDARY_86370: u32 = 0x0008_6370;
+pub const STAGE96_BT_BOUNDARY_89320: u32 = 0x0008_9320;
+pub const STAGE96_BT_BOUNDARY_89398: u32 = 0x0008_9398;
+pub const STAGE96_BT_BOUNDARY_860DC: u32 = 0x0008_60DC;
+pub const STAGE96_BT_BOUNDARY_959C0: u32 = 0x0009_59C0;
+pub const STAGE96_BT_GATE_BOUNDARY: u32 = 0x0003_386C;
+pub const STAGE96_BT_OPTIONAL_BOUNDARY: u32 = 0x0002_DE80;
+pub const STAGE96_BT_PRIMARY_TAIL: u32 = 0x0008_AEAC;
+pub const STAGE96_BT_FALLBACK_MODE2_TARGET: u32 = STAGE25_BT_MODE2_TARGET_ADDR;
+
+pub trait BtStage96Backend {
+    fn write_callback_ptr(&mut self, address: u32, value: u32);
+    fn write_mode_byte(&mut self, address: u32, value: u8);
+
+    /// Only the register values explicitly established or preserved by local code are modeled.
+    fn boundary_86184(&mut self, incoming_r0: u32, incoming_r1: u32, r2: u32, r3: u32) -> u32;
+    fn boundary_86370(&mut self, live_r0: u32) -> u32;
+    fn boundary_89320(&mut self, r0: u32) -> u32;
+    fn boundary_89398(&mut self, r0: u32) -> u32;
+    fn boundary_860dc(&mut self, r0: u32) -> u32;
+    fn boundary_959c0(&mut self, live_r0: u32) -> u32;
+    fn gate_boundary_3386c(&mut self, live_r0: u32) -> u32;
+
+    fn read_fallback_gate_byte(&mut self, address: u32) -> u8;
+    fn optional_boundary_2de80(&mut self, live_r0: u32) -> u32;
+
+    fn primary_tail_8aeac(&mut self, r0: u32, r1: u32) -> u32;
+    fn fallback_mode2_tail(&mut self, r0: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x17218C`.
+///
+/// The model intentionally does not assign semantic names to the opaque runtime calls. It
+/// preserves unconditional setup, the three explicit R0=0 resets, the live R0 chain into
+/// `0x3386C`, short-circuiting of the fallback byte read, and both tail-return shapes.
+pub fn bt_stage96_mode1_target<B: BtStage96Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    backend: &mut B,
+) -> u32 {
+    backend.write_callback_ptr(STAGE96_BT_CALLBACK_SLOT_ADDR, STAGE96_BT_CALLBACK_THUMB);
+    backend.write_mode_byte(STAGE96_BT_MODE_ADDR, 2);
+
+    let r0 = backend.boundary_86184(incoming_r0, incoming_r1, 2, STAGE96_BT_MODE_ADDR);
+    let _ = backend.boundary_86370(r0);
+
+    let _ = backend.boundary_89320(0);
+    let _ = backend.boundary_89398(0);
+    let r0 = backend.boundary_860dc(0);
+    let r0 = backend.boundary_959c0(r0);
+    let gate = backend.gate_boundary_3386c(r0);
+
+    if gate == 0 && backend.read_fallback_gate_byte(STAGE96_BT_FALLBACK_GATE_BYTE_ADDR) == 0 {
+        return backend.fallback_mode2_tail(0);
+    }
+
+    let _ = backend.optional_boundary_2de80(gate);
+    backend.primary_tail_8aeac(22, 19)
+}
+
+#[cfg(test)]
+mod stage96_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    struct B {
+        gate: u32,
+        gate_byte: u8,
+        ret860dc: u32,
+        ret959c0: u32,
+        primary: u32,
+        fallback: u32,
+        events: Vec<(&'static str, u32, u32, u32, u32)>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                gate: 0,
+                gate_byte: 0,
+                ret860dc: 0x60DC,
+                ret959c0: 0x59C0,
+                primary: 0x8AEAC,
+                fallback: 0x1720E8,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl BtStage96Backend for B {
+        fn write_callback_ptr(&mut self, a: u32, v: u32) {
+            self.events.push(("callback", a, v, 0, 0));
+        }
+        fn write_mode_byte(&mut self, a: u32, v: u8) {
+            self.events.push(("mode", a, v as u32, 0, 0));
+        }
+        fn boundary_86184(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32 {
+            self.events.push(("86184", r0, r1, r2, r3));
+            0x86184
+        }
+        fn boundary_86370(&mut self, r0: u32) -> u32 {
+            self.events.push(("86370", r0, 0, 0, 0)); 0x86370
+        }
+        fn boundary_89320(&mut self, r0: u32) -> u32 {
+            self.events.push(("89320", r0, 0, 0, 0)); 0x89320
+        }
+        fn boundary_89398(&mut self, r0: u32) -> u32 {
+            self.events.push(("89398", r0, 0, 0, 0)); 0x89398
+        }
+        fn boundary_860dc(&mut self, r0: u32) -> u32 {
+            self.events.push(("860dc", r0, 0, 0, 0)); self.ret860dc
+        }
+        fn boundary_959c0(&mut self, r0: u32) -> u32 {
+            self.events.push(("959c0", r0, 0, 0, 0)); self.ret959c0
+        }
+        fn gate_boundary_3386c(&mut self, r0: u32) -> u32 {
+            self.events.push(("3386c", r0, 0, 0, 0)); self.gate
+        }
+        fn read_fallback_gate_byte(&mut self, a: u32) -> u8 {
+            self.events.push(("gate_byte", a, 0, 0, 0)); self.gate_byte
+        }
+        fn optional_boundary_2de80(&mut self, r0: u32) -> u32 {
+            self.events.push(("2de80", r0, 0, 0, 0)); 0x2DE80
+        }
+        fn primary_tail_8aeac(&mut self, r0: u32, r1: u32) -> u32 {
+            self.events.push(("primary_tail", r0, r1, 0, 0)); self.primary
+        }
+        fn fallback_mode2_tail(&mut self, r0: u32) -> u32 {
+            self.events.push(("mode2_tail", r0, 0, 0, 0)); self.fallback
+        }
+    }
+
+    #[test]
+    fn setup_and_zero_resets_precede_gate_chain() {
+        let mut b = B::default();
+        let _ = bt_stage96_mode1_target(0xAA, 0xBB, &mut b);
+        assert_eq!(b.events[0], ("callback", STAGE96_BT_CALLBACK_SLOT_ADDR, STAGE96_BT_CALLBACK_THUMB, 0, 0));
+        assert_eq!(b.events[1], ("mode", STAGE96_BT_MODE_ADDR, 2, 0, 0));
+        assert_eq!(b.events[2], ("86184", 0xAA, 0xBB, 2, STAGE96_BT_MODE_ADDR));
+        assert_eq!(b.events[3], ("86370", 0x86184, 0, 0, 0));
+        assert_eq!(b.events[4].0, "89320"); assert_eq!(b.events[4].1, 0);
+        assert_eq!(b.events[5].0, "89398"); assert_eq!(b.events[5].1, 0);
+        assert_eq!(b.events[6], ("860dc", 0, 0, 0, 0));
+        assert_eq!(b.events[7], ("959c0", b.ret860dc, 0, 0, 0));
+        assert_eq!(b.events[8], ("3386c", b.ret959c0, 0, 0, 0));
+    }
+
+    #[test]
+    fn zero_gate_and_zero_byte_tail_to_mode2_with_zero_r0() {
+        let mut b = B { gate: 0, gate_byte: 0, fallback: 0xCAFE, ..Default::default() };
+        assert_eq!(bt_stage96_mode1_target(1, 2, &mut b), 0xCAFE);
+        assert!(b.events.iter().any(|x|x.0=="gate_byte"));
+        assert_eq!(b.events.last().copied(), Some(("mode2_tail", 0, 0, 0, 0)));
+        assert!(!b.events.iter().any(|x|x.0=="2de80" || x.0=="primary_tail"));
+    }
+
+    #[test]
+    fn nonzero_gate_skips_byte_read_and_primary_tail_uses_literals() {
+        let mut b = B { gate: 7, primary: 0x12345678, ..Default::default() };
+        assert_eq!(bt_stage96_mode1_target(1, 2, &mut b), 0x12345678);
+        assert!(!b.events.iter().any(|x|x.0=="gate_byte"));
+        assert!(b.events.iter().any(|x|*x==("2de80",7,0,0,0)));
+        assert_eq!(b.events.last().copied(), Some(("primary_tail",22,19,0,0)));
+    }
+
+    #[test]
+    fn zero_gate_nonzero_byte_calls_optional_with_zero_then_primary_tail() {
+        let mut b = B { gate: 0, gate_byte: 1, primary: 9, ..Default::default() };
+        assert_eq!(bt_stage96_mode1_target(0, 0, &mut b), 9);
+        let g=b.events.iter().position(|x|x.0=="gate_byte").unwrap();
+        let o=b.events.iter().position(|x|x.0=="2de80").unwrap();
+        assert!(g<o);
+        assert_eq!(b.events[o], ("2de80",0,0,0,0));
+        assert_eq!(b.events.last().copied(), Some(("primary_tail",22,19,0,0)));
+    }
+
+    #[test]
+    fn provenance_constants_close_stage25_mode_one_target() {
+        assert_eq!(STAGE96_CURRENT_BT_MODE1_TARGET_ADDR, STAGE25_BT_MODE1_TARGET_ADDR);
+        assert_eq!(STAGE96_BT_CALLBACK_SLOT_ADDR, 0x2166D4);
+        assert_eq!(STAGE96_BT_CALLBACK_THUMB, 0x171FD9);
+        assert_eq!(STAGE96_BT_MODE_ADDR, 0x223064);
+        assert_eq!(STAGE96_BT_FALLBACK_GATE_BYTE_ADDR, 0x20CEDD);
+        assert_eq!(STAGE96_BT_FALLBACK_MODE2_TARGET, 0x1720E8);
+    }
+}
