@@ -12224,3 +12224,90 @@ mod stage88_tests {
         assert_eq!(STAGE88_BT_STAGE81_TAIL, 0x171B84);
     }
 }
+
+/// Stage 89: current fixed-global tail thunk at `0x171DE0`.
+///
+/// The exact current function body is eight bytes. The adjacent literal at
+/// `0x171DE8` resolves to `0x222078`; it is data, not part of the body.
+/// Firmware loads R3 with that address, loads R0 from `*R3`, and tail-branches
+/// to opaque current boundary `0x13218`. Incoming R1/R2 survive; R3 does not.
+pub const STAGE89_CURRENT_BT_FIXED_GLOBAL_TAIL_ADDR: u32 = 0x0017_1DE0;
+pub const STAGE89_BT_GLOBAL_WORD_ADDR: u32 = 0x0022_2078;
+pub const STAGE89_BT_TAIL_BOUNDARY: u32 = 0x0001_3218;
+
+pub trait BtStage89Backend {
+    fn read_global_word(&mut self, address: u32) -> u32;
+    fn tail_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171DE0`.
+///
+/// The incoming R0 and R3 values are discarded by the thunk. R1/R2 are
+/// forwarded unchanged. The tail boundary sees R3 equal to the literal address
+/// used by the load, and its return is the thunk's final return.
+pub fn bt_stage89_fixed_global_tail<B: BtStage89Backend>(
+    _incoming_r0: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    _incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let value = backend.read_global_word(STAGE89_BT_GLOBAL_WORD_ADDR);
+    backend.tail_boundary(
+        value,
+        incoming_r1,
+        incoming_r2,
+        STAGE89_BT_GLOBAL_WORD_ADDR,
+    )
+}
+
+#[cfg(test)]
+mod stage89_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        word: u32,
+        ret: u32,
+        events: Vec<(&'static str, u32, u32, u32, u32)>,
+    }
+
+    impl BtStage89Backend for B {
+        fn read_global_word(&mut self, address: u32) -> u32 {
+            self.events.push(("read", address, 0, 0, 0));
+            self.word
+        }
+        fn tail_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32 {
+            self.events.push(("tail", r0, r1, r2, r3));
+            self.ret
+        }
+    }
+
+    #[test]
+    fn overwrites_r0_and_r3_but_preserves_r1_r2_into_tail() {
+        let mut b = B { word: 0xAABB_CCDD, ret: 0x1234_5678, ..Default::default() };
+        assert_eq!(
+            bt_stage89_fixed_global_tail(0xDEAD_BEEF, 0x11, 0x22, 0x33, &mut b),
+            0x1234_5678
+        );
+        assert_eq!(b.events, [
+            ("read", STAGE89_BT_GLOBAL_WORD_ADDR, 0, 0, 0),
+            ("tail", 0xAABB_CCDD, 0x11, 0x22, STAGE89_BT_GLOBAL_WORD_ADDR),
+        ]);
+    }
+
+    #[test]
+    fn tail_return_is_final_without_local_transform() {
+        let mut b = B { word: 0, ret: 0xFFFF_FF00, ..Default::default() };
+        assert_eq!(bt_stage89_fixed_global_tail(1, 2, 3, 4, &mut b), 0xFFFF_FF00);
+    }
+
+    #[test]
+    fn provenance_constants_are_current_only() {
+        assert_eq!(STAGE89_CURRENT_BT_FIXED_GLOBAL_TAIL_ADDR, 0x171DE0);
+        assert_eq!(STAGE89_BT_GLOBAL_WORD_ADDR, 0x222078);
+        assert_eq!(STAGE89_BT_TAIL_BOUNDARY, 0x13218);
+    }
+}
