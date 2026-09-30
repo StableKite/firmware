@@ -11946,3 +11946,281 @@ mod stage87_tests {
         assert_eq!(STAGE87_BT_STAGE81_ADDR,0x171B84);
     }
 }
+
+/// Stage 88: current wait/reset wrapper at `0x171D68`.
+///
+/// The exact current body is 92 bytes. No public-legacy structural counterpart is
+/// promoted: current semantics are derived only from the canonical 91900-byte HCD.
+/// The model preserves the initial low-20 gate, mandatory full-word rereads, the
+/// unbounded local wait loop, path-dependent R0 forwarding into `0xBAAE4`, the
+/// critical-state token restore, and the mismatch tail into already recovered Stage 81.
+pub const STAGE88_CURRENT_BT_WAIT_RESET_ADDR: u32 = 0x0017_1D68;
+pub const STAGE88_BT_STATUS_WORD_ADDR: u32 = 0x0035_2604;
+pub const STAGE88_BT_LOW20_EXPECTED: u32 = 0x000F_FFFF;
+pub const STAGE88_BT_FULL_EXPECTED: u32 = 0x200F_FFFF;
+pub const STAGE88_BT_STATE_WORD_ADDR: u32 = 0x0035_2600;
+pub const STAGE88_BT_STATE_WORD_VALUE: u32 = 3;
+pub const STAGE88_BT_SECOND_RESET_WORD_ADDR: u32 = 0x0035_2614;
+pub const STAGE88_BT_REJECT_FLAG_ADDR: u32 = 0x0021_70EF;
+pub const STAGE88_BT_READY_FLAG_ADDR: u32 = 0x0021_70EE;
+pub const STAGE88_BT_REPAIR_INPUT_ADDR: u32 = 0x0020_4B10;
+pub const STAGE88_BT_WAIT_BOUNDARY: u32 = 0x000B_0210;
+pub const STAGE88_BT_PREP_BOUNDARY: u32 = 0x000B_AAE4;
+pub const STAGE88_BT_CRITICAL_BOUNDARY: u32 = 0x0000_0780;
+pub const STAGE88_BT_STAGE81_TAIL: u32 = STAGE81_CURRENT_BT_CRITICAL_REPAIR_ADDR;
+
+pub trait BtStage88Backend {
+    fn read_word(&mut self, address: u32) -> u32;
+    fn write_word(&mut self, address: u32, value: u32);
+    fn write_byte(&mut self, address: u32, value: u8);
+
+    /// Opaque current `0xB0210`. The body reaches it with the live caller
+    /// registers shown here; its return becomes the next live R0.
+    fn wait_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+
+    /// Opaque current `0xBAAE4`. Its return is immediately overwritten.
+    fn prep_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+
+    /// Current critical-state boundary `0x780(value)`.
+    fn critical_swap(&mut self, value: u32) -> u32;
+
+    /// Already recovered Stage-81 tail at current `0x171B84`.
+    fn stage81_tail(&mut self, value: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171D68`.
+///
+/// The first status read is used only for the low-20 gate. On the match path the
+/// full status is reread before every exact-word test, so the model deliberately
+/// does not reuse the first snapshot. There is no local retry bound.
+pub fn bt_stage88_wait_reset<B: BtStage88Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let first = backend.read_word(STAGE88_BT_STATUS_WORD_ADDR);
+    let initial_low20 = first & STAGE88_BT_LOW20_EXPECTED;
+
+    if initial_low20 != STAGE88_BT_LOW20_EXPECTED {
+        backend.write_byte(STAGE88_BT_REJECT_FLAG_ADDR, 0);
+        let repair = backend.read_word(STAGE88_BT_REPAIR_INPUT_ADDR);
+        return backend.stage81_tail(repair >> 1);
+    }
+
+    let mut live_r0 = incoming_r0;
+    loop {
+        let full = backend.read_word(STAGE88_BT_STATUS_WORD_ADDR);
+        if full == STAGE88_BT_FULL_EXPECTED {
+            break;
+        }
+
+        live_r0 = backend.wait_boundary(
+            live_r0,
+            STAGE88_BT_LOW20_EXPECTED,
+            initial_low20,
+            full,
+        );
+    }
+
+    backend.write_word(STAGE88_BT_STATE_WORD_ADDR, STAGE88_BT_STATE_WORD_VALUE);
+
+    let _ = backend.prep_boundary(
+        live_r0,
+        STAGE88_BT_LOW20_EXPECTED,
+        STAGE88_BT_STATE_WORD_VALUE,
+        STAGE88_BT_STATE_WORD_ADDR,
+    );
+
+    let token = backend.critical_swap(1);
+
+    backend.write_word(STAGE88_BT_STATUS_WORD_ADDR, 0);
+    backend.write_word(STAGE88_BT_SECOND_RESET_WORD_ADDR, 0);
+    backend.write_byte(STAGE88_BT_REJECT_FLAG_ADDR, 0);
+    backend.write_byte(STAGE88_BT_READY_FLAG_ADDR, 0);
+
+    backend.critical_swap(token)
+}
+
+#[cfg(test)]
+mod stage88_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        status_reads: Vec<u32>,
+        repair: u32,
+        wait_returns: Vec<u32>,
+        wait_index: usize,
+        prep_return: u32,
+        critical_returns: Vec<u32>,
+        critical_index: usize,
+        stage81_return: u32,
+        events: Vec<(&'static str, u32, u32, u32, u32)>,
+    }
+
+    impl BtStage88Backend for B {
+        fn read_word(&mut self, address: u32) -> u32 {
+            if address == STAGE88_BT_STATUS_WORD_ADDR {
+                let value = self.status_reads.remove(0);
+                self.events.push(("read_status", value, 0, 0, 0));
+                value
+            } else {
+                assert_eq!(address, STAGE88_BT_REPAIR_INPUT_ADDR);
+                self.events.push(("read_repair", self.repair, 0, 0, 0));
+                self.repair
+            }
+        }
+
+        fn write_word(&mut self, address: u32, value: u32) {
+            self.events.push(("write_word", address, value, 0, 0));
+        }
+
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.events.push(("write_byte", address, value as u32, 0, 0));
+        }
+
+        fn wait_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32 {
+            self.events.push(("wait", r0, r1, r2, r3));
+            let value = self.wait_returns[self.wait_index];
+            self.wait_index += 1;
+            value
+        }
+
+        fn prep_boundary(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32 {
+            self.events.push(("prep", r0, r1, r2, r3));
+            self.prep_return
+        }
+
+        fn critical_swap(&mut self, value: u32) -> u32 {
+            self.events.push(("critical", value, 0, 0, 0));
+            let ret = self.critical_returns[self.critical_index];
+            self.critical_index += 1;
+            ret
+        }
+
+        fn stage81_tail(&mut self, value: u32) -> u32 {
+            self.events.push(("stage81", value, 0, 0, 0));
+            self.stage81_return
+        }
+    }
+
+    #[test]
+    fn low20_mismatch_clears_reject_and_tails_stage81() {
+        let mut b = B {
+            status_reads: vec![0x1234_5678],
+            repair: 0x20,
+            stage81_return: 0xABCD,
+            ..Default::default()
+        };
+
+        assert_eq!(bt_stage88_wait_reset(0xDEAD_BEEF, &mut b), 0xABCD);
+        assert_eq!(b.events, [
+            ("read_status", 0x1234_5678, 0, 0, 0),
+            ("write_byte", STAGE88_BT_REJECT_FLAG_ADDR, 0, 0, 0),
+            ("read_repair", 0x20, 0, 0, 0),
+            ("stage81", 0x10, 0, 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn exact_reread_without_wait_forwards_incoming_r0_into_prep() {
+        let mut b = B {
+            status_reads: vec![0x000F_FFFF, STAGE88_BT_FULL_EXPECTED],
+            prep_return: 0xDEAD_BEEF,
+            critical_returns: vec![0x77, 0x88],
+            ..Default::default()
+        };
+
+        assert_eq!(bt_stage88_wait_reset(0x1234_5678, &mut b), 0x88);
+        assert!(b.events.contains(&(
+            "prep",
+            0x1234_5678,
+            STAGE88_BT_LOW20_EXPECTED,
+            3,
+            STAGE88_BT_STATE_WORD_ADDR,
+        )));
+        assert!(b.events.contains(&("critical", 1, 0, 0, 0)));
+        assert!(b.events.contains(&("critical", 0x77, 0, 0, 0)));
+        assert!(!b.events.iter().any(|e| e.0 == "wait"));
+    }
+
+    #[test]
+    fn final_wait_return_becomes_prep_r0_and_wait_reuses_initial_low20() {
+        let mut b = B {
+            status_reads: vec![
+                0x000F_FFFF,
+                0x100F_FFFF,
+                0x300F_FFFF,
+                STAGE88_BT_FULL_EXPECTED,
+            ],
+            wait_returns: vec![0x1111, 0x2222],
+            critical_returns: vec![0x3333, 0x4444],
+            ..Default::default()
+        };
+
+        assert_eq!(bt_stage88_wait_reset(0xAAAA, &mut b), 0x4444);
+        assert!(b.events.contains(&(
+            "wait",
+            0xAAAA,
+            STAGE88_BT_LOW20_EXPECTED,
+            STAGE88_BT_LOW20_EXPECTED,
+            0x100F_FFFF,
+        )));
+        assert!(b.events.contains(&(
+            "wait",
+            0x1111,
+            STAGE88_BT_LOW20_EXPECTED,
+            STAGE88_BT_LOW20_EXPECTED,
+            0x300F_FFFF,
+        )));
+        assert!(b.events.contains(&(
+            "prep",
+            0x2222,
+            STAGE88_BT_LOW20_EXPECTED,
+            3,
+            STAGE88_BT_STATE_WORD_ADDR,
+        )));
+    }
+
+    #[test]
+    fn reset_order_preserves_critical_token_and_ignores_prep_return() {
+        let mut b = B {
+            status_reads: vec![STAGE88_BT_FULL_EXPECTED, STAGE88_BT_FULL_EXPECTED],
+            prep_return: 0xFFFF_FFFF,
+            critical_returns: vec![0xCAFE_BABE, 0x1357_2468],
+            ..Default::default()
+        };
+
+        assert_eq!(bt_stage88_wait_reset(9, &mut b), 0x1357_2468);
+
+        let expected_tail = [
+            ("write_word", STAGE88_BT_STATE_WORD_ADDR, 3, 0, 0),
+            ("prep", 9, STAGE88_BT_LOW20_EXPECTED, 3, STAGE88_BT_STATE_WORD_ADDR),
+            ("critical", 1, 0, 0, 0),
+            ("write_word", STAGE88_BT_STATUS_WORD_ADDR, 0, 0, 0),
+            ("write_word", STAGE88_BT_SECOND_RESET_WORD_ADDR, 0, 0, 0),
+            ("write_byte", STAGE88_BT_REJECT_FLAG_ADDR, 0, 0, 0),
+            ("write_byte", STAGE88_BT_READY_FLAG_ADDR, 0, 0, 0),
+            ("critical", 0xCAFE_BABE, 0, 0, 0),
+        ];
+        assert_eq!(&b.events[b.events.len() - expected_tail.len()..], &expected_tail);
+    }
+
+    #[test]
+    fn provenance_constants_are_current_only() {
+        assert_eq!(STAGE88_CURRENT_BT_WAIT_RESET_ADDR, 0x171D68);
+        assert_eq!(STAGE88_BT_STATUS_WORD_ADDR, 0x352604);
+        assert_eq!(STAGE88_BT_LOW20_EXPECTED, 0xFFFFF);
+        assert_eq!(STAGE88_BT_FULL_EXPECTED, 0x200FFFFF);
+        assert_eq!(STAGE88_BT_STATE_WORD_ADDR, 0x352600);
+        assert_eq!(STAGE88_BT_REJECT_FLAG_ADDR, 0x2170EF);
+        assert_eq!(STAGE88_BT_READY_FLAG_ADDR, 0x2170EE);
+        assert_eq!(STAGE88_BT_REPAIR_INPUT_ADDR, 0x204B10);
+        assert_eq!(STAGE88_BT_WAIT_BOUNDARY, 0xB0210);
+        assert_eq!(STAGE88_BT_PREP_BOUNDARY, 0xBAAE4);
+        assert_eq!(STAGE88_BT_CRITICAL_BOUNDARY, 0x780);
+        assert_eq!(STAGE88_BT_STAGE81_TAIL, 0x171B84);
+    }
+}
