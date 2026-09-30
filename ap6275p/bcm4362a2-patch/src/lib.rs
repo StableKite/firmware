@@ -16056,3 +16056,351 @@ mod stage108_tests {
         assert_eq!(STAGE108_BT_FINAL_TAIL,0x5833C);
     }
 }
+pub const STAGE109_CURRENT_BT_COMPLEX_DISPATCH_ADDR: u32 = 0x0016_DA7C;
+pub const STAGE109_CURRENT_BODY_LEN: u32 = 198;
+pub const STAGE109_COUNT_BYTE_ADDR: u32 = 0x0020_33F0;
+pub const STAGE109_COMPARE_BASE_ADDR: u32 = 0x0020_27FE;
+pub const STAGE109_BT_FIRST_BOUNDARY: u32 = 0x0003_37AC;
+pub const STAGE109_BT_SECOND_BOUNDARY: u32 = 0x0003_3808;
+pub const STAGE109_BT_STATUS_TAIL: u32 = 0x0002_F756;
+pub const STAGE109_BT_OBJECT28_BOUNDARY: u32 = 0x0003_36D0;
+pub const STAGE109_BT_COMPARE_BOUNDARY: u32 = 0x000F_8CAC;
+pub const STAGE109_BT_SPLIT_BOUNDARY: u32 = 0x0002_E644;
+pub const STAGE109_BT_BYTE1E_TAIL: u32 = 0x0002_E3F8;
+pub const STAGE109_BT_MODE_TAIL: u32 = 0x0002_E424;
+pub const STAGE109_BT_FINAL_TAIL: u32 = 0x0002_CF64;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage109Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage109Backend {
+    fn read_count_byte(&mut self) -> u8;
+    fn read_object_byte(&mut self, object: u32, offset: u32) -> u8;
+    fn write_object_byte(&mut self, object: u32, offset: u32, value: u8);
+    fn read_object_word(&mut self, object: u32, offset: u32) -> u32;
+
+    fn boundary_337ac(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn boundary_33808(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn tail_2f756(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn boundary_336d0(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn boundary_f8cac(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn boundary_2e644(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn tail_2e3f8(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn tail_2e424(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+    fn tail_2cf64(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage109Regs;
+
+    /// Models a second POP.W {R4,R5,R6,LR} after the local frame was already
+    /// popped before the 0x2E644 call. The tail arguments are captured before
+    /// this extra pop, but the stack/callee-saved side effect is observable.
+    fn external_pop_after_local_frame(&mut self);
+}
+
+fn stage109_pop_for_exit<B: BtStage109Backend>(frame_popped: bool, backend: &mut B) {
+    if frame_popped {
+        backend.external_pop_after_local_frame();
+    }
+}
+
+/// Exact register-state model of current `0x16DA7C..0x16DB42`.
+///
+/// `incoming_r4` is explicit because one branch restores the entry R4 via
+/// POP.W before calling 0x2E644 and, if that opaque boundary returns, later
+/// object-relative reads use the restored ambient R4 rather than saved R0.
+/// A later POP on that returned path consumes caller-stack words; the backend
+/// exposes that side effect rather than silently normalizing the stack shape.
+pub fn bt_stage109_complex_dispatch<B: BtStage109Backend>(
+    object: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    incoming_r3: u32,
+    incoming_r4: u32,
+    backend: &mut B,
+) -> u32 {
+    let mut regs = backend.boundary_337ac(1, incoming_r1, incoming_r2, incoming_r3);
+    let saved_first_r0 = regs.r0;
+
+    regs.r0 = 1;
+    regs = backend.boundary_33808(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let count_plus_one = u32::from(backend.read_count_byte()).wrapping_add(1);
+    regs.r0 = regs.r0.wrapping_add(saved_first_r0);
+    let status = if regs.r0 == count_plus_one {
+        Some(9u32)
+    } else {
+        let byte1c = backend.read_object_byte(object, 0x1C);
+        if u32::from(byte1c & 0xF8) != 0x10 {
+            Some(0x0B)
+        } else {
+            None
+        }
+    };
+
+    if let Some(status) = status {
+        return backend.tail_2f756(object, 0x33, 0, status).r0;
+    }
+
+    regs.r3 = 0x10;
+    regs.r1 = object.wrapping_add(0x28);
+    regs.r0 = object;
+    regs = backend.boundary_336d0(regs.r0, regs.r1, regs.r2, regs.r3);
+    if regs.r0 != 0 {
+        return backend.tail_2f756(object, 0x33, 0, 0x0B).r0;
+    }
+
+    regs.r2 = 6;
+    regs.r1 = object.wrapping_add(0x28);
+    regs.r0 = STAGE109_COMPARE_BASE_ADDR;
+    regs = backend.boundary_f8cac(regs.r0, regs.r1, regs.r2, regs.r3);
+    regs.r2 = regs.r0;
+    if regs.r0 == 0 {
+        return backend.tail_2f756(object, 0x33, regs.r2, 0x0F).r0;
+    }
+
+    let byte1c = backend.read_object_byte(object, 0x1C);
+    regs.r2 = 4;
+    backend.write_object_byte(object, 0x1C, (byte1c & 0x07) | 0x20);
+
+    let byte1f = backend.read_object_byte(object, 0x1F);
+    regs.r3 = u32::from(byte1f);
+    regs.r0 = u32::from(byte1f) << 30;
+
+    let mut active_r4 = object;
+    let mut frame_popped = false;
+
+    if byte1f & 0x02 == 0 {
+        regs.r1 = 1;
+        regs.r0 = object;
+        // POP.W {R4,R5,R6,LR} happens before the BL.
+        active_r4 = incoming_r4;
+        frame_popped = true;
+    }
+    regs = backend.boundary_2e644(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let byte1e = backend.read_object_byte(active_r4, 0x1E);
+    regs.r3 = u32::from(byte1e);
+    regs.r1 = regs.r3 << 24;
+    if byte1e & 0x80 == 0 {
+        let tail_r0 = active_r4;
+        let tail_r2 = regs.r2;
+        let tail_r3 = regs.r3;
+        stage109_pop_for_exit(frame_popped, backend);
+        return backend.tail_2e3f8(tail_r0, 1, tail_r2, tail_r3).r0;
+    }
+
+    let byte1f_late = backend.read_object_byte(active_r4, 0x1F);
+    regs.r3 = u32::from(byte1f_late);
+    regs.r2 = regs.r3 << 31;
+
+    if byte1f_late & 1 == 0 {
+        let word38_first = backend.read_object_word(active_r4, 0x38);
+        regs.r3 = word38_first;
+        if (word38_first as i32) < 0 {
+            let tail_r0 = active_r4;
+            let tail_r2 = regs.r2;
+            let tail_r3 = regs.r3;
+            stage109_pop_for_exit(frame_popped, backend);
+            return backend.tail_2e424(tail_r0, 1, tail_r2, tail_r3).r0;
+        }
+    }
+
+    let byte_f7 = backend.read_object_byte(active_r4, 0xF7);
+    regs.r3 = u32::from(byte_f7) << 24;
+    if byte_f7 & 0x80 == 0 {
+        let word38_second = backend.read_object_word(active_r4, 0x38);
+        regs.r3 = word38_second;
+        if (word38_second as i32) < 0 {
+            let byte150 = backend.read_object_byte(active_r4, 0x150);
+            regs.r3 = u32::from(byte150);
+            if byte150 > 1 {
+                let tail_r0 = active_r4;
+                let tail_r2 = regs.r2;
+                let tail_r3 = regs.r3;
+                stage109_pop_for_exit(frame_popped, backend);
+                return backend.tail_2e424(tail_r0, 2, tail_r2, tail_r3).r0;
+            }
+        }
+    }
+
+    let tail_r1 = active_r4;
+    let tail_r2 = regs.r2;
+    let tail_r3 = regs.r3;
+    stage109_pop_for_exit(frame_popped, backend);
+    backend.tail_2cf64(0, tail_r1, tail_r2, tail_r3).r0
+}
+
+#[cfg(test)]
+mod stage109_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone,Debug,PartialEq,Eq)]
+    enum E {
+        Call(&'static str,u32,u32,u32,u32),
+        Read(&'static str,u32,u32),
+        Write(&'static str,u32,u32),
+        ExternalPop,
+    }
+
+    struct B {
+        count:u8,
+        b1c:VecDeque<u8>,
+        b1f:VecDeque<u8>,
+        b1e:VecDeque<u8>,
+        bf7:VecDeque<u8>,
+        b150:VecDeque<u8>,
+        w38:VecDeque<u32>,
+        q337ac:VecDeque<BtStage109Regs>,
+        q33808:VecDeque<BtStage109Regs>,
+        q2f756:VecDeque<BtStage109Regs>,
+        q336d0:VecDeque<BtStage109Regs>,
+        qf8cac:VecDeque<BtStage109Regs>,
+        q2e644:VecDeque<BtStage109Regs>,
+        q2e3f8:VecDeque<BtStage109Regs>,
+        q2e424:VecDeque<BtStage109Regs>,
+        q2cf64:VecDeque<BtStage109Regs>,
+        e:Vec<E>,
+    }
+
+    impl Default for B {
+        fn default()->Self{Self{
+            count:0,
+            b1c:VecDeque::from([0x10,0x10]),
+            b1f:VecDeque::from([0x02,0x01]),
+            b1e:VecDeque::from([0x80]),
+            bf7:VecDeque::from([0x80]),
+            b150:VecDeque::from([0]),
+            w38:VecDeque::from([0,0]),
+            q337ac:VecDeque::from([BtStage109Regs{r0:0x10,r1:0x11,r2:0x12,r3:0x13}]),
+            q33808:VecDeque::from([BtStage109Regs{r0:0x20,r1:0x21,r2:0x22,r3:0x23}]),
+            q2f756:VecDeque::from([BtStage109Regs{r0:0xF756,..Default::default()}]),
+            q336d0:VecDeque::from([BtStage109Regs{r0:0,r1:0x31,r2:0x32,r3:0x33}]),
+            qf8cac:VecDeque::from([BtStage109Regs{r0:1,r1:0x41,r2:0x42,r3:0x43}]),
+            q2e644:VecDeque::from([BtStage109Regs{r0:1,r1:0x51,r2:0x52,r3:0x53}]),
+            q2e3f8:VecDeque::from([BtStage109Regs{r0:0xE3F4,..Default::default()}]),
+            q2e424:VecDeque::from([BtStage109Regs{r0:0xE420,..Default::default()}]),
+            q2cf64:VecDeque::from([BtStage109Regs{r0:0xCF60,..Default::default()}]),
+            e:Vec::new(),
+        }}
+    }
+    impl B { fn pop(q:&mut VecDeque<BtStage109Regs>)->BtStage109Regs{q.pop_front().unwrap()} }
+    impl BtStage109Backend for B {
+        fn read_count_byte(&mut self)->u8{self.e.push(E::Read("count",STAGE109_COUNT_BYTE_ADDR,u32::from(self.count)));self.count}
+        fn read_object_byte(&mut self,o:u32,off:u32)->u8{
+            let v=match off{
+                0x1c=>self.b1c.pop_front().unwrap(),
+                0x1f=>self.b1f.pop_front().unwrap(),
+                0x1e=>self.b1e.pop_front().unwrap(),
+                0xf7=>self.bf7.pop_front().unwrap(),
+                0x150=>self.b150.pop_front().unwrap(),
+                _=>panic!("bad byte offset"),
+            };
+            self.e.push(E::Read("byte",o.wrapping_add(off),u32::from(v)));v
+        }
+        fn write_object_byte(&mut self,o:u32,off:u32,v:u8){self.e.push(E::Write("byte",o.wrapping_add(off),u32::from(v)))}
+        fn read_object_word(&mut self,o:u32,off:u32)->u32{assert_eq!(off,0x38);let v=self.w38.pop_front().unwrap();self.e.push(E::Read("word38",o.wrapping_add(off),v));v}
+        fn boundary_337ac(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("337ac",a,b,c,d));Self::pop(&mut self.q337ac)}
+        fn boundary_33808(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("33808",a,b,c,d));Self::pop(&mut self.q33808)}
+        fn tail_2f756(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("2f756",a,b,c,d));Self::pop(&mut self.q2f756)}
+        fn boundary_336d0(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("336d0",a,b,c,d));Self::pop(&mut self.q336d0)}
+        fn boundary_f8cac(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("f8cac",a,b,c,d));Self::pop(&mut self.qf8cac)}
+        fn boundary_2e644(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("2e644",a,b,c,d));Self::pop(&mut self.q2e644)}
+        fn tail_2e3f8(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("2e3f8",a,b,c,d));Self::pop(&mut self.q2e3f8)}
+        fn tail_2e424(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("2e424",a,b,c,d));Self::pop(&mut self.q2e424)}
+        fn tail_2cf64(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage109Regs{self.e.push(E::Call("2cf64",a,b,c,d));Self::pop(&mut self.q2cf64)}
+        fn external_pop_after_local_frame(&mut self){self.e.push(E::ExternalPop)}
+    }
+
+    #[test]
+    fn count_match_status9_tail_shape(){
+        let mut b=B::default();
+        b.count=0x2f;
+        b.q337ac=VecDeque::from([BtStage109Regs{r0:0x10,r1:2,r2:3,r3:4}]);
+        b.q33808=VecDeque::from([BtStage109Regs{r0:0x20,r1:5,r2:6,r3:7}]);
+        assert_eq!(bt_stage109_complex_dispatch(0x1000,9,8,7,6,&mut b),0xF756);
+        assert!(b.e.contains(&E::Call("2f756",0x1000,0x33,0,9)));
+    }
+
+    #[test]
+    fn mask_miss_status0b_without_object28_boundary(){
+        let mut b=B::default(); b.count=0; b.b1c=VecDeque::from([0x08]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("2f756",0x1000,0x33,0,0x0b)));
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("336d0",..))));
+    }
+
+    #[test]
+    fn compare_zero_status0f_and_live_r3_into_compare_boundary(){
+        let mut b=B::default(); b.qf8cac=VecDeque::from([BtStage109Regs{r0:0,r1:9,r2:8,r3:7}]);
+        b.q336d0=VecDeque::from([BtStage109Regs{r0:0,r1:0x31,r2:0x32,r3:0xABCD}]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("f8cac",STAGE109_COMPARE_BASE_ADDR,0x1028,6,0xABCD)));
+        assert!(b.e.contains(&E::Call("2f756",0x1000,0x33,0,0x0f)));
+    }
+
+    #[test]
+    fn byte1c_rewrite_and_bit1set_keeps_frame_for_2e644(){
+        let mut b=B::default();
+        b.b1c=VecDeque::from([0x10,0x17]); b.b1f=VecDeque::from([0x03,0x01]); b.b1e=VecDeque::from([0]);
+        b.qf8cac=VecDeque::from([BtStage109Regs{r0:5,r1:0xAAAA,r2:0xBBBB,r3:0xCCCC}]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,0x4444,&mut b);
+        assert!(b.e.contains(&E::Write("byte",0x101c,0x27)));
+        assert!(b.e.contains(&E::Call("2e644",0xC000_0000,0xAAAA,4,3)));
+        assert!(b.e.contains(&E::Call("2e3f8",0x1000,1,0x52,0)));
+        assert!(!b.e.contains(&E::ExternalPop));
+    }
+
+    #[test]
+    fn bit1clear_restores_ambient_r4_before_boundary_and_extra_pop_if_it_returns(){
+        let mut b=B::default();
+        b.b1c=VecDeque::from([0x10,0x10]); b.b1f=VecDeque::from([0x00]); b.b1e=VecDeque::from([0]);
+        b.qf8cac=VecDeque::from([BtStage109Regs{r0:5,r1:0xAAAA,r2:0xBBBB,r3:0xCCCC}]);
+        b.q2e644=VecDeque::from([BtStage109Regs{r0:7,r1:8,r2:0xCAFE,r3:9}]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,0x9000,&mut b);
+        assert!(b.e.contains(&E::Call("2e644",0x1000,1,4,0)));
+        assert!(b.e.contains(&E::Read("byte",0x901e,0)));
+        assert!(b.e.contains(&E::ExternalPop));
+        assert!(b.e.contains(&E::Call("2e3f8",0x9000,1,0xCAFE,0)));
+    }
+
+    #[test]
+    fn first_signed_negative_path_tails_mode1_with_r2_zero_and_raw_word(){
+        let mut b=B::default();
+        b.b1c=VecDeque::from([0x10,0x10]); b.b1f=VecDeque::from([0x03,0x00]); b.b1e=VecDeque::from([0x80]); b.w38=VecDeque::from([0x8000_1234]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("2e424",0x1000,1,0,0x8000_1234)));
+    }
+
+    #[test]
+    fn second_word_reread_and_byte150_mode2_preserve_bit0_shift_r2(){
+        let mut b=B::default();
+        b.b1c=VecDeque::from([0x10,0x10]); b.b1f=VecDeque::from([0x03,0x01]); b.b1e=VecDeque::from([0x80]);
+        b.bf7=VecDeque::from([0x00]); b.w38=VecDeque::from([0x8000_0001]); b.b150=VecDeque::from([2]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("2e424",0x1000,2,0x8000_0000,2)));
+    }
+
+    #[test]
+    fn final_tail_keeps_path_dependent_r2_r3(){
+        let mut b=B::default();
+        b.b1c=VecDeque::from([0x10,0x10]); b.b1f=VecDeque::from([0x03,0x01]); b.b1e=VecDeque::from([0x80]);
+        b.bf7=VecDeque::from([0x80]);
+        let _=bt_stage109_complex_dispatch(0x1000,1,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("2cf64",0,0x1000,0x8000_0000,0x8000_0000)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!(STAGE109_CURRENT_BT_COMPLEX_DISPATCH_ADDR,0x16DA7C);
+        assert_eq!(STAGE109_CURRENT_BODY_LEN,198);
+        assert_eq!(STAGE109_BT_FIRST_BOUNDARY,0x337AC);
+        assert_eq!(STAGE109_BT_SECOND_BOUNDARY,0x33808);
+        assert_eq!(STAGE109_BT_SPLIT_BOUNDARY,0x2E644);
+        assert_eq!(STAGE109_BT_FINAL_TAIL,0x2CF64);
+    }
+}
