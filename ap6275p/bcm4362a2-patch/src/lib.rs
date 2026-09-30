@@ -11467,3 +11467,168 @@ mod stage85_tests {
         assert_eq!(STAGE85_BT_WRAP_ADDEND, 100);
     }
 }
+
+/// Stage 86: current guarded table-step helper at `0x1718E8`.
+///
+/// The exact current 56-byte body is a relocation-normalized structural
+/// counterpart of public-legacy `0x16DA30`. Two critical-state calls relocate;
+/// all local arithmetic, global addresses, and table indexing remain fixed.
+pub const STAGE86_CURRENT_BT_GUARDED_TABLE_STEP_ADDR: u32 = 0x0017_18E8;
+pub const STAGE86_BT_CRITICAL_BOUNDARY: u32 = ROM_CRITICAL_STATE_SWAP_LIKE_ADDR;
+pub const STAGE86_BT_FIRST_HALFWORD_ADDR: u32 = 0x0021_70EC;
+pub const STAGE86_BT_SECOND_HALFWORD_ADDR: u32 = 0x0021_7170;
+pub const STAGE86_BT_TABLE_BASE_ADDR: u32 = 0x0022_2E34;
+pub const STAGE86_BT_WRAP_LIMIT: u16 = 99;
+
+pub trait BtStage86Backend {
+    /// Current `0x780(value)`. The first call receives literal one and returns
+    /// the token passed to the second call. The second return is ignored.
+    fn critical_swap(&mut self, value: u32) -> u32;
+    fn read_halfword(&mut self, address: u32) -> u16;
+    fn write_halfword(&mut self, address: u32, value: u16);
+    fn read_table_word(&mut self, address: u32) -> u32;
+    fn write_output_word(&mut self, output_ptr: u32, value: u32);
+}
+
+/// Safe source-level model of current `0x1718E8`.
+///
+/// The two halfwords are read only after entering the critical-state boundary.
+/// When they differ, firmware uses the original first halfword as an unchecked
+/// table index, writes the selected dword through incoming R0, then increments
+/// the first halfword with 16-bit wrap and resets values above 99 to zero.
+/// The critical-state restore return is discarded; final R0 is the local
+/// changed/not-changed boolean.
+pub fn bt_stage86_guarded_table_step<B: BtStage86Backend>(
+    output_ptr: u32,
+    backend: &mut B,
+) -> u32 {
+    let token = backend.critical_swap(1);
+
+    let first = backend.read_halfword(STAGE86_BT_FIRST_HALFWORD_ADDR);
+    let second = backend.read_halfword(STAGE86_BT_SECOND_HALFWORD_ADDR);
+
+    let changed = if second != first {
+        let table_address = STAGE86_BT_TABLE_BASE_ADDR.wrapping_add(u32::from(first).wrapping_mul(4));
+        let value = backend.read_table_word(table_address);
+        backend.write_output_word(output_ptr, value);
+
+        let incremented = first.wrapping_add(1);
+        let next = if incremented > STAGE86_BT_WRAP_LIMIT { 0 } else { incremented };
+        backend.write_halfword(STAGE86_BT_FIRST_HALFWORD_ADDR, next);
+        1
+    } else {
+        0
+    };
+
+    let _ = backend.critical_swap(token);
+    changed
+}
+
+#[cfg(test)]
+mod stage86_tests {
+    extern crate std;
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        first: u16,
+        second: u16,
+        enter_token: u32,
+        restore_return: u32,
+        table: BTreeMap<u32, u32>,
+        events: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl BtStage86Backend for B {
+        fn critical_swap(&mut self, value: u32) -> u32 {
+            self.events.push(("critical", value, 0));
+            if value == 1 { self.enter_token } else { self.restore_return }
+        }
+        fn read_halfword(&mut self, address: u32) -> u16 {
+            self.events.push(("read_half", address, 0));
+            if address == STAGE86_BT_FIRST_HALFWORD_ADDR { self.first } else { self.second }
+        }
+        fn write_halfword(&mut self, address: u32, value: u16) {
+            self.events.push(("write_half", address, u32::from(value)));
+            if address == STAGE86_BT_FIRST_HALFWORD_ADDR { self.first = value; }
+        }
+        fn read_table_word(&mut self, address: u32) -> u32 {
+            self.events.push(("read_table", address, 0));
+            self.table.get(&address).copied().unwrap_or_default()
+        }
+        fn write_output_word(&mut self, output_ptr: u32, value: u32) {
+            self.events.push(("write_output", output_ptr, value));
+        }
+    }
+
+    #[test]
+    fn equal_halfwords_restore_critical_state_and_return_zero() {
+        let mut b = B { first: 7, second: 7, enter_token: 0x55, restore_return: 0xFFFF_FFFF, ..Default::default() };
+        assert_eq!(bt_stage86_guarded_table_step(0x9000, &mut b), 0);
+        assert_eq!(b.events, [
+            ("critical", 1, 0),
+            ("read_half", STAGE86_BT_FIRST_HALFWORD_ADDR, 0),
+            ("read_half", STAGE86_BT_SECOND_HALFWORD_ADDR, 0),
+            ("critical", 0x55, 0),
+        ]);
+    }
+
+    #[test]
+    fn mismatch_indexes_with_original_first_then_increments_and_returns_one() {
+        let first = 4u16;
+        let address = STAGE86_BT_TABLE_BASE_ADDR + u32::from(first) * 4;
+        let mut b = B { first, second: 9, enter_token: 0xA5, ..Default::default() };
+        b.table.insert(address, 0x1234_5678);
+        assert_eq!(bt_stage86_guarded_table_step(0xCAFE_0000, &mut b), 1);
+        assert_eq!(b.first, 5);
+        assert_eq!(b.events, [
+            ("critical", 1, 0),
+            ("read_half", STAGE86_BT_FIRST_HALFWORD_ADDR, 0),
+            ("read_half", STAGE86_BT_SECOND_HALFWORD_ADDR, 0),
+            ("read_table", address, 0),
+            ("write_output", 0xCAFE_0000, 0x1234_5678),
+            ("write_half", STAGE86_BT_FIRST_HALFWORD_ADDR, 5),
+            ("critical", 0xA5, 0),
+        ]);
+    }
+
+    #[test]
+    fn increment_above_99_resets_to_zero() {
+        let first = 99u16;
+        let address = STAGE86_BT_TABLE_BASE_ADDR + u32::from(first) * 4;
+        let mut b = B { first, second: 0, enter_token: 8, ..Default::default() };
+        b.table.insert(address, 3);
+        assert_eq!(bt_stage86_guarded_table_step(1, &mut b), 1);
+        assert_eq!(b.first, 0);
+    }
+
+    #[test]
+    fn u16_wrap_is_applied_before_the_greater_than_99_check() {
+        let first = u16::MAX;
+        let address = STAGE86_BT_TABLE_BASE_ADDR.wrapping_add(u32::from(first).wrapping_mul(4));
+        let mut b = B { first, second: 0, enter_token: 2, ..Default::default() };
+        b.table.insert(address, 7);
+        assert_eq!(bt_stage86_guarded_table_step(2, &mut b), 1);
+        assert_eq!(b.first, 0);
+        assert!(b.events.contains(&("read_table", address, 0)));
+    }
+
+    #[test]
+    fn restore_return_is_ignored_and_local_boolean_is_final() {
+        let mut b = B { first: 1, second: 2, enter_token: 0x11, restore_return: 0xDEAD_BEEF, ..Default::default() };
+        assert_eq!(bt_stage86_guarded_table_step(3, &mut b), 1);
+        assert_eq!(b.events.last(), Some(&("critical", 0x11, 0)));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE86_CURRENT_BT_GUARDED_TABLE_STEP_ADDR, 0x1718E8);
+        assert_eq!(STAGE86_BT_CRITICAL_BOUNDARY, 0x780);
+        assert_eq!(STAGE86_BT_FIRST_HALFWORD_ADDR, 0x2170EC);
+        assert_eq!(STAGE86_BT_SECOND_HALFWORD_ADDR, 0x217170);
+        assert_eq!(STAGE86_BT_TABLE_BASE_ADDR, 0x222E34);
+        assert_eq!(STAGE86_BT_WRAP_LIMIT, 99);
+    }
+}

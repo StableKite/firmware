@@ -702,3 +702,11 @@ Stage 85 reconstructs current `0x17192C`, a 26-byte no-call leaf. Including the 
 Firmware reads halfword `0x2170EC` first and halfword `0x217170` second. Both are zero-extended for the arithmetic. If the first value is lower, the return is `second-first`. Equality returns zero. If the first is greater, firmware adds literal 100 to the second value and then subtracts the first. These are ordinary 32-bit `ADDS`/`SUBS` operations; no local bounds check or explicit modulo normalization exists, so values outside the presumed 0..99 domain can produce a wrapping u32 result and the source model preserves that edge.
 
 The helper has no runtime calls, no memory writes, and no dependency on incoming R0 because R0 is overwritten by the second halfword load before any use.
+
+## Stage 86 — guarded table-step helper
+
+Stage 86 reconstructs current `0x1718E8`, a 56-byte helper called by the larger control wrapper at `0x171C78`. Public legacy contains its relocation-normalized structural counterpart at `0x16DA30`. The two ordinary calls both target current critical-state boundary `0x780`; after masking those two call encodings the remaining body bytes are fixed and the normalized body is unique in both images.
+
+Firmware preserves incoming R0 as an output pointer, calls `0x780(1)`, and keeps that return as the restore token. Only then does it read halfword `0x2170EC` followed by halfword `0x217170`. Equal values skip the table and counter update and produce local result zero. Unequal values use the original first halfword as an unchecked dword-table index into current base `0x222E34`, store the selected dword through the incoming R0 pointer, increment the first halfword with 16-bit wrap, replace any post-increment value above 99 with zero, and write it back to `0x2170EC`; this path produces local result one.
+
+The helper finally calls `0x780(saved_token)` to restore the critical state. That restore return is ignored: the final R0 is explicitly replaced with the local zero/one result. The source model therefore preserves the critical-section ordering, unchecked original table index, 16-bit-before-range-check increment shape, and final-return override without assigning a broader semantic name to the table or critical-state boundary.
