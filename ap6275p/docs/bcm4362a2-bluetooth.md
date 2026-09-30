@@ -738,3 +738,9 @@ Stage 89 closes current entry `0x171DE0`. The exact function body is eight bytes
 This tiny thunk has a useful ABI edge. Incoming R0 is replaced by `*0x222078`; incoming R1 and R2 are not touched; incoming R3 is replaced by literal address `0x222078` itself. Because the last instruction is a tail branch rather than a call/return pair, boundary `0x13218` receives exactly that register shape and its return is the thunk's final return with no local transformation.
 
 The eight-byte body SHA-256 is `751b89e29eacb8def3bac515e947e9332028d7171646ed7f112fdae734dee068`. The 12-byte body-plus-literal context is unique in the current HCD. After masking the four branch-encoding bytes, normalized context SHA-256 is `817032c2cd1b973648c7edadc81d440f177fa280c45660f1444093766cafb020`. No public-legacy structural counterpart is promoted for this entry; semantics are current-HCD-first.
+
+## Stage 90 — bounded signed status poll
+
+Stage 90 reconstructs current `0x171DEC`, an exact 20-byte leaf. The adjacent PC-relative literal resolves to fixed dword address `0x650318`. The body is byte-identical to the public-legacy structural counterpart at `0x16DD3C`.
+
+Firmware initializes R0 to decimal 100 and reloads `*0x650318` each iteration. The loaded dword is compared with zero using signed condition codes. Any signed-nonnegative value returns literal one immediately. A negative value decrements R0 and repeats while the counter is nonzero. Therefore an all-negative stream performs exactly 100 loads and returns zero. The source model preserves repeated live reads and does not invent a delay, snapshot, or side effect.

@@ -12311,3 +12311,86 @@ mod stage89_tests {
         assert_eq!(STAGE89_BT_TAIL_BOUNDARY, 0x13218);
     }
 }
+
+/// Stage 90: bounded signed status poll at `0x171DEC`.
+///
+/// Firmware loads a fixed dword address from the adjacent literal, initializes
+/// R0 to 100, and repeatedly reloads the same dword. A nonnegative signed value
+/// returns literal one immediately. Negative values decrement the 8-bit-sized
+/// loop counter in R0; after exactly 100 negative observations the return is zero.
+pub const STAGE90_CURRENT_BT_BOUNDED_STATUS_POLL_ADDR: u32 = 0x0017_1DEC;
+pub const STAGE90_BT_STATUS_WORD_ADDR: u32 = 0x0065_0318;
+pub const STAGE90_BT_MAX_POLLS: u32 = 100;
+
+pub trait BtStage90Backend {
+    fn read_status_word(&mut self, address: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x171DEC`.
+///
+/// The comparison is signed (`BGE` after `CMP R3,#0`). The same address is
+/// reread every iteration; no snapshot or delay is invented.
+pub fn bt_stage90_bounded_status_poll<B: BtStage90Backend>(backend: &mut B) -> u32 {
+    let mut remaining = STAGE90_BT_MAX_POLLS;
+    loop {
+        let value = backend.read_status_word(STAGE90_BT_STATUS_WORD_ADDR);
+        if (value as i32) >= 0 {
+            return 1;
+        }
+        remaining -= 1;
+        if remaining == 0 {
+            return 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod stage90_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        values: Vec<u32>,
+        reads: usize,
+    }
+
+    impl BtStage90Backend for B {
+        fn read_status_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE90_BT_STATUS_WORD_ADDR);
+            let value = self.values.get(self.reads).copied().unwrap_or(0xFFFF_FFFF);
+            self.reads += 1;
+            value
+        }
+    }
+
+    #[test]
+    fn first_nonnegative_returns_one_after_one_read() {
+        let mut b = B { values: vec![0], ..Default::default() };
+        assert_eq!(bt_stage90_bounded_status_poll(&mut b), 1);
+        assert_eq!(b.reads, 1);
+    }
+
+    #[test]
+    fn signed_negative_values_keep_polling_until_nonnegative() {
+        let mut b = B { values: vec![0x8000_0000, 0xFFFF_FFFF, 7], ..Default::default() };
+        assert_eq!(bt_stage90_bounded_status_poll(&mut b), 1);
+        assert_eq!(b.reads, 3);
+    }
+
+    #[test]
+    fn one_hundred_negative_reads_return_zero() {
+        let mut b = B { values: vec![0xFFFF_FFFF; 100], ..Default::default() };
+        assert_eq!(bt_stage90_bounded_status_poll(&mut b), 0);
+        assert_eq!(b.reads, 100);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE90_CURRENT_BT_BOUNDED_STATUS_POLL_ADDR, 0x171DEC);
+        assert_eq!(STAGE90_BT_STATUS_WORD_ADDR, 0x650318);
+        assert_eq!(STAGE90_BT_MAX_POLLS, 100);
+    }
+}
