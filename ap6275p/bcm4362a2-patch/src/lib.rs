@@ -15826,3 +15826,233 @@ mod stage107_tests {
         assert_eq!(STAGE107_BT_DEFAULT_TAIL,0x2EC18);
     }
 }
+pub const STAGE108_CURRENT_BT_DISPATCH_ADDR: u32 = 0x0016_D9E8;
+pub const STAGE108_LEGACY_BT_DISPATCH_ADDR: u32 = 0x0016_AAEC;
+pub const STAGE108_GATE_WORD_ADDR: u32 = 0x0020_90CC;
+pub const STAGE108_FINAL_FLAG_BASE_ADDR: u32 = 0x0020_8830;
+
+pub const STAGE108_BT_FIRST_BOUNDARY: u32 = 0x0003_CCDC;
+pub const STAGE108_BT_OPTIONAL_BOUNDARY: u32 = 0x0003_CC9E;
+pub const STAGE108_BT_STAGE106_TAIL: u32 = 0x0004_14A0;
+pub const STAGE108_BT_WORD34_BOUNDARY: u32 = 0x0002_EB58;
+pub const STAGE108_BT_ZERO_BOUNDARY: u32 = 0x0006_E9E0;
+pub const STAGE108_BT_OBJECT_A_BOUNDARY: u32 = 0x0004_BF0C;
+pub const STAGE108_BT_OBJECT_B_BOUNDARY: u32 = 0x0003_7158;
+pub const STAGE108_BT_GATE_OBJECT_BOUNDARY: u32 = 0x0003_34F8;
+pub const STAGE108_BT_GATE_FOLLOWUP_BOUNDARY: u32 = 0x0003_BC94;
+pub const STAGE108_BT_WORD0_BOUNDARY: u32 = 0x0002_E678;
+pub const STAGE108_BT_FINAL_PROBE_BOUNDARY: u32 = 0x0005_8488;
+pub const STAGE108_BT_FINAL_TAIL: u32 = 0x0005_833C;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage108Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage108Backend {
+    fn read_object_halfword(&mut self, object: u32, offset: u32) -> u16;
+    fn read_object_word(&mut self, object: u32, offset: u32) -> u32;
+    fn read_object_byte(&mut self, object: u32, offset: u32) -> u8;
+    fn write_object_byte(&mut self, object: u32, offset: u32, value: u8);
+    fn read_gate_word(&mut self) -> u32;
+    fn read_final_flag_word(&mut self) -> u32;
+
+    fn boundary_3ccdc(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_3cc9e(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_414a0(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_2eb58(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_6e9e0(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_4bf0c(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_37158(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_334f8(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_3bc94(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_2e678(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn boundary_58488(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+    fn tail_5833c(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->BtStage108Regs;
+}
+
+pub fn bt_stage108_dispatch<B: BtStage108Backend>(
+    object:u32,
+    _incoming_r1:u32,
+    incoming_r2:u32,
+    incoming_r3:u32,
+    backend:&mut B,
+)->u32{
+    let object_ec = backend.read_object_halfword(object, 0xEC);
+    let saved_word0 = backend.read_object_word(object, 0);
+    let mut regs = backend.boundary_3ccdc(object, u32::from(object_ec), incoming_r2, incoming_r3);
+
+    regs.r1 = regs.r0;
+    if regs.r0 == 1 {
+        let object_1d = backend.read_object_byte(object, 0x1D);
+        regs.r0 = u32::from(object_1d) << 24;
+        regs.r3 = regs.r0;
+        if object_1d & 0x80 == 0 {
+            regs.r0 = object;
+            regs = backend.boundary_3cc9e(regs.r0, regs.r1, regs.r2, regs.r3);
+        }
+    }
+
+    regs.r2 = 0;
+    regs.r1 = 1;
+    regs.r0 = object;
+    regs = backend.boundary_414a0(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let object_34 = backend.read_object_word(object, 0x34);
+    regs.r3 = object_34;
+    regs.r2 = object_34.wrapping_shl(21);
+    if object_34 & (1 << 10) != 0 {
+        regs.r0 = object;
+        regs = backend.boundary_2eb58(regs.r0, regs.r1, regs.r2, regs.r3);
+    }
+
+    regs.r1 = saved_word0;
+    regs.r0 = 0;
+    regs = backend.boundary_6e9e0(regs.r0, regs.r1, regs.r2, regs.r3);
+    regs.r0 = object;
+    regs = backend.boundary_4bf0c(regs.r0, regs.r1, regs.r2, regs.r3);
+    regs.r0 = object;
+    regs = backend.boundary_37158(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let object_1c = backend.read_object_byte(object, 0x1C);
+    regs.r2 = 8;
+    regs.r3 = u32::from((object_1c & 0x07) | 0x40);
+    backend.write_object_byte(object, 0x1C, regs.r3 as u8);
+
+    let gate_word = backend.read_gate_word();
+    regs.r3 = gate_word;
+    if gate_word == 1 {
+        regs.r0 = object;
+        regs = backend.boundary_334f8(regs.r0, regs.r1, regs.r2, regs.r3);
+        if regs.r0 == 1 {
+            regs = backend.boundary_3bc94(regs.r0, regs.r1, regs.r2, regs.r3);
+        }
+    }
+
+    regs.r0 = saved_word0;
+    regs = backend.boundary_2e678(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let final_word = backend.read_final_flag_word();
+    regs.r3 = final_word.wrapping_shl(31);
+    if final_word & 1 == 0 {
+        return regs.r0;
+    }
+
+    regs = backend.boundary_58488(regs.r0, regs.r1, regs.r2, regs.r3);
+    if regs.r0 == 0 {
+        return 0;
+    }
+
+    regs.r0 = 0;
+    let tail = backend.tail_5833c(regs.r0, regs.r1, regs.r2, incoming_r3);
+    tail.r0
+}
+
+#[cfg(test)]
+mod stage108_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone,Debug,PartialEq,Eq)]
+    enum E { Call(&'static str,u32,u32,u32,u32), Read(&'static str,u32,u32), Write(&'static str,u32,u32) }
+
+    struct B {
+        ec:u16, word0:u32, b1d:u8, word34:u32, b1c:u8, gate:u32, final_word:u32,
+        q3ccdc:VecDeque<BtStage108Regs>, q3cc9e:VecDeque<BtStage108Regs>, q414a0:VecDeque<BtStage108Regs>,
+        q2eb58:VecDeque<BtStage108Regs>, q6e9e0:VecDeque<BtStage108Regs>, q4bf0c:VecDeque<BtStage108Regs>,
+        q37158:VecDeque<BtStage108Regs>, q334f8:VecDeque<BtStage108Regs>, q3bc94:VecDeque<BtStage108Regs>,
+        q2e678:VecDeque<BtStage108Regs>, q58488:VecDeque<BtStage108Regs>, q5833c:VecDeque<BtStage108Regs>, e:Vec<E>,
+    }
+    impl Default for B {
+        fn default()->Self{Self{
+            ec:0x1234,word0:0xA000,b1d:0,word34:0,b1c:0xFF,gate:0,final_word:0,
+            q3ccdc:VecDeque::from([BtStage108Regs{r0:2,r1:0x11,r2:0x12,r3:0x13}]),
+            q3cc9e:VecDeque::from([BtStage108Regs{r0:0x21,r1:0x22,r2:0x23,r3:0x24}]),
+            q414a0:VecDeque::from([BtStage108Regs{r0:0x31,r1:0x32,r2:0x33,r3:0x34}]),
+            q2eb58:VecDeque::from([BtStage108Regs{r0:0x41,r1:0x42,r2:0x43,r3:0x44}]),
+            q6e9e0:VecDeque::from([BtStage108Regs{r0:0x51,r1:0x52,r2:0x53,r3:0x54}]),
+            q4bf0c:VecDeque::from([BtStage108Regs{r0:0x61,r1:0x62,r2:0x63,r3:0x64}]),
+            q37158:VecDeque::from([BtStage108Regs{r0:0x71,r1:0x72,r2:0x73,r3:0x74}]),
+            q334f8:VecDeque::from([BtStage108Regs{r0:2,r1:0x82,r2:0x83,r3:0x84}]),
+            q3bc94:VecDeque::from([BtStage108Regs{r0:0x91,r1:0x92,r2:0x93,r3:0x94}]),
+            q2e678:VecDeque::from([BtStage108Regs{r0:0xCAFE,r1:0xA2,r2:0xA3,r3:0xA4}]),
+            q58488:VecDeque::from([BtStage108Regs{r0:0,r1:0xB2,r2:0xB3,r3:0xB4}]),
+            q5833c:VecDeque::from([BtStage108Regs{r0:0xBEEF,..Default::default()}]), e:Vec::new()
+        }}
+    }
+    impl B { fn pop(q:&mut VecDeque<BtStage108Regs>)->BtStage108Regs{q.pop_front().unwrap()} }
+    impl BtStage108Backend for B {
+        fn read_object_halfword(&mut self,o:u32,off:u32)->u16{self.e.push(E::Read("h",o+off,u32::from(self.ec)));self.ec}
+        fn read_object_word(&mut self,o:u32,off:u32)->u32{let v=if off==0{self.word0}else{self.word34};self.e.push(E::Read("w",o+off,v));v}
+        fn read_object_byte(&mut self,o:u32,off:u32)->u8{let v=if off==0x1d{self.b1d}else{self.b1c};self.e.push(E::Read("b",o+off,u32::from(v)));v}
+        fn write_object_byte(&mut self,o:u32,off:u32,v:u8){self.e.push(E::Write("b",o+off,u32::from(v)))}
+        fn read_gate_word(&mut self)->u32{self.e.push(E::Read("gate",STAGE108_GATE_WORD_ADDR,self.gate));self.gate}
+        fn read_final_flag_word(&mut self)->u32{self.e.push(E::Read("final",STAGE108_FINAL_FLAG_BASE_ADDR+8,self.final_word));self.final_word}
+        fn boundary_3ccdc(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("3ccdc",a,b,c,d));Self::pop(&mut self.q3ccdc)}
+        fn boundary_3cc9e(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("3cc9e",a,b,c,d));Self::pop(&mut self.q3cc9e)}
+        fn boundary_414a0(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("414a0",a,b,c,d));Self::pop(&mut self.q414a0)}
+        fn boundary_2eb58(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("2eb58",a,b,c,d));Self::pop(&mut self.q2eb58)}
+        fn boundary_6e9e0(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("6e9e0",a,b,c,d));Self::pop(&mut self.q6e9e0)}
+        fn boundary_4bf0c(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("4bf0c",a,b,c,d));Self::pop(&mut self.q4bf0c)}
+        fn boundary_37158(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("37158",a,b,c,d));Self::pop(&mut self.q37158)}
+        fn boundary_334f8(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("334f8",a,b,c,d));Self::pop(&mut self.q334f8)}
+        fn boundary_3bc94(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("3bc94",a,b,c,d));Self::pop(&mut self.q3bc94)}
+        fn boundary_2e678(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("2e678",a,b,c,d));Self::pop(&mut self.q2e678)}
+        fn boundary_58488(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("58488",a,b,c,d));Self::pop(&mut self.q58488)}
+        fn tail_5833c(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage108Regs{self.e.push(E::Call("5833c",a,b,c,d));Self::pop(&mut self.q5833c)}
+    }
+
+    #[test] fn first_nonone_skips_optional_and_preserves_first_r3_into_414a0(){
+        let mut b=B::default();
+        let _=bt_stage108_dispatch(0x1000,0x11,0x22,0x33,&mut b);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("3cc9e",..))));
+        assert!(b.e.contains(&E::Call("414a0",0x1000,1,0,0x13)));
+    }
+    #[test] fn exact_one_bit7_set_skips_optional_but_uses_shifted_byte_in_r3(){
+        let mut b=B::default();b.b1d=0x81;b.q3ccdc=VecDeque::from([BtStage108Regs{r0:1,r1:2,r2:3,r3:4}]);
+        let _=bt_stage108_dispatch(0x1000,0,0,0,&mut b);
+        assert!(b.e.contains(&E::Call("414a0",0x1000,1,0,0x8100_0000)));
+    }
+    #[test] fn exact_one_bit7_clear_uses_optional_return_r3(){
+        let mut b=B::default();b.b1d=1;b.q3ccdc=VecDeque::from([BtStage108Regs{r0:1,r1:2,r2:3,r3:4}]);
+        let _=bt_stage108_dispatch(0x1000,0,0,0,&mut b);
+        assert!(b.e.contains(&E::Call("3cc9e",0x1000,1,3,0x0100_0000)));
+        assert!(b.e.contains(&E::Call("414a0",0x1000,1,0,0x24)));
+    }
+    #[test] fn word34_bit10_gates_boundary_and_chain_uses_saved_word0(){
+        let mut b=B::default();b.word34=1<<10;
+        let _=bt_stage108_dispatch(0x1000,0,0,0,&mut b);
+        assert!(b.e.iter().any(|e|matches!(e,E::Call("2eb58",0x1000,0x32,r2,r3) if *r2==(1<<31) && *r3==(1<<10))));
+        assert!(b.e.contains(&E::Call("6e9e0",0,0xA000,0x43,0x44)));
+    }
+    #[test] fn byte1c_rewrite_is_low3_or_0x40_and_gate_exact_one_controls_followup(){
+        let mut b=B::default();b.b1c=0xFF;b.gate=1;b.q334f8=VecDeque::from([BtStage108Regs{r0:1,r1:0x82,r2:0x83,r3:0x84}]);
+        let _=bt_stage108_dispatch(0x1000,0,0,0,&mut b);
+        assert!(b.e.contains(&E::Write("b",0x101c,0x47)));
+        assert!(b.e.contains(&E::Call("334f8",0x1000,0x72,8,1)));
+        assert!(b.e.contains(&E::Call("3bc94",1,0x82,0x83,0x84)));
+        assert!(b.e.contains(&E::Call("2e678",0xA000,0x92,0x93,0x94)));
+    }
+    #[test] fn final_flag_clear_returns_word0_boundary_result_without_probe(){
+        let mut b=B::default();b.final_word=2;b.q2e678=VecDeque::from([BtStage108Regs{r0:0xCAFE,r1:1,r2:2,r3:3}]);
+        assert_eq!(bt_stage108_dispatch(0x1000,0,0,0,&mut b),0xCAFE);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("58488",..)|E::Call("5833c",..))));
+    }
+    #[test] fn final_probe_zero_returns_zero_and_nonzero_tails_with_restored_incoming_r3(){
+        let mut b=B::default();b.final_word=1;b.q58488=VecDeque::from([BtStage108Regs{r0:0,r1:0xB2,r2:0xB3,r3:0xB4}]);
+        assert_eq!(bt_stage108_dispatch(0x1000,0,0,0x4444,&mut b),0);
+        let mut b=B::default();b.final_word=1;b.q58488=VecDeque::from([BtStage108Regs{r0:7,r1:0xB2,r2:0xB3,r3:0xB4}]);
+        assert_eq!(bt_stage108_dispatch(0x1000,0,0,0x4444,&mut b),0xBEEF);
+        assert!(b.e.contains(&E::Call("5833c",0,0xB2,0xB3,0x4444)));
+    }
+    #[test] fn provenance_constants_are_exact(){
+        assert_eq!(STAGE108_CURRENT_BT_DISPATCH_ADDR,0x16D9E8);
+        assert_eq!(STAGE108_LEGACY_BT_DISPATCH_ADDR,0x16AAEC);
+        assert_eq!(STAGE108_BT_FIRST_BOUNDARY,0x3CCDC);
+        assert_eq!(STAGE108_BT_FINAL_TAIL,0x5833C);
+    }
+}
