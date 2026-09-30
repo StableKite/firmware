@@ -12686,3 +12686,85 @@ mod stage92_tests {
         assert_eq!(STAGE92_BT_GUARD_FAIL_BOUNDARY, 0x94C0);
     }
 }
+
+/// Stage 93: clear ambient control bit 3 at current `0x171E8C`.
+///
+/// The exact 12-byte current body is byte-identical to public-legacy structural
+/// `0x16DDDC`. The only observable R0 behavior is preservation of the incoming
+/// value while one ambient dword is read-modify-written.
+pub const STAGE93_CURRENT_BT_CLEAR_CONTROL_BIT3_ADDR: u32 = 0x0017_1E8C;
+pub const STAGE93_BT_CONTROL_WORD_ADDR: u32 = 0x0065_0314;
+pub const STAGE93_BT_CONTROL_BIT: u32 = 1 << 3;
+
+pub trait BtStage93Backend {
+    fn read_control_word(&mut self, address: u32) -> u32;
+    fn write_control_word(&mut self, address: u32, value: u32);
+}
+
+/// Exact local model of current `0x171E8C`.
+///
+/// Firmware reads the ambient dword, clears only bit 3, writes it back, and
+/// returns with incoming R0 untouched.
+pub fn bt_stage93_clear_control_bit3<B: BtStage93Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    let old = backend.read_control_word(STAGE93_BT_CONTROL_WORD_ADDR);
+    backend.write_control_word(
+        STAGE93_BT_CONTROL_WORD_ADDR,
+        old & !STAGE93_BT_CONTROL_BIT,
+    );
+    incoming_r0
+}
+
+#[cfg(test)]
+mod stage93_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct B {
+        word: u32,
+        reads: u32,
+        writes: u32,
+    }
+
+    impl BtStage93Backend for B {
+        fn read_control_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE93_BT_CONTROL_WORD_ADDR);
+            self.reads += 1;
+            self.word
+        }
+        fn write_control_word(&mut self, address: u32, value: u32) {
+            assert_eq!(address, STAGE93_BT_CONTROL_WORD_ADDR);
+            self.writes += 1;
+            self.word = value;
+        }
+    }
+
+    #[test]
+    fn clears_only_bit_three_and_preserves_r0() {
+        let original = 0xA5A5_5A5A | STAGE93_BT_CONTROL_BIT;
+        let mut b = B { word: original, ..Default::default() };
+        assert_eq!(
+            bt_stage93_clear_control_bit3(0xCAFE_BABE, &mut b),
+            0xCAFE_BABE
+        );
+        assert_eq!(b.word, original & !STAGE93_BT_CONTROL_BIT);
+        assert_eq!((b.reads, b.writes), (1, 1));
+    }
+
+    #[test]
+    fn already_clear_bit_still_performs_exact_read_write() {
+        let mut b = B { word: 0xFFFF_FFF7, ..Default::default() };
+        assert_eq!(bt_stage93_clear_control_bit3(7, &mut b), 7);
+        assert_eq!(b.word, 0xFFFF_FFF7);
+        assert_eq!((b.reads, b.writes), (1, 1));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE93_CURRENT_BT_CLEAR_CONTROL_BIT3_ADDR, 0x171E8C);
+        assert_eq!(STAGE93_BT_CONTROL_WORD_ADDR, 0x650314);
+        assert_eq!(STAGE93_BT_CONTROL_BIT, 8);
+    }
+}

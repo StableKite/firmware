@@ -758,3 +758,9 @@ Stage 92 reconstructs current `0x171E1C`, an exact 88-byte wrapper with public-l
 The wrapper snapshots the stack guard and source dword before testing bit 4 of `*0x650310`. When that bit is set, the local result is zero and the active transfer is skipped. When clear, firmware consumes the four bytes of the saved source dword in little-endian order. For each byte it writes the zero-extended byte to `0x650328`, writes `0x81000000` to `0x650318`, and calls the already recovered Stage-90 bounded signed poll; each Stage-90 return is ignored. After four bytes it calls Stage 91 once, ignores that return, then ORs only bit 3 into dword `0x650314` and sets local result one.
 
 The stack guard is reread on both paths. A mismatch calls hardening boundary `0x94C0`. If that boundary returns, its R0 is the wrapper's final return because the epilogue does not restore the prior local result. The source model preserves that observable machine-code shape without assigning business meaning to the hardening boundary.
+
+## Stage 93 — clear ambient control bit 3
+
+Stage 93 closes current `0x171E8C`, an exact 12-byte leaf. The public 73136-byte legacy HCD contains the byte-identical structural body at `0x16DDDC`; both bodies have SHA-256 `8882b328cb6513904b88814cc2bc74155c538f6941d5e5815fe7f60be190369a` and each image has exactly one exact-body hit. The PC-relative literal immediately after the function resolves to stable dword `0x650314` in both images.
+
+The leaf reads `*0x650314`, clears only bit 3 with `BIC`, writes the dword back, and returns through `BX LR`. It does not assign R0, so incoming R0 is the observable return value. There is no local gate and even an already-clear bit still performs the read and write. The source model preserves that exact one-read/one-write shape without assigning a wider semantic role to the ambient word.
