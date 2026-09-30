@@ -11316,3 +11316,61 @@ mod stage83_tests {
         assert_eq!(STAGE83_BT_REPAIR_INPUT_ADDR, 0x204B10);
     }
 }
+
+/// Stage 84: current fixed callback-slot publisher at `0x1720D8`.
+///
+/// The executable body is only eight bytes and uses a common literal-store form,
+/// so provenance is frozen over the 16-byte body-plus-literal context. The
+/// destination literal is stable at `0x2166D4`; the raw Thumb callback pointer
+/// relocates from current `0x171FD9` to public-legacy structural `0x16DF29`.
+pub const STAGE84_CURRENT_BT_CALLBACK_SLOT_PUBLISH_ADDR: u32 = 0x0017_20D8;
+pub const STAGE84_BT_CALLBACK_SLOT_ADDR: u32 = 0x0021_66D4;
+pub const STAGE84_BT_CALLBACK_THUMB: u32 = 0x0017_1FD9;
+
+pub trait BtStage84Backend {
+    fn write_word(&mut self, address: u32, value: u32);
+}
+
+/// Safe source-level model of current `0x1720D8`.
+///
+/// Firmware loads the fixed slot address and raw Thumb callback pointer, writes
+/// the pointer once, and returns with R0 untouched.
+pub fn bt_stage84_publish_callback<B: BtStage84Backend>(
+    incoming_r0: u32,
+    backend: &mut B,
+) -> u32 {
+    backend.write_word(STAGE84_BT_CALLBACK_SLOT_ADDR, STAGE84_BT_CALLBACK_THUMB);
+    incoming_r0
+}
+
+#[cfg(test)]
+mod stage84_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        writes: Vec<(u32, u32)>,
+    }
+
+    impl BtStage84Backend for B {
+        fn write_word(&mut self, address: u32, value: u32) {
+            self.writes.push((address, value));
+        }
+    }
+
+    #[test]
+    fn writes_exact_raw_thumb_pointer_once_and_preserves_r0() {
+        let mut b = B::default();
+        assert_eq!(bt_stage84_publish_callback(0xDEAD_BEEF, &mut b), 0xDEAD_BEEF);
+        assert_eq!(b.writes, [(STAGE84_BT_CALLBACK_SLOT_ADDR, STAGE84_BT_CALLBACK_THUMB)]);
+    }
+
+    #[test]
+    fn provenance_constants_freeze_current_slot_and_callback() {
+        assert_eq!(STAGE84_CURRENT_BT_CALLBACK_SLOT_PUBLISH_ADDR, 0x1720D8);
+        assert_eq!(STAGE84_BT_CALLBACK_SLOT_ADDR, 0x2166D4);
+        assert_eq!(STAGE84_BT_CALLBACK_THUMB, 0x171FD9);
+    }
+}

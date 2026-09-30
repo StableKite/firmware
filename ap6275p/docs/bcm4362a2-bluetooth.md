@@ -686,3 +686,11 @@ Incoming R2 is a pointer to a dword and firmware intentionally loads that dword 
 On a low-20 match firmware rereads the full dword through incoming R2. If the reread is not exact `0x200FFFFF`, it writes one to byte `0x2170EE` and returns incoming R0 unchanged. Exact `0x200FFFFF` instead reads dword `0x352608`, calls opaque `0xBAA08(value)`, writes literal one to current dword `0x222E00`, then writes one to byte `0x2170EE`; the `0xBAA08` return remains final through both stores. The public-legacy structural literal corresponding to the publish word is relocated to `0x222C6C`, while the other fixed literals remain the same.
 
 The source model preserves the two separate input-word reads, full-R1 versus low-20 comparison, mismatch flag clear, logical shift before Stage-81 tail, exact full-word special gate, publish-before-ready ordering, and all three final-return shapes without assigning broader meaning to opaque `0xBAA08`.
+
+## Stage 84 — fixed callback-slot publisher
+
+Stage 84 reconstructs current `0x1720D8`, an eight-byte leaf that loads two PC-relative literals, stores the second through the first, and returns. The raw eight-byte body `014b024a1a607047` is a common code shape and is therefore not treated as a unique provenance signature by itself.
+
+The authoritative structural signature is the 16-byte body-plus-literal context. Current bytes are `014b024a1a607047d4662100d91f1700`; the public-legacy structural context at `0x16E028` is `014b024a1a607047d466210029df1600`. Both resolve the destination slot to `0x2166D4`; only the callback Thumb pointer relocates, current `0x171FD9` versus legacy `0x16DF29`. Masking those four callback-pointer bytes leaves 12 fixed bytes and exactly one current and one legacy structural hit.
+
+The local semantics are exact and intentionally narrow: write raw current Thumb pointer `0x171FD9` as one dword to fixed slot `0x2166D4`, do not touch any other state, and return incoming R0 unchanged. No semantic role is assigned to the callback beyond the literal publication visible in the firmware.
