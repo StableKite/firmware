@@ -14878,3 +14878,379 @@ mod stage104_tests {
         assert_eq!(STAGE104_BT_CONSTANT_RETURN_VALUE, 12);
     }
 }
+
+pub const STAGE105_CURRENT_BT_STATE_DISPATCH_ADDR: u32 = 0x0016_D7FC;
+pub const STAGE105_LEGACY_BT_STATE_DISPATCH_ADDR: u32 = 0x0016_A900;
+pub const STAGE105_BT_STATE_BASE: u32 = 0x0020_AEC0;
+pub const STAGE105_BT_GATE_ADDR: u32 = 0x0020_2D64;
+pub const STAGE105_BT_OPTIONAL_WORD_ADDR: u32 = 0x0020_AECC;
+pub const STAGE105_BT_COMMON_BASE_ADDR: u32 = 0x0020_9BB4;
+pub const STAGE105_BT_MODE_FLAG_ADDR: u32 = 0x0020_2BEA;
+pub const STAGE105_BT_PUBLISH_WORD_ADDR: u32 = 0x0020_AE7C;
+pub const STAGE105_BT_FLAG_BASE_ADDR: u32 = 0x0020_8338;
+pub const STAGE105_BT_SOURCE_PTR_ADDR: u32 = 0x0022_1ED8;
+pub const STAGE105_LEGACY_BT_SOURCE_PTR_ADDR: u32 = 0x0022_1EA4;
+pub const STAGE105_BT_DEST_BYTE_ADDR: u32 = 0x0020_AE70;
+
+pub const STAGE105_BT_FIRST_BOUNDARY: u32 = 0x0003_5060;
+pub const STAGE105_BT_EARLY_TAIL: u32 = 0x0006_28D0;
+pub const STAGE105_BT_PREP_BOUNDARY: u32 = 0x0006_2550;
+pub const STAGE105_BT_ENABLE_BOUNDARY: u32 = 0x0006_2510;
+pub const STAGE105_BT_SIGNED_BOUNDARY: u32 = 0x0003_0FF4;
+pub const STAGE105_BT_OBJECT_BOUNDARY: u32 = 0x0003_3B50;
+pub const STAGE105_BT_BUFFER_BOUNDARY: u32 = 0x0000_3D24;
+pub const STAGE105_BT_MODE_BOUNDARY: u32 = 0x0006_274E;
+pub const STAGE105_BT_MODE_APPLY_BOUNDARY: u32 = 0x0006_2710;
+pub const STAGE105_BT_SECOND_APPLY_BOUNDARY: u32 = 0x0003_5760;
+pub const STAGE105_BT_PUBLISH_BOUNDARY: u32 = 0x000F_F594;
+pub const STAGE105_BT_FINAL_EXTRA_BOUNDARY: u32 = 0x0006_2204;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage105Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage105Backend {
+    fn read_input_word(&mut self, input_ptr: u32) -> u32;
+    fn read_state_byte(&mut self, offset: u32) -> u8;
+    fn write_state_byte(&mut self, offset: u32, value: u8);
+    fn read_gate_byte(&mut self) -> u8;
+    fn read_optional_word(&mut self) -> u32;
+    fn write_mode_flag(&mut self, value: u8);
+    fn write_publish_word(&mut self, value: u32);
+    fn read_flag_byte13(&mut self) -> u8;
+    fn write_flag_byte13(&mut self, value: u8);
+    fn read_source_ptr(&mut self) -> u32;
+    fn read_indirect_byte(&mut self, ptr: u32) -> u8;
+    fn write_indirect_byte(&mut self, ptr: u32, value: u8);
+    fn write_dest_byte(&mut self, value: u8);
+
+    fn boundary_35060(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn tail_628d0(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_62550(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_62510(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_30ff4(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_33b50(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_3d24(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_6274e(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_62710(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_35760(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_ff594(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+    fn boundary_62204(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage105Regs;
+}
+
+/// Exact source-level model of current `0x16D7FC..0x16D8E8`.
+///
+/// The model preserves caller-volatile R0-R3 across opaque boundaries whenever
+/// the machine code forwards them, including the early-tail R2 plus restored
+/// incoming R3 shape, independent state-byte rereads, the SXT.B truncation, and
+/// the final path-dependent return source.
+pub fn bt_stage105_state_dispatch<B: BtStage105Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let first_input_word = backend.read_input_word(incoming_r0);
+    let byte7_snapshot = backend.read_state_byte(7);
+    let mut regs = backend.boundary_35060(first_input_word, incoming_r1, incoming_r2, incoming_r3);
+    let saved_first_r0 = regs.r0;
+
+    let byte1 = backend.read_state_byte(1);
+    let high_nibble = byte7_snapshot & 0xF0;
+    let low_nibble = byte7_snapshot & 0x0F;
+
+    if byte1 == 0xFF {
+        let fresh_input_word = backend.read_input_word(incoming_r0);
+        let tail = backend.tail_628d0(fresh_input_word, 0, regs.r2, incoming_r3);
+        return tail.r0;
+    }
+
+    regs.r0 = u32::from(byte1);
+    regs = backend.boundary_62550(regs.r0, regs.r1, regs.r2, regs.r3);
+    regs.r0 = 1;
+    regs = backend.boundary_62510(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let byte7_reread = backend.read_state_byte(7);
+    backend.write_state_byte(7, byte7_reread & 0x0F);
+
+    let gate = backend.read_gate_byte();
+    regs.r3 = STAGE105_BT_GATE_ADDR;
+    if gate == 0 {
+        let byte5 = backend.read_state_byte(5);
+        let scaled = byte5.wrapping_mul(252);
+        regs.r0 = (scaled as i8 as i32) as u32;
+        regs = backend.boundary_30ff4(regs.r0, regs.r1, regs.r2, regs.r3);
+        regs.r1 = regs.r0;
+        regs.r0 = incoming_r0;
+        regs = backend.boundary_33b50(regs.r0, regs.r1, regs.r2, regs.r3);
+
+        regs.r3 = STAGE105_BT_OPTIONAL_WORD_ADDR;
+        let optional_word = backend.read_optional_word();
+        regs.r0 = optional_word;
+        if optional_word != 0 {
+            regs.r2 = 0x1C;
+            regs.r1 = u32::from(gate);
+            regs = backend.boundary_3d24(regs.r0, regs.r1, regs.r2, regs.r3);
+        }
+    }
+
+    regs.r2 = 0x40;
+    regs.r1 = 0;
+    regs.r0 = STAGE105_BT_COMMON_BASE_ADDR;
+    regs = backend.boundary_3d24(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    regs.r3 = STAGE105_BT_MODE_FLAG_ADDR;
+    regs.r0 = 1;
+    backend.write_mode_flag(1);
+
+    let mode = if low_nibble == 7 {
+        if high_nibble == 0 {
+            5
+        } else if high_nibble == 0x10 {
+            4
+        } else if high_nibble == 0x30 {
+            3
+        } else {
+            0
+        }
+    } else {
+        regs.r1 = u32::from(low_nibble);
+        if high_nibble <= 0x10 {
+            regs.r0 = 0;
+        }
+        regs = backend.boundary_6274e(regs.r0, regs.r1, regs.r2, regs.r3);
+        regs.r0
+    };
+
+    regs.r1 = mode;
+    regs.r0 = saved_first_r0;
+    regs = backend.boundary_62710(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    regs.r1 = mode;
+    regs.r0 = saved_first_r0;
+    regs = backend.boundary_35760(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    if mode > 2 {
+        regs.r1 = u32::from(low_nibble);
+        regs.r0 = mode;
+        regs = backend.boundary_ff594(regs.r0, regs.r1, regs.r2, regs.r3);
+        backend.write_publish_word(regs.r0);
+        regs.r3 = STAGE105_BT_PUBLISH_WORD_ADDR;
+        regs.r0 = saved_first_r0;
+        regs = backend.boundary_62204(regs.r0, regs.r1, regs.r2, regs.r3);
+
+        let flag = backend.read_flag_byte13();
+        backend.write_flag_byte13(flag | 0x10);
+    }
+
+    let source_ptr = backend.read_source_ptr();
+    let source_byte = backend.read_indirect_byte(source_ptr);
+    backend.write_dest_byte(source_byte);
+    backend.write_indirect_byte(source_ptr, 0);
+    regs.r0
+}
+
+#[cfg(test)]
+mod stage105_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum E {
+        Call(&'static str, u32, u32, u32, u32),
+        Read(&'static str, u32, u32),
+        Write(&'static str, u32, u32),
+    }
+
+    struct B {
+        input_words: VecDeque<u32>,
+        state1: u8,
+        state5: u8,
+        state7: VecDeque<u8>,
+        gate: u8,
+        optional_word: u32,
+        flag13: u8,
+        source_ptr: u32,
+        source_byte: u8,
+        returns_35060: VecDeque<BtStage105Regs>,
+        returns_628d0: VecDeque<BtStage105Regs>,
+        returns_62550: VecDeque<BtStage105Regs>,
+        returns_62510: VecDeque<BtStage105Regs>,
+        returns_30ff4: VecDeque<BtStage105Regs>,
+        returns_33b50: VecDeque<BtStage105Regs>,
+        returns_3d24: VecDeque<BtStage105Regs>,
+        returns_6274e: VecDeque<BtStage105Regs>,
+        returns_62710: VecDeque<BtStage105Regs>,
+        returns_35760: VecDeque<BtStage105Regs>,
+        returns_ff594: VecDeque<BtStage105Regs>,
+        returns_62204: VecDeque<BtStage105Regs>,
+        e: Vec<E>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                input_words: VecDeque::from([0x1111, 0x2222]),
+                state1: 1,
+                state5: 0,
+                state7: VecDeque::from([0x20, 0x20]),
+                gate: 1,
+                optional_word: 0,
+                flag13: 0,
+                source_ptr: 0x9000,
+                source_byte: 0x5A,
+                returns_35060: VecDeque::from([BtStage105Regs{r0:0x7000,r1:0x11,r2:0x22,r3:0x33}]),
+                returns_628d0: VecDeque::from([BtStage105Regs{r0:0xDEAD,..Default::default()}]),
+                returns_62550: VecDeque::from([BtStage105Regs{r0:0x51,r1:0x52,r2:0x53,r3:0x54}]),
+                returns_62510: VecDeque::from([BtStage105Regs{r0:0x61,r1:0x62,r2:0x63,r3:0x64}]),
+                returns_30ff4: VecDeque::from([BtStage105Regs{r0:0x71,r1:0x72,r2:0x73,r3:0x74}]),
+                returns_33b50: VecDeque::from([BtStage105Regs{r0:0x81,r1:0x82,r2:0x83,r3:0x84}]),
+                returns_3d24: VecDeque::from([BtStage105Regs{r0:0x91,r1:0x92,r2:0x93,r3:0x94}]),
+                returns_6274e: VecDeque::from([BtStage105Regs{r0:1,r1:0xA2,r2:0xA3,r3:0xA4}]),
+                returns_62710: VecDeque::from([BtStage105Regs{r0:0xB1,r1:0xB2,r2:0xB3,r3:0xB4}]),
+                returns_35760: VecDeque::from([BtStage105Regs{r0:0xCAFE,r1:0xC2,r2:0xC3,r3:0xC4}]),
+                returns_ff594: VecDeque::from([BtStage105Regs{r0:0xD1,r1:0xD2,r2:0xD3,r3:0xD4}]),
+                returns_62204: VecDeque::from([BtStage105Regs{r0:0xBEEF,r1:0xE2,r2:0xE3,r3:0xE4}]),
+                e: Vec::new(),
+            }
+        }
+    }
+
+    impl B {
+        fn pop(q: &mut VecDeque<BtStage105Regs>) -> BtStage105Regs { q.pop_front().unwrap() }
+    }
+
+    impl BtStage105Backend for B {
+        fn read_input_word(&mut self,p:u32)->u32{let v=self.input_words.pop_front().unwrap();self.e.push(E::Read("input",p,v));v}
+        fn read_state_byte(&mut self,o:u32)->u8{let v=match o{1=>self.state1,5=>self.state5,7=>self.state7.pop_front().unwrap(),_=>panic!()};self.e.push(E::Read("state",o,u32::from(v)));v}
+        fn write_state_byte(&mut self,o:u32,v:u8){self.e.push(E::Write("state",o,u32::from(v)));}
+        fn read_gate_byte(&mut self)->u8{self.e.push(E::Read("gate",STAGE105_BT_GATE_ADDR,u32::from(self.gate)));self.gate}
+        fn read_optional_word(&mut self)->u32{self.e.push(E::Read("optional",STAGE105_BT_OPTIONAL_WORD_ADDR,self.optional_word));self.optional_word}
+        fn write_mode_flag(&mut self,v:u8){self.e.push(E::Write("modeflag",STAGE105_BT_MODE_FLAG_ADDR,u32::from(v)));}
+        fn write_publish_word(&mut self,v:u32){self.e.push(E::Write("publish",STAGE105_BT_PUBLISH_WORD_ADDR,v));}
+        fn read_flag_byte13(&mut self)->u8{self.e.push(E::Read("flag13",STAGE105_BT_FLAG_BASE_ADDR+0x13,u32::from(self.flag13)));self.flag13}
+        fn write_flag_byte13(&mut self,v:u8){self.flag13=v;self.e.push(E::Write("flag13",STAGE105_BT_FLAG_BASE_ADDR+0x13,u32::from(v)));}
+        fn read_source_ptr(&mut self)->u32{self.e.push(E::Read("srcptr",STAGE105_BT_SOURCE_PTR_ADDR,self.source_ptr));self.source_ptr}
+        fn read_indirect_byte(&mut self,p:u32)->u8{self.e.push(E::Read("srcbyte",p,u32::from(self.source_byte)));self.source_byte}
+        fn write_indirect_byte(&mut self,p:u32,v:u8){self.source_byte=v;self.e.push(E::Write("srcbyte",p,u32::from(v)));}
+        fn write_dest_byte(&mut self,v:u8){self.e.push(E::Write("dest",STAGE105_BT_DEST_BYTE_ADDR,u32::from(v)));}
+        fn boundary_35060(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("35060",a,b,c,d));Self::pop(&mut self.returns_35060)}
+        fn tail_628d0(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("628d0",a,b,c,d));Self::pop(&mut self.returns_628d0)}
+        fn boundary_62550(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("62550",a,b,c,d));Self::pop(&mut self.returns_62550)}
+        fn boundary_62510(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("62510",a,b,c,d));Self::pop(&mut self.returns_62510)}
+        fn boundary_30ff4(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("30ff4",a,b,c,d));Self::pop(&mut self.returns_30ff4)}
+        fn boundary_33b50(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("33b50",a,b,c,d));Self::pop(&mut self.returns_33b50)}
+        fn boundary_3d24(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("3d24",a,b,c,d));Self::pop(&mut self.returns_3d24)}
+        fn boundary_6274e(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("6274e",a,b,c,d));Self::pop(&mut self.returns_6274e)}
+        fn boundary_62710(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("62710",a,b,c,d));Self::pop(&mut self.returns_62710)}
+        fn boundary_35760(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("35760",a,b,c,d));Self::pop(&mut self.returns_35760)}
+        fn boundary_ff594(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("ff594",a,b,c,d));Self::pop(&mut self.returns_ff594)}
+        fn boundary_62204(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage105Regs{self.e.push(E::Call("62204",a,b,c,d));Self::pop(&mut self.returns_62204)}
+    }
+
+    #[test]
+    fn early_tail_rereads_word_forwards_live_r2_and_restores_incoming_r3(){
+        let mut b=B::default(); b.state1=0xff; b.state7=VecDeque::from([0xab]);
+        b.returns_35060=VecDeque::from([BtStage105Regs{r0:7,r1:8,r2:0xCAFE,r3:0xDEAD}]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,0x4444,&mut b),0xDEAD);
+        assert!(b.e.contains(&E::Call("35060",0x1111,2,3,0x4444)));
+        assert!(b.e.contains(&E::Call("628d0",0x2222,0,0xCAFE,0x4444)));
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("62550",..))));
+    }
+
+    #[test]
+    fn gate_zero_preserves_sxtb_and_30ff4_to_33b50_volatile_chain(){
+        let mut b=B::default(); b.gate=0; b.state5=0x20; b.optional_word=0; b.state7=VecDeque::from([0x20,0x2f]);
+        b.returns_62510=VecDeque::from([BtStage105Regs{r0:0x61,r1:0x1111,r2:0x2222,r3:0x3333}]);
+        b.returns_30ff4=VecDeque::from([BtStage105Regs{r0:0x7777,r1:0xAAAA,r2:0xBBBB,r3:0xCCCC}]);
+        b.returns_3d24=VecDeque::from([BtStage105Regs{r0:0x91,r1:0x92,r2:0x93,r3:0x94}]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,4,&mut b),0xCAFE);
+        assert!(b.e.contains(&E::Write("state",7,0x0f)));
+        assert!(b.e.contains(&E::Call("30ff4",0xffff_ff80,0x1111,0x2222,STAGE105_BT_GATE_ADDR)));
+        assert!(b.e.contains(&E::Call("33b50",0x1000,0x7777,0xBBBB,0xCCCC)));
+        assert!(b.e.contains(&E::Call("3d24",STAGE105_BT_COMMON_BASE_ADDR,0,0x40,STAGE105_BT_OPTIONAL_WORD_ADDR)));
+    }
+
+    #[test]
+    fn optional_first_buffer_call_forwards_its_returned_r3_into_common_call(){
+        let mut b=B::default(); b.gate=0; b.optional_word=0x1234; b.state7=VecDeque::from([0x20,0x20]);
+        b.returns_3d24=VecDeque::from([
+            BtStage105Regs{r0:1,r1:2,r2:3,r3:0xFEED},
+            BtStage105Regs{r0:0x91,r1:0x92,r2:0x93,r3:0x94},
+        ]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,4,&mut b),0xCAFE);
+        assert!(b.e.contains(&E::Call("3d24",0x1234,0,0x1c,STAGE105_BT_OPTIONAL_WORD_ADDR)));
+        assert!(b.e.contains(&E::Call("3d24",STAGE105_BT_COMMON_BASE_ADDR,0,0x40,0xFEED)));
+    }
+
+    #[test]
+    fn nonzero_gate_skips_signed_path_and_common_call_keeps_gate_address_in_r3(){
+        let mut b=B::default(); b.gate=9; b.state7=VecDeque::from([0x20,0x20]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,4,&mut b),0xCAFE);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("30ff4",..)|E::Call("33b50",..))));
+        assert!(b.e.contains(&E::Call("3d24",STAGE105_BT_COMMON_BASE_ADDR,0,0x40,STAGE105_BT_GATE_ADDR)));
+    }
+
+    #[test]
+    fn low7_uses_exact_literal_mode_map_without_mode_boundary(){
+        for (snapshot, expected_mode) in [(0x07,5u32),(0x17,4),(0x37,3),(0x27,0)] {
+            let mut b=B::default(); b.state7=VecDeque::from([snapshot,snapshot]);
+            b.returns_62710=VecDeque::from([BtStage105Regs{r0:1,r1:2,r2:3,r3:4}]);
+            b.returns_35760=VecDeque::from([BtStage105Regs{r0:0xCAFE,r1:2,r2:3,r3:4}]);
+            if expected_mode>2 { b.returns_ff594=VecDeque::from([BtStage105Regs{r0:0xD1,r1:2,r2:3,r3:4}]); b.returns_62204=VecDeque::from([BtStage105Regs{r0:0xBEEF,r1:2,r2:3,r3:4}]); }
+            let _=bt_stage105_state_dispatch(0x1000,2,3,4,&mut b);
+            assert!(!b.e.iter().any(|e|matches!(e,E::Call("6274e",..))));
+            assert!(b.e.iter().any(|e|matches!(e,E::Call("62710",0x7000,m,_,_) if *m==expected_mode)));
+        }
+    }
+
+    #[test]
+    fn non7_mode_boundary_gets_boolean_high_nibble_gate_and_live_r2_r3(){
+        let mut b=B::default(); b.state7=VecDeque::from([0x25,0x25]);
+        b.returns_3d24=VecDeque::from([BtStage105Regs{r0:0x91,r1:0x92,r2:0xABCD,r3:0xDCBA}]);
+        b.returns_6274e=VecDeque::from([BtStage105Regs{r0:2,r1:0xA2,r2:0xA3,r3:0xA4}]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,4,&mut b),0xCAFE);
+        assert!(b.e.contains(&E::Call("6274e",1,5,0xABCD,STAGE105_BT_MODE_FLAG_ADDR)));
+        assert!(b.e.contains(&E::Call("62710",0x7000,2,0xA3,0xA4)));
+    }
+
+    #[test]
+    fn mode_at_most_two_returns_35760_and_still_moves_final_byte(){
+        let mut b=B::default(); b.state7=VecDeque::from([0x25,0x25]); b.source_byte=0x6b;
+        b.returns_6274e=VecDeque::from([BtStage105Regs{r0:2,r1:3,r2:4,r3:5}]);
+        b.returns_35760=VecDeque::from([BtStage105Regs{r0:0xCAFE,r1:0xC2,r2:0xC3,r3:0xC4}]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,4,&mut b),0xCAFE);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("ff594",..)|E::Call("62204",..))));
+        assert!(b.e.contains(&E::Write("dest",STAGE105_BT_DEST_BYTE_ADDR,0x6b)));
+        assert!(b.e.contains(&E::Write("srcbyte",0x9000,0)));
+    }
+
+    #[test]
+    fn mode_above_two_publishes_ff594_then_returns_62204_and_sets_bit4(){
+        let mut b=B::default(); b.state7=VecDeque::from([0x37,0x37]); b.flag13=0x81; b.source_byte=0x44;
+        b.returns_35760=VecDeque::from([BtStage105Regs{r0:0xC1,r1:0xC2,r2:0x1234,r3:0x5678}]);
+        b.returns_ff594=VecDeque::from([BtStage105Regs{r0:0xD00D,r1:0xAAAA,r2:0xBBBB,r3:0xCCCC}]);
+        b.returns_62204=VecDeque::from([BtStage105Regs{r0:0xBEEF,r1:1,r2:2,r3:3}]);
+        assert_eq!(bt_stage105_state_dispatch(0x1000,2,3,4,&mut b),0xBEEF);
+        assert!(b.e.contains(&E::Call("ff594",3,7,0x1234,0x5678)));
+        assert!(b.e.contains(&E::Write("publish",STAGE105_BT_PUBLISH_WORD_ADDR,0xD00D)));
+        assert!(b.e.contains(&E::Call("62204",0x7000,0xAAAA,0xBBBB,STAGE105_BT_PUBLISH_WORD_ADDR)));
+        assert!(b.e.contains(&E::Write("flag13",STAGE105_BT_FLAG_BASE_ADDR+0x13,0x91)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!(STAGE105_CURRENT_BT_STATE_DISPATCH_ADDR,0x16D7FC);
+        assert_eq!(STAGE105_LEGACY_BT_STATE_DISPATCH_ADDR,0x16A900);
+        assert_eq!(STAGE105_BT_FIRST_BOUNDARY,0x35060);
+        assert_eq!(STAGE105_BT_EARLY_TAIL,0x628D0);
+        assert_eq!(STAGE105_BT_SOURCE_PTR_ADDR,0x221ED8);
+        assert_eq!(STAGE105_LEGACY_BT_SOURCE_PTR_ADDR,0x221EA4);
+    }
+}
