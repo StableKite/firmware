@@ -764,3 +764,9 @@ The stack guard is reread on both paths. A mismatch calls hardening boundary `0x
 Stage 93 closes current `0x171E8C`, an exact 12-byte leaf. The public 73136-byte legacy HCD contains the byte-identical structural body at `0x16DDDC`; both bodies have SHA-256 `8882b328cb6513904b88814cc2bc74155c538f6941d5e5815fe7f60be190369a` and each image has exactly one exact-body hit. The PC-relative literal immediately after the function resolves to stable dword `0x650314` in both images.
 
 The leaf reads `*0x650314`, clears only bit 3 with `BIC`, writes the dword back, and returns through `BX LR`. It does not assign R0, so incoming R0 is the observable return value. There is no local gate and even an already-clear bit still performs the read and write. The source model preserves that exact one-read/one-write shape without assigning a wider semantic role to the ambient word.
+
+## Stage 94 — ambient three-bit extractor
+
+Stage 94 closes current `0x171E9C`. Its executable body is exactly 10 bytes and is byte-identical to public-legacy structural `0x16DDEC`, with SHA-256 `46b411d628c7bbce798d1ae39f81ebbbfab01286aa370d51c6c1abde4025a5d6` and one exact hit in each image. The `NOP` immediately after `BX LR` is alignment and is deliberately excluded from the function body. The following literal resolves to stable dword `0x65031C` in both images.
+
+Firmware performs one dword load from `0x65031C` and returns `UBFX(word, 16, 3)`, i.e. bits 16 through 18 as a value from zero through seven. No extra masking, gate, or second read is introduced by the source model.

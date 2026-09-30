@@ -12768,3 +12768,69 @@ mod stage93_tests {
         assert_eq!(STAGE93_BT_CONTROL_BIT, 8);
     }
 }
+
+/// Stage 94: extract ambient bits 16..18 at current `0x171E9C`.
+///
+/// The executable body is exactly 10 bytes. The following `NOP` is alignment
+/// and is not part of the function. Public-legacy structural `0x16DDEC` is
+/// byte-identical.
+pub const STAGE94_CURRENT_BT_EXTRACT_BITS16_18_ADDR: u32 = 0x0017_1E9C;
+pub const STAGE94_BT_SOURCE_WORD_ADDR: u32 = 0x0065_031C;
+pub const STAGE94_BT_FIELD_SHIFT: u32 = 16;
+pub const STAGE94_BT_FIELD_MASK: u32 = 0x7;
+
+pub trait BtStage94Backend {
+    fn read_source_word(&mut self, address: u32) -> u32;
+}
+
+/// Exact local model of current `0x171E9C`.
+///
+/// One dword is loaded and `UBFX R0,R0,#16,#3` becomes the function return.
+pub fn bt_stage94_extract_bits16_18<B: BtStage94Backend>(
+    backend: &mut B,
+) -> u32 {
+    (backend.read_source_word(STAGE94_BT_SOURCE_WORD_ADDR) >> STAGE94_BT_FIELD_SHIFT)
+        & STAGE94_BT_FIELD_MASK
+}
+
+#[cfg(test)]
+mod stage94_tests {
+    use super::*;
+
+    struct B {
+        word: u32,
+        reads: u32,
+    }
+
+    impl BtStage94Backend for B {
+        fn read_source_word(&mut self, address: u32) -> u32 {
+            assert_eq!(address, STAGE94_BT_SOURCE_WORD_ADDR);
+            self.reads += 1;
+            self.word
+        }
+    }
+
+    #[test]
+    fn extracts_only_bits_sixteen_through_eighteen() {
+        let mut b = B { word: 0xFFFA_FFFF, reads: 0 };
+        let expected = (b.word >> 16) & 7;
+        assert_eq!(bt_stage94_extract_bits16_18(&mut b), expected);
+        assert_eq!(b.reads, 1);
+    }
+
+    #[test]
+    fn output_range_is_exactly_three_bits() {
+        for field in 0u32..8 {
+            let mut b = B { word: field << 16, reads: 0 };
+            assert_eq!(bt_stage94_extract_bits16_18(&mut b), field);
+        }
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE94_CURRENT_BT_EXTRACT_BITS16_18_ADDR, 0x171E9C);
+        assert_eq!(STAGE94_BT_SOURCE_WORD_ADDR, 0x65031C);
+        assert_eq!(STAGE94_BT_FIELD_SHIFT, 16);
+        assert_eq!(STAGE94_BT_FIELD_MASK, 7);
+    }
+}
