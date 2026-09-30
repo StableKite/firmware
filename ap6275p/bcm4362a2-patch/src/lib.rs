@@ -14033,3 +14033,331 @@ mod stage101_tests {
         assert_eq!(STAGE101_BT_TAIL_BOUNDARY, 0x32720);
     }
 }
+
+
+/// Stage 102: current record formatter / candidate dispatch at `0x16D5DE`.
+pub const STAGE102_CURRENT_BT_RECORD_DISPATCH_ADDR: u32 = 0x0016_D5DE;
+pub const STAGE102_LEGACY_BT_RECORD_DISPATCH_ADDR: u32 = 0x0016_A862;
+pub const STAGE102_BT_FIRST_BOUNDARY: u32 = 0x0002_F6C0;
+pub const STAGE102_BT_SECOND_BOUNDARY: u32 = 0x0004_C440;
+pub const STAGE102_BT_CANDIDATE_BOUNDARY: u32 = 0x0002_F0DC;
+pub const STAGE102_BT_STAGE35_HELPER: u32 = STAGE35_CURRENT_BT_CLEAR_MASK_BIT_ADDR;
+pub const STAGE102_BT_TAIL_BOUNDARY: u32 = 0x0003_2F08;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage102FirstReturn {
+    /// R0 returned by `0x2F6C0`; used immediately as the record base and copied into R1.
+    pub r0: u32,
+    /// Caller-volatile R2 returned by `0x2F6C0`; local code leaves it live into `0x4C440`.
+    pub r2: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage102Volatile23 {
+    /// Caller-volatile R2 returned by `0x4C440`; forwarded unchanged into `0x2F0DC`.
+    pub r2: u32,
+    /// Caller-volatile R3 returned by `0x4C440`; forwarded unchanged into `0x2F0DC`.
+    pub r3: u32,
+}
+
+pub trait BtStage102Backend {
+    fn boundary_2f6c0(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage102FirstReturn;
+
+    fn write_record_byte(&mut self, record: u32, offset: u32, value: u8);
+
+    fn boundary_4c440(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage102Volatile23;
+
+    fn boundary_2f0dc(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> u32;
+
+    fn read_object_byte29(&mut self, object: u32) -> u8;
+    fn read_candidate_byte7(&mut self, candidate: u32) -> u8;
+    fn read_candidate_byte5(&mut self, candidate: u32) -> u8;
+
+    /// Already recovered Stage-35 current helper `0x16D450`.
+    ///
+    /// Stage 35 proves that its observable R0 return is always the incoming
+    /// passthrough R0. This callback therefore models only its side effects;
+    /// Stage 102 restores the known passthrough value locally.
+    fn stage35_clear_mask_bit(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    );
+
+    fn tail_32f08(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+}
+
+/// Exact source-level model of current `0x16D5DE`.
+///
+/// The low-byte bit7 of incoming R1 selects one of two record encodings. The
+/// caller-volatile R2 returned by `0x2F6C0`, then R2/R3 returned by `0x4C440`,
+/// are deliberately forwarded because local code does not overwrite them.
+/// Candidate byte +7 is read twice; the first snapshot supplies the four-bit
+/// index while the second snapshot independently gates the final tail and is
+/// forwarded in R3. A Stage-35 call may occur between those two reads.
+pub fn bt_stage102_record_dispatch<B: BtStage102Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let object = incoming_r0;
+    let packed = incoming_r1;
+    let saved_r2 = incoming_r2;
+    let kind = incoming_r3;
+
+    let first = backend.boundary_2f6c0(object, packed, saved_r2, kind);
+    let record = first.r0;
+
+    let (lookup_r0, lookup_r1, second_r3) = if packed & 0x80 != 0 {
+        backend.write_record_byte(record, 12, (saved_r2 | 0xFFFF_FFFE) as u8);
+        let lookup_r1 = (packed >> 8) & 0xFF;
+        let lookup_r0 = packed & 0x7F;
+        backend.write_record_byte(record, 13, 2);
+        backend.write_record_byte(record, 14, lookup_r1 as u8);
+        backend.write_record_byte(record, 15, lookup_r0 as u8);
+        backend.write_record_byte(record, 16, kind as u8);
+        (lookup_r0, lookup_r1, 2)
+    } else {
+        let second_r3 = saved_r2 | 8;
+        backend.write_record_byte(record, 12, second_r3 as u8);
+        backend.write_record_byte(record, 13, packed as u8);
+        backend.write_record_byte(record, 14, kind as u8);
+        (packed, 1, second_r3)
+    };
+
+    let second = backend.boundary_4c440(object, record, first.r2, second_r3);
+    let candidate =
+        backend.boundary_2f0dc(lookup_r0, lookup_r1, second.r2, second.r3);
+    if candidate == 0 {
+        return 0;
+    }
+
+    let object_byte29 = backend.read_object_byte29(object);
+    let candidate_byte7_first = backend.read_candidate_byte7(candidate);
+    let relation = if saved_r2 == u32::from(object_byte29 >> 7) { 1 } else { 0 };
+    let nibble = u32::from((candidate_byte7_first >> 3) & 0x0F);
+
+    let live_r0 = if kind != 0x23 {
+        let candidate_byte5 = backend.read_candidate_byte5(candidate);
+        backend.stage35_clear_mask_bit(object, relation, nibble, u32::from(candidate_byte5));
+        object
+    } else {
+        candidate
+    };
+
+    let candidate_byte7_second = backend.read_candidate_byte7(candidate);
+    if candidate_byte7_second & 0x78 == 0 {
+        return live_r0;
+    }
+
+    backend.tail_32f08(
+        object,
+        relation,
+        nibble,
+        u32::from(candidate_byte7_second),
+    )
+}
+
+#[cfg(test)]
+mod stage102_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    struct B {
+        first: BtStage102FirstReturn,
+        second: BtStage102Volatile23,
+        candidate: u32,
+        object_byte29: u8,
+        candidate_byte5: u8,
+        candidate_byte7_reads: Vec<u8>,
+        mutate_second_byte7_to: Option<u8>,
+        tail_return: u32,
+        events: Vec<(&'static str, u32, u32, u32, u32)>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                first: BtStage102FirstReturn { r0: 0x1000, r2: 0x2222 },
+                second: BtStage102Volatile23 { r2: 0x3333, r3: 0x4444 },
+                candidate: 0x2000,
+                object_byte29: 0,
+                candidate_byte5: 0x55,
+                candidate_byte7_reads: vec![0, 0],
+                mutate_second_byte7_to: None,
+                tail_return: 0xDEAD_BEEF,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl BtStage102Backend for B {
+        fn boundary_2f6c0(
+            &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+        ) -> BtStage102FirstReturn {
+            self.events.push(("2f6c0", r0, r1, r2, r3));
+            self.first
+        }
+
+        fn write_record_byte(&mut self, record: u32, offset: u32, value: u8) {
+            self.events.push(("write", record, offset, u32::from(value), 0));
+        }
+
+        fn boundary_4c440(
+            &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+        ) -> BtStage102Volatile23 {
+            self.events.push(("4c440", r0, r1, r2, r3));
+            self.second
+        }
+
+        fn boundary_2f0dc(
+            &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+        ) -> u32 {
+            self.events.push(("2f0dc", r0, r1, r2, r3));
+            self.candidate
+        }
+
+        fn read_object_byte29(&mut self, object: u32) -> u8 {
+            self.events.push(("object29", object, u32::from(self.object_byte29), 0, 0));
+            self.object_byte29
+        }
+
+        fn read_candidate_byte7(&mut self, candidate: u32) -> u8 {
+            let value = self.candidate_byte7_reads.remove(0);
+            self.events.push(("candidate7", candidate, u32::from(value), 0, 0));
+            value
+        }
+
+        fn read_candidate_byte5(&mut self, candidate: u32) -> u8 {
+            self.events.push(("candidate5", candidate, u32::from(self.candidate_byte5), 0, 0));
+            self.candidate_byte5
+        }
+
+        fn stage35_clear_mask_bit(
+            &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+        ) {
+            self.events.push(("stage35", r0, r1, r2, r3));
+            if let Some(value) = self.mutate_second_byte7_to {
+                if let Some(next) = self.candidate_byte7_reads.first_mut() {
+                    *next = value;
+                }
+            }
+        }
+
+        fn tail_32f08(
+            &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+        ) -> u32 {
+            self.events.push(("tail", r0, r1, r2, r3));
+            self.tail_return
+        }
+    }
+
+    #[test]
+    fn nonnegative_format_preserves_volatile_chain_and_null_short_circuit() {
+        let mut b = B { candidate: 0, ..Default::default() };
+        assert_eq!(bt_stage102_record_dispatch(0xA0, 0x7F, 0, 1, &mut b), 0);
+        assert_eq!(
+            b.events,
+            [
+                ("2f6c0", 0xA0, 0x7F, 0, 1),
+                ("write", 0x1000, 12, 8, 0),
+                ("write", 0x1000, 13, 0x7F, 0),
+                ("write", 0x1000, 14, 1, 0),
+                ("4c440", 0xA0, 0x1000, 0x2222, 8),
+                ("2f0dc", 0x7F, 1, 0x3333, 0x4444),
+            ]
+        );
+    }
+
+    #[test]
+    fn negative_format_uses_high_byte_low7_and_extra_record_bytes() {
+        let mut b = B {
+            object_byte29: 0x80,
+            candidate_byte7_reads: vec![0, 0],
+            ..Default::default()
+        };
+        assert_eq!(
+            bt_stage102_record_dispatch(0xA1, 0x1280, 1, 0x23, &mut b),
+            0x2000
+        );
+        assert!(b.events.contains(&("write", 0x1000, 12, 0xFF, 0)));
+        assert!(b.events.contains(&("write", 0x1000, 13, 2, 0)));
+        assert!(b.events.contains(&("write", 0x1000, 14, 0x12, 0)));
+        assert!(b.events.contains(&("write", 0x1000, 15, 0, 0)));
+        assert!(b.events.contains(&("write", 0x1000, 16, 0x23, 0)));
+        assert!(b.events.contains(&("4c440", 0xA1, 0x1000, 0x2222, 2)));
+        assert!(b.events.contains(&("2f0dc", 0, 0x12, 0x3333, 0x4444)));
+        assert!(!b.events.iter().any(|e| e.0 == "stage35"));
+    }
+
+    #[test]
+    fn stage35_call_sits_between_independent_byte7_reads() {
+        let mut b = B {
+            object_byte29: 0x80,
+            candidate_byte7_reads: vec![0x78, 0x78],
+            mutate_second_byte7_to: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            bt_stage102_record_dispatch(0xA2, 0xAB80, 1, 0x22, &mut b),
+            0xA2
+        );
+        let names: Vec<&str> = b.events.iter().map(|e| e.0).collect();
+        let first7 = names.iter().position(|n| *n == "candidate7").unwrap();
+        let helper = names.iter().position(|n| *n == "stage35").unwrap();
+        let second7 = names.iter().rposition(|n| *n == "candidate7").unwrap();
+        assert!(first7 < helper && helper < second7);
+        assert!(b.events.contains(&("stage35", 0xA2, 1, 15, 0x55)));
+    }
+
+    #[test]
+    fn tail_uses_first_snapshot_nibble_but_second_snapshot_full_byte() {
+        let mut b = B {
+            object_byte29: 0,
+            candidate_byte7_reads: vec![0x20, 0x20],
+            mutate_second_byte7_to: Some(0x78),
+            tail_return: 0xCAFE,
+            ..Default::default()
+        };
+        assert_eq!(
+            bt_stage102_record_dispatch(0xA3, 0x1234, 0, 0x22, &mut b),
+            0xCAFE
+        );
+        assert!(b.events.contains(&("stage35", 0xA3, 1, 4, 0x55)));
+        assert_eq!(b.events.last(), Some(&("tail", 0xA3, 1, 4, 0x78)));
+    }
+
+    #[test]
+    fn relation_compares_full_saved_r2_against_single_bit_value() {
+        let mut b = B {
+            object_byte29: 0x80,
+            candidate_byte7_reads: vec![0x38, 0x38],
+            tail_return: 0xBEEF,
+            ..Default::default()
+        };
+        assert_eq!(
+            bt_stage102_record_dispatch(0xA4, 1, 0x101, 0x23, &mut b),
+            0xBEEF
+        );
+        assert_eq!(b.events.last(), Some(&("tail", 0xA4, 0, 7, 0x38)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact() {
+        assert_eq!(STAGE102_CURRENT_BT_RECORD_DISPATCH_ADDR, 0x16D5DE);
+        assert_eq!(STAGE102_LEGACY_BT_RECORD_DISPATCH_ADDR, 0x16A862);
+        assert_eq!(STAGE102_BT_FIRST_BOUNDARY, 0x2F6C0);
+        assert_eq!(STAGE102_BT_SECOND_BOUNDARY, 0x4C440);
+        assert_eq!(STAGE102_BT_CANDIDATE_BOUNDARY, 0x2F0DC);
+        assert_eq!(STAGE102_BT_STAGE35_HELPER, 0x16D450);
+        assert_eq!(STAGE102_BT_TAIL_BOUNDARY, 0x32F08);
+    }
+}
