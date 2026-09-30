@@ -13151,3 +13151,177 @@ mod stage96_tests {
         assert_eq!(STAGE96_BT_FALLBACK_MODE2_TARGET, 0x1720E8);
     }
 }
+
+/// Stage 97: implementation closure for the Stage-25 raw mode-two target at `0x1720E8`.
+pub const STAGE97_CURRENT_BT_MODE2_TARGET_ADDR: u32 = 0x0017_20E8;
+pub const STAGE97_BT_CONTEXT_ADDR: u32 = 0x0022_304C;
+pub const STAGE97_BT_MODE_ADDR: u32 = 0x0022_3064;
+pub const STAGE97_BT_DIRTY_ADDR: u32 = 0x0022_2FD0;
+pub const STAGE97_BT_VALUE_ADDR: u32 = 0x0020_2FD4;
+pub const STAGE97_BT_COMMAND_ADDR: u32 = 0x0022_2FD1;
+pub const STAGE97_BT_WORD_A_ADDR: u32 = 0x0022_2080;
+pub const STAGE97_BT_WORD_B_ADDR: u32 = 0x0022_2088;
+
+pub trait BtStage97Backend {
+    fn boundary_151bc(&mut self, context: u32) -> u32;
+    fn write_mode_byte(&mut self, address: u32, value: u8);
+    fn read_dirty_byte(&mut self, address: u32) -> u8;
+    fn read_value_byte(&mut self, address: u32) -> u8;
+    fn read_command_byte(&mut self, address: u32) -> u8;
+    fn boundary_bacb4(&mut self, r0: u32, r1: u32, r2: u32) -> u32;
+    fn boundary_bac58(&mut self, r0: u32, r1: u32) -> u32;
+    fn boundary_72b24(&mut self, r0: u32) -> u32;
+    fn boundary_71f08(&mut self, r0: u32) -> u32;
+    fn boundary_780(&mut self, r0: u32) -> u32;
+    fn boundary_89338(&mut self, r0: u32) -> u32;
+    fn read_word(&mut self, address: u32) -> u32;
+    fn boundary_89308(&mut self, r0: u32) -> u32;
+    fn boundary_892f0(&mut self, r0: u32) -> u32;
+    fn boundary_893c4(&mut self, r0: u32) -> u32;
+    fn boundary_89368(&mut self, r0: u32) -> u32;
+    fn boundary_44370(&mut self, live_r0: u32) -> u32;
+    fn boundary_89320(&mut self, r0: u32) -> u32;
+    fn boundary_89398(&mut self, r0: u32) -> u32;
+    fn tail_860dc(&mut self, r0: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x1720E8`.
+///
+/// Firmware ignores caller inputs locally: it loads the fixed context before its first call.
+/// The value byte is intentionally reread after `0xBACB4`, and the return from the first
+/// `0x780(1)` is saved across the reset sequence and supplied to the second `0x780`.
+pub fn bt_stage97_mode2_target<B: BtStage97Backend>(backend: &mut B) -> u32 {
+    let _ = backend.boundary_151bc(STAGE97_BT_CONTEXT_ADDR);
+    backend.write_mode_byte(STAGE97_BT_MODE_ADDR, 3);
+
+    if backend.read_dirty_byte(STAGE97_BT_DIRTY_ADDR) != 0 {
+        let first = backend.read_value_byte(STAGE97_BT_VALUE_ADDR);
+        let _ = backend.boundary_bacb4(first as u32, 0, 1);
+        let second = backend.read_value_byte(STAGE97_BT_VALUE_ADDR);
+        let command = backend.read_command_byte(STAGE97_BT_COMMAND_ADDR);
+        let _ = backend.boundary_bac58(second as u32, command as u32);
+    } else {
+        let _ = backend.boundary_72b24(0);
+    }
+
+    let _ = backend.boundary_71f08(1);
+    let saved = backend.boundary_780(1);
+
+    let _ = backend.boundary_89338(0);
+    let a = backend.read_word(STAGE97_BT_WORD_A_ADDR) & !1;
+    let _ = backend.boundary_89308(a);
+    let b = backend.read_word(STAGE97_BT_WORD_B_ADDR) & !1;
+    let _ = backend.boundary_892f0(b);
+    let _ = backend.boundary_893c4(0);
+    let _ = backend.boundary_89368(0);
+
+    let live = backend.boundary_780(saved);
+    let _ = backend.boundary_44370(live);
+    let _ = backend.boundary_89320(1);
+    let _ = backend.boundary_89398(0);
+    backend.tail_860dc(1)
+}
+
+#[cfg(test)]
+mod stage97_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        dirty: u8,
+        value: u8,
+        command: u8,
+        word_a: u32,
+        word_b: u32,
+        first_780: u32,
+        second_780: u32,
+        tail: u32,
+        mutate_value: Option<u8>,
+        n780: u8,
+        events: Vec<(&'static str, u32, u32, u32)>,
+    }
+    impl BtStage97Backend for B {
+        fn boundary_151bc(&mut self,c:u32)->u32{self.events.push(("151bc",c,0,0));0}
+        fn write_mode_byte(&mut self,a:u32,v:u8){self.events.push(("mode",a,v as u32,0))}
+        fn read_dirty_byte(&mut self,a:u32)->u8{self.events.push(("dirty",a,0,0));self.dirty}
+        fn read_value_byte(&mut self,a:u32)->u8{self.events.push(("value",a,self.value as u32,0));self.value}
+        fn read_command_byte(&mut self,a:u32)->u8{self.events.push(("command",a,self.command as u32,0));self.command}
+        fn boundary_bacb4(&mut self,r0:u32,r1:u32,r2:u32)->u32{
+            self.events.push(("bacb4",r0,r1,r2));if let Some(v)=self.mutate_value{self.value=v;}0
+        }
+        fn boundary_bac58(&mut self,r0:u32,r1:u32)->u32{self.events.push(("bac58",r0,r1,0));0}
+        fn boundary_72b24(&mut self,r0:u32)->u32{self.events.push(("72b24",r0,0,0));0}
+        fn boundary_71f08(&mut self,r0:u32)->u32{self.events.push(("71f08",r0,0,0));0}
+        fn boundary_780(&mut self,r0:u32)->u32{
+            self.events.push(("780",r0,0,0));self.n780+=1;
+            if self.n780==1{self.first_780}else{self.second_780}
+        }
+        fn boundary_89338(&mut self,r0:u32)->u32{self.events.push(("89338",r0,0,0));0}
+        fn read_word(&mut self,a:u32)->u32{self.events.push(("word",a,0,0));if a==STAGE97_BT_WORD_A_ADDR{self.word_a}else{self.word_b}}
+        fn boundary_89308(&mut self,r0:u32)->u32{self.events.push(("89308",r0,0,0));0}
+        fn boundary_892f0(&mut self,r0:u32)->u32{self.events.push(("892f0",r0,0,0));0}
+        fn boundary_893c4(&mut self,r0:u32)->u32{self.events.push(("893c4",r0,0,0));0}
+        fn boundary_89368(&mut self,r0:u32)->u32{self.events.push(("89368",r0,0,0));0}
+        fn boundary_44370(&mut self,r0:u32)->u32{self.events.push(("44370",r0,0,0));0}
+        fn boundary_89320(&mut self,r0:u32)->u32{self.events.push(("89320",r0,0,0));0}
+        fn boundary_89398(&mut self,r0:u32)->u32{self.events.push(("89398",r0,0,0));0}
+        fn tail_860dc(&mut self,r0:u32)->u32{self.events.push(("860dc",r0,0,0));self.tail}
+    }
+
+    #[test]
+    fn zero_dirty_uses_72b24_and_skips_pair_boundaries() {
+        let mut b=B{tail:9,..Default::default()};
+        assert_eq!(bt_stage97_mode2_target(&mut b),9);
+        assert!(b.events.iter().any(|x|*x==("72b24",0,0,0)));
+        assert!(!b.events.iter().any(|x|x.0=="bacb4"||x.0=="bac58"));
+    }
+
+    #[test]
+    fn dirty_path_rereads_value_after_first_boundary_mutation() {
+        let mut b=B{dirty:1,value:4,command:7,mutate_value:Some(9),..Default::default()};
+        let _=bt_stage97_mode2_target(&mut b);
+        let vals:Vec<u32>=b.events.iter().filter(|x|x.0=="value").map(|x|x.2).collect();
+        assert_eq!(vals,[4,9]);
+        assert!(b.events.iter().any(|x|*x==("bacb4",4,0,1)));
+        assert!(b.events.iter().any(|x|*x==("bac58",9,7,0)));
+    }
+
+    #[test]
+    fn first_780_result_survives_reset_sequence_into_second_780() {
+        let mut b=B{first_780:0x1234,second_780:0x5678,..Default::default()};
+        let _=bt_stage97_mode2_target(&mut b);
+        let calls:Vec<u32>=b.events.iter().filter(|x|x.0=="780").map(|x|x.1).collect();
+        assert_eq!(calls,[1,0x1234]);
+        assert!(b.events.iter().any(|x|*x==("44370",0x5678,0,0)));
+    }
+
+    #[test]
+    fn word_calls_clear_only_bit_zero() {
+        let mut b=B{word_a:0xFFFF_FFFF,word_b:0x1234_5679,..Default::default()};
+        let _=bt_stage97_mode2_target(&mut b);
+        assert!(b.events.iter().any(|x|*x==("89308",0xFFFF_FFFE,0,0)));
+        assert!(b.events.iter().any(|x|*x==("892f0",0x1234_5678,0,0)));
+    }
+
+    #[test]
+    fn final_boundaries_use_literal_r0_and_tail_return_is_final() {
+        let mut b=B{tail:0xDEAD_BEEF,..Default::default()};
+        assert_eq!(bt_stage97_mode2_target(&mut b),0xDEAD_BEEF);
+        let n=b.events.len();
+        assert_eq!(&b.events[n-3..],&[("89320",1,0,0),("89398",0,0,0),("860dc",1,0,0)]);
+    }
+
+    #[test]
+    fn provenance_constants_close_stage25_mode_two_target() {
+        assert_eq!(STAGE97_CURRENT_BT_MODE2_TARGET_ADDR,STAGE25_BT_MODE2_TARGET_ADDR);
+        assert_eq!(STAGE97_BT_CONTEXT_ADDR,0x22304C);
+        assert_eq!(STAGE97_BT_MODE_ADDR,0x223064);
+        assert_eq!(STAGE97_BT_DIRTY_ADDR,0x222FD0);
+        assert_eq!(STAGE97_BT_VALUE_ADDR,0x202FD4);
+        assert_eq!(STAGE97_BT_COMMAND_ADDR,0x222FD1);
+        assert_eq!(STAGE97_BT_WORD_A_ADDR,0x222080);
+        assert_eq!(STAGE97_BT_WORD_B_ADDR,0x222088);
+    }
+}
