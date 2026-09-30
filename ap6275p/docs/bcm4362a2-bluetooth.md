@@ -832,3 +832,12 @@ restores the original four argument registers before the tail transfer. Therefor
 the helper return is ignored, the original R0-R3 values are forwarded exactly, and
 the tail boundary return is the wrapper's final return. No null, range, or value
 guard is present locally. The helper and both tail contracts remain opaque.
+
+
+## Stage 101 — current bit-relation tail helper
+
+Stage 101 closes the local helper used by both Stage-100 register-preserving wrappers. Current entry `0x16D5A4` has an exact 22-byte executable body. Public-legacy structural counterpart `0x16A828` has the same fixed instruction bytes; only the four-byte wide tail-branch encoding relocates. Masking that encoding leaves 18 fixed bytes and exactly one hit in each image.
+
+The current instruction order is exact. Firmware first reads halfword `object+0x26`, then byte `object+0x1D`. It extracts only halfword bit4 and compares it with byte bit7. When those bits differ, firmware executes `BX LR`: R0 has never been changed, so the return is the incoming object pointer/token, and object word0 is not read.
+
+When the two bits are equal, firmware loads dword `object+0` into R0 and performs a wide tail transfer to stable boundary `0x32720`. The public-legacy structural body tails to the same target. The source model therefore preserves read order, strict mismatch short-circuiting, the unchanged-object return on mismatch, and the word0 tail argument/return shape. The tail contract remains opaque.

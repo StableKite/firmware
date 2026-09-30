@@ -13908,3 +13908,128 @@ mod stage100_tests {
         assert_eq!(STAGE100_BT_TAIL_B_ADDR,0x3235E);
     }
 }
+
+
+/// Stage 101: current bit-relation tail helper at `0x16D5A4`.
+///
+/// Current firmware reads object halfword +0x26 first, then object byte +0x1D.
+/// It compares halfword bit4 with byte bit7. A mismatch returns the incoming
+/// object token unchanged and does not read object word0. A match reads word0
+/// and tail-transfers it to opaque current `0x32720`.
+pub const STAGE101_CURRENT_BT_BIT_RELATION_TAIL_ADDR: u32 = 0x0016_D5A4;
+pub const STAGE101_BT_TAIL_BOUNDARY: u32 = 0x0003_2720;
+
+pub trait BtStage101Backend {
+    fn read_halfword38(&mut self, object: u32) -> u16;
+    fn read_byte29(&mut self, object: u32) -> u8;
+    fn read_word0(&mut self, object: u32) -> u32;
+    fn tail(&mut self, word0: u32) -> u32;
+}
+
+pub fn bt_stage101_bit_relation_tail<B: BtStage101Backend>(
+    object: u32,
+    backend: &mut B,
+) -> u32 {
+    let halfword38 = backend.read_halfword38(object);
+    let byte29 = backend.read_byte29(object);
+    let bit4 = (halfword38 >> 4) & 1;
+    let bit7 = u16::from(byte29 >> 7);
+    if bit4 != bit7 {
+        return object;
+    }
+    let word0 = backend.read_word0(object);
+    backend.tail(word0)
+}
+
+#[cfg(test)]
+mod stage101_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    struct B {
+        halfword38: u16,
+        byte29: u8,
+        word0: u32,
+        tail_ret: u32,
+        calls: Vec<(&'static str, u32)>,
+    }
+
+    impl BtStage101Backend for B {
+        fn read_halfword38(&mut self, object: u32) -> u16 {
+            self.calls.push(("halfword38", object));
+            self.halfword38
+        }
+        fn read_byte29(&mut self, object: u32) -> u8 {
+            self.calls.push(("byte29", object));
+            self.byte29
+        }
+        fn read_word0(&mut self, object: u32) -> u32 {
+            self.calls.push(("word0", object));
+            self.word0
+        }
+        fn tail(&mut self, word0: u32) -> u32 {
+            self.calls.push(("tail", word0));
+            self.tail_ret
+        }
+    }
+
+    fn backend(halfword38: u16, byte29: u8) -> B {
+        B {
+            halfword38,
+            byte29,
+            word0: 0x1122_3344,
+            tail_ret: 0x5566_7788,
+            calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mismatch_returns_object_and_does_not_read_word0_or_tail() {
+        let mut b = backend(0x0000, 0x80);
+        assert_eq!(bt_stage101_bit_relation_tail(0xAABB_CCDD, &mut b), 0xAABB_CCDD);
+        assert_eq!(
+            b.calls,
+            [("halfword38", 0xAABB_CCDD), ("byte29", 0xAABB_CCDD)]
+        );
+    }
+
+    #[test]
+    fn zero_bits_match_and_tail_word0() {
+        let mut b = backend(0x0000, 0x7F);
+        assert_eq!(bt_stage101_bit_relation_tail(0x1000, &mut b), 0x5566_7788);
+        assert_eq!(
+            b.calls,
+            [
+                ("halfword38", 0x1000),
+                ("byte29", 0x1000),
+                ("word0", 0x1000),
+                ("tail", 0x1122_3344),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_bits_match_and_ignore_other_bits() {
+        let mut b = backend(0xFFF0, 0xFF);
+        assert_eq!(bt_stage101_bit_relation_tail(0x2000, &mut b), 0x5566_7788);
+        assert_eq!(b.calls.last(), Some(&("tail", 0x1122_3344)));
+    }
+
+    #[test]
+    fn only_halfword_bit4_and_byte_bit7_control_relation() {
+        let mut b = backend(0xFFEF, 0x7F);
+        assert_eq!(bt_stage101_bit_relation_tail(7, &mut b), 0x5566_7788);
+        b.calls.clear();
+        b.halfword38 = 0xFFFF;
+        b.byte29 = 0x00;
+        assert_eq!(bt_stage101_bit_relation_tail(7, &mut b), 7);
+        assert_eq!(b.calls.len(), 2);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE101_CURRENT_BT_BIT_RELATION_TAIL_ADDR, 0x16D5A4);
+        assert_eq!(STAGE101_BT_TAIL_BOUNDARY, 0x32720);
+    }
+}
