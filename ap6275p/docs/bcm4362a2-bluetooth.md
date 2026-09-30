@@ -812,3 +812,23 @@ The function takes a raw input pointer, a length in R1, and an output-byte point
 The special path reads ambient count byte `0x22300E`, requires `span8 >= count`, and calls current `0x3DB4` to copy `count` bytes from record+2 into stack scratch. It then rereads `0x22300E`. For every byte under this second count, scratch is AND-masked by bytes beginning at `base + first_count + 1`. The second count can exceed the first copy count; firmware then consumes pre-existing stack scratch bytes, so the safe model exposes scratch state rather than inventing zero initialization.
 
 Current `0xF8CAC` compares scratch against reference base `0x22300F` using the second count. On equality firmware rereads the count a third time, computes wrapping u8 `span8-count3` into caller R1, calls already-recovered Stage-25 lookup `0x172220` with R0=`record+2`, sets local found=1 and stores the returned byte through the output pointer. The recovered callee ignores R1, but the source model keeps the computed value visible at the call site. The loop does not stop after a match, so later matching records can overwrite the output; final return is whether any match occurred. Stack-canary hardening is provenance only.
+
+
+## Stage 100 — adjacent register-preserving tail wrappers
+
+Stage 100 closes the two adjacent current entries `0x16D5BA` and `0x16D5CC`.
+Each executable body is exactly 16 bytes. Both share the fixed instruction shape
+`PUSH {R0-R3,LR}; MOV R0,R4; BL local_helper; POP.W {R0-R3,LR}; B.W tail`.
+
+The wrappers are a paired structural identity rather than individually unique after
+masking both control-transfer encodings: current entries `0x16D5BA/0x16D5CC`
+correspond structurally to public-legacy `0x16A83E/0x16A850`. Both current wrappers
+call current local helper `0x16D5A4` (legacy `0x16A828`). Their stable tail targets
+are `0x31C6C` and `0x3235E` respectively.
+
+The key ABI property is the explicit save/restore of incoming R0 through R3 around
+the local helper call. Firmware moves ambient R4 into R0 for that helper, but then
+restores the original four argument registers before the tail transfer. Therefore
+the helper return is ignored, the original R0-R3 values are forwarded exactly, and
+the tail boundary return is the wrapper's final return. No null, range, or value
+guard is present locally. The helper and both tail contracts remain opaque.

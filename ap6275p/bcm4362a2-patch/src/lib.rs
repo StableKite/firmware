@@ -13822,3 +13822,89 @@ mod stage99_tests {
         assert_eq!(STAGE99_BT_REFERENCE_ADDR, 0x22300F);
     }
 }
+
+
+/// Stage 100: adjacent current wrappers that preserve R0..R3 across one local helper.
+///
+/// Current entries 0x16D5BA and 0x16D5CC each save incoming R0..R3/LR, move ambient
+/// R4 into R0, call the same local helper at 0x16D5A4, restore the saved registers,
+/// then tail-transfer to a distinct stable boundary. The helper return is therefore
+/// not observable through R0 on either tail.
+pub const STAGE100_CURRENT_BT_WRAPPER_A_ADDR: u32 = 0x0016_D5BA;
+pub const STAGE100_CURRENT_BT_WRAPPER_B_ADDR: u32 = 0x0016_D5CC;
+pub const STAGE100_BT_LOCAL_HELPER_ADDR: u32 = 0x0016_D5A4;
+pub const STAGE100_BT_TAIL_A_ADDR: u32 = 0x0003_1C6C;
+pub const STAGE100_BT_TAIL_B_ADDR: u32 = 0x0003_235E;
+
+pub trait BtStage100Backend {
+    /// Opaque local helper called as `0x16D5A4(ambient_r4)`. Its return is discarded
+    /// when firmware restores saved R0..R3.
+    fn local_helper(&mut self, ambient_r4: u32) -> u32;
+    fn tail_a(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+    fn tail_b(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+}
+
+pub fn bt_stage100_wrapper_a<B: BtStage100Backend>(
+    r0: u32, r1: u32, r2: u32, r3: u32, ambient_r4: u32, backend: &mut B,
+) -> u32 {
+    let _ = backend.local_helper(ambient_r4);
+    backend.tail_a(r0, r1, r2, r3)
+}
+
+pub fn bt_stage100_wrapper_b<B: BtStage100Backend>(
+    r0: u32, r1: u32, r2: u32, r3: u32, ambient_r4: u32, backend: &mut B,
+) -> u32 {
+    let _ = backend.local_helper(ambient_r4);
+    backend.tail_b(r0, r1, r2, r3)
+}
+
+#[cfg(test)]
+mod stage100_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B { events: Vec<(u32,u32,u32,u32,u32)>, helper_ret: u32, tail_ret: u32 }
+    impl BtStage100Backend for B {
+        fn local_helper(&mut self, ambient_r4: u32) -> u32 {
+            self.events.push((1,ambient_r4,0,0,0)); self.helper_ret
+        }
+        fn tail_a(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->u32 {
+            self.events.push((2,r0,r1,r2,r3)); self.tail_ret
+        }
+        fn tail_b(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->u32 {
+            self.events.push((3,r0,r1,r2,r3)); self.tail_ret
+        }
+    }
+
+    #[test]
+    fn wrapper_a_discards_helper_return_and_restores_all_four_argument_registers() {
+        let mut b=B{helper_ret:0xDEAD_BEEF,tail_ret:0xAABB_CCDD,..Default::default()};
+        assert_eq!(bt_stage100_wrapper_a(1,2,3,4,0x55,&mut b),0xAABB_CCDD);
+        assert_eq!(b.events,[(1,0x55,0,0,0),(2,1,2,3,4)]);
+    }
+
+    #[test]
+    fn wrapper_b_has_the_same_prepare_shape_but_distinct_tail() {
+        let mut b=B{helper_ret:7,tail_ret:9,..Default::default()};
+        assert_eq!(bt_stage100_wrapper_b(10,11,12,13,14,&mut b),9);
+        assert_eq!(b.events,[(1,14,0,0,0),(3,10,11,12,13)]);
+    }
+
+    #[test]
+    fn zero_register_values_are_forwarded_without_local_guards() {
+        let mut b=B{helper_ret:1,tail_ret:2,..Default::default()};
+        assert_eq!(bt_stage100_wrapper_a(0,0,0,0,0,&mut b),2);
+        assert_eq!(b.events,[(1,0,0,0,0),(2,0,0,0,0)]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE100_CURRENT_BT_WRAPPER_A_ADDR,0x16D5BA);
+        assert_eq!(STAGE100_CURRENT_BT_WRAPPER_B_ADDR,0x16D5CC);
+        assert_eq!(STAGE100_BT_LOCAL_HELPER_ADDR,0x16D5A4);
+        assert_eq!(STAGE100_BT_TAIL_A_ADDR,0x31C6C);
+        assert_eq!(STAGE100_BT_TAIL_B_ADDR,0x3235E);
+    }
+}
