@@ -13325,3 +13325,231 @@ mod stage97_tests {
         assert_eq!(STAGE97_BT_WORD_B_ADDR,0x222088);
     }
 }
+
+/// Stage 98: current active object/register orchestrator at `0x172320`.
+///
+/// The exact 142-byte current body is relocation-normalized against the public
+/// legacy structural counterpart at `0x16E210`. The safe model preserves the
+/// mode gates, exact field reads, Stage-23 lookup shape, stack-byte alias seen
+/// by the still-opaque `0x172258` dependency, registration/finalize ordering,
+/// ignored returns, and final zero result. Compiler stack-canary plumbing is
+/// recorded as provenance but intentionally omitted from the safe model.
+pub const STAGE98_CURRENT_BT_ACTIVE_DISPATCH_ADDR: u32 = 0x0017_2320;
+pub const STAGE98_PUBLIC_LEGACY_STRUCTURAL_ADDR: u32 = 0x0016_E210;
+pub const STAGE98_BT_MODE_ADDR: u32 = 0x0022_3064;
+pub const STAGE98_BT_CONTEXT_ADDR: u32 = 0x0022_3068;
+pub const STAGE98_BT_CALLBACK_THUMB: u32 = 0x0017_1FDD;
+pub const STAGE98_BT_GUARD_WORD_ADDR: u32 = 0x0020_0890;
+pub const STAGE98_BT_STACK_GUARD_FAIL: u32 = ROM_STACK_GUARD_FAIL_ADDR;
+pub const STAGE98_BT_FIND_MATCHING_SLOT_ADDR: u32 = STAGE23_CURRENT_BT_FIND_MATCHING_SLOT_ADDR;
+pub const STAGE98_BT_PREPARE_BOUNDARY: u32 = 0x0017_2258;
+pub const STAGE98_BT_REGISTER_BOUNDARY: u32 = 0x0001_51FE;
+pub const STAGE98_BT_FINALIZE_BOUNDARY: u32 = 0x0001_5180;
+pub const STAGE98_BT_TOGGLE_COMMAND_ADDR: u32 = STAGE29_CURRENT_BT_TOGGLE_COMMAND_DISPATCH_ADDR;
+pub const STAGE98_BT_REQUIRED_HEADER: u16 = 13;
+pub const STAGE98_BT_NOT_FOUND_INDEX: u32 = 8;
+pub const STAGE98_BT_INTERVAL_SCALE: u32 = 0x30D4;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage98ObjectState {
+    pub word0: u16,
+    pub byte2: u8,
+    pub byte3: u8,
+    pub dword12: u32,
+}
+
+pub trait BtStage98Backend {
+    fn read_mode(&mut self) -> u8;
+    fn find_matching_slot(&mut self, tag: u8, payload_ptr: u32) -> u32;
+    fn prepare(&mut self, payload_plus6: u32, selector: u8, local_byte: &mut u8) -> u32;
+    fn write_mode(&mut self, value: u8);
+    fn register(&mut self, context: u32, callback_thumb: u32, zero: u32, interval: u32) -> u32;
+    fn finalize(&mut self, context: u32, interval: u32) -> u32;
+    fn toggle_command(&mut self, zero_r0: u32, zero_r1: u32) -> u32;
+}
+
+/// Safe source-level model of current `0x172320`.
+///
+/// `incoming_r0` is retained separately because firmware's stack scratch byte
+/// at `sp+3` initially aliases bits 31:24 of saved incoming R0. The opaque
+/// prepare helper may overwrite that byte through its pointer argument.
+pub fn bt_stage98_active_dispatch<B: BtStage98Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    object: &BtStage98ObjectState,
+    backend: &mut B,
+) -> u32 {
+    let mode = backend.read_mode();
+
+    if mode <= 2 {
+        return u32::from(incoming_r1 as u8);
+    }
+    if mode == 4 {
+        return 0;
+    }
+
+    if object.word0 != STAGE98_BT_REQUIRED_HEADER {
+        return 0;
+    }
+
+    let packed = object.byte2;
+    let low_nibble = packed & 0x0F;
+    if low_nibble != 0 {
+        return 0;
+    }
+
+    let payload = object.dword12;
+    let selector = object.byte3;
+    let tag = packed >> 6;
+    if backend.find_matching_slot(tag, payload) == STAGE98_BT_NOT_FOUND_INDEX {
+        return 0;
+    }
+
+    // Firmware passes `sp+3`; before the helper touches it this byte is the
+    // high byte of the saved incoming R0 scratch slot.
+    let mut local_byte = (incoming_r0 >> 24) as u8;
+    if backend.prepare(payload.wrapping_add(6), selector, &mut local_byte) == 0 {
+        return 0;
+    }
+
+    backend.write_mode(4);
+
+    let interval = STAGE98_BT_INTERVAL_SCALE.wrapping_mul(u32::from(local_byte));
+    let _ = backend.register(
+        STAGE98_BT_CONTEXT_ADDR,
+        STAGE98_BT_CALLBACK_THUMB,
+        0,
+        interval,
+    );
+    let _ = backend.finalize(STAGE98_BT_CONTEXT_ADDR, interval);
+
+    // Current helper receives explicit zero in R0/R1; its return is ignored.
+    let _ = backend.toggle_command(0, 0);
+
+    0
+}
+
+#[cfg(test)]
+mod stage98_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        mode: u8,
+        lookup: u32,
+        prepare_return: u32,
+        prepare_write: Option<u8>,
+        calls: Vec<(&'static str, u32, u32, u32, u32)>,
+        seen_local: Option<u8>,
+    }
+
+    impl BtStage98Backend for B {
+        fn read_mode(&mut self) -> u8 {
+            self.calls.push(("mode", 0, 0, 0, 0));
+            self.mode
+        }
+        fn find_matching_slot(&mut self, tag: u8, payload_ptr: u32) -> u32 {
+            self.calls.push(("lookup", u32::from(tag), payload_ptr, 0, 0));
+            self.lookup
+        }
+        fn prepare(&mut self, payload_plus6: u32, selector: u8, local_byte: &mut u8) -> u32 {
+            self.seen_local = Some(*local_byte);
+            self.calls.push(("prepare", payload_plus6, u32::from(selector), u32::from(*local_byte), 0));
+            if let Some(v) = self.prepare_write { *local_byte = v; }
+            self.prepare_return
+        }
+        fn write_mode(&mut self, value: u8) {
+            self.calls.push(("write_mode", u32::from(value), 0, 0, 0));
+            self.mode = value;
+        }
+        fn register(&mut self, context: u32, callback_thumb: u32, zero: u32, interval: u32) -> u32 {
+            self.calls.push(("register", context, callback_thumb, zero, interval));
+            0xAAAA_AAAA
+        }
+        fn finalize(&mut self, context: u32, interval: u32) -> u32 {
+            self.calls.push(("finalize", context, interval, 0, 0));
+            0xBBBB_BBBB
+        }
+        fn toggle_command(&mut self, zero_r0: u32, zero_r1: u32) -> u32 {
+            self.calls.push(("toggle", zero_r0, zero_r1, 0, 0));
+            0xCCCC_CCCC
+        }
+    }
+
+    fn object() -> BtStage98ObjectState {
+        BtStage98ObjectState { word0: 13, byte2: 0x80, byte3: 7, dword12: 0x1000 }
+    }
+
+    #[test]
+    fn modes_zero_through_two_return_only_low_byte_of_incoming_r1() {
+        for mode in 0..=2 {
+            let mut b = B { mode, ..Default::default() };
+            assert_eq!(bt_stage98_active_dispatch(0xAABB_CCDD, 0x1234_56FE, &object(), &mut b), 0xFE);
+            assert_eq!(b.calls, [("mode", 0, 0, 0, 0)]);
+        }
+    }
+
+    #[test]
+    fn mode_four_is_strict_zero_return() {
+        let mut b = B { mode: 4, ..Default::default() };
+        assert_eq!(bt_stage98_active_dispatch(1, 2, &object(), &mut b), 0);
+        assert_eq!(b.calls, [("mode", 0, 0, 0, 0)]);
+    }
+
+    #[test]
+    fn active_gates_preserve_lookup_tag_and_not_found_shape() {
+        let mut b = B { mode: 3, lookup: 8, ..Default::default() };
+        assert_eq!(bt_stage98_active_dispatch(0, 0, &object(), &mut b), 0);
+        assert_eq!(b.calls[1], ("lookup", 2, 0x1000, 0, 0));
+
+        let mut bad = object();
+        bad.byte2 = 0x81;
+        let mut b = B { mode: 3, ..Default::default() };
+        assert_eq!(bt_stage98_active_dispatch(0, 0, &bad, &mut b), 0);
+        assert_eq!(b.calls.len(), 1);
+    }
+
+    #[test]
+    fn prepare_sees_high_byte_of_saved_incoming_r0_before_any_write() {
+        let mut b = B { mode: 3, lookup: 2, prepare_return: 0, ..Default::default() };
+        assert_eq!(bt_stage98_active_dispatch(0xA512_3456, 0, &object(), &mut b), 0);
+        assert_eq!(b.seen_local, Some(0xA5));
+        assert_eq!(b.calls[2], ("prepare", 0x1006, 7, 0xA5, 0));
+    }
+
+    #[test]
+    fn success_uses_mutated_local_for_both_interval_calls_then_ignores_toggle_return() {
+        let mut b = B {
+            mode: 3,
+            lookup: 1,
+            prepare_return: 9,
+            prepare_write: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(bt_stage98_active_dispatch(0x4400_0000, 0, &object(), &mut b), 0);
+        let interval = STAGE98_BT_INTERVAL_SCALE * 3;
+        assert_eq!(b.calls, [
+            ("mode", 0, 0, 0, 0),
+            ("lookup", 2, 0x1000, 0, 0),
+            ("prepare", 0x1006, 7, 0x44, 0),
+            ("write_mode", 4, 0, 0, 0),
+            ("register", STAGE98_BT_CONTEXT_ADDR, STAGE98_BT_CALLBACK_THUMB, 0, interval),
+            ("finalize", STAGE98_BT_CONTEXT_ADDR, interval, 0, 0),
+            ("toggle", 0, 0, 0, 0),
+        ]);
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE98_CURRENT_BT_ACTIVE_DISPATCH_ADDR, 0x172320);
+        assert_eq!(STAGE98_PUBLIC_LEGACY_STRUCTURAL_ADDR, 0x16E210);
+        assert_eq!(STAGE98_BT_FIND_MATCHING_SLOT_ADDR, 0x17208C);
+        assert_eq!(STAGE98_BT_PREPARE_BOUNDARY, 0x172258);
+        assert_eq!(STAGE98_BT_REGISTER_BOUNDARY, 0x151FE);
+        assert_eq!(STAGE98_BT_FINALIZE_BOUNDARY, 0x15180);
+        assert_eq!(STAGE98_BT_TOGGLE_COMMAND_ADDR, 0x171FDC);
+        assert_eq!(STAGE98_BT_STACK_GUARD_FAIL, 0x94C0);
+    }
+}
