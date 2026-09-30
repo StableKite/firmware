@@ -14836,3 +14836,45 @@ mod stage103_tests {
         assert!(b.e.contains(&E::Call("94c0",0,0xCAFE,0xAAAA,0xBBBB)));
     }
 }
+
+pub const STAGE104_CURRENT_BT_CONSTANT_RETURN_ADDR: u32 = 0x0016_D7F8;
+pub const STAGE104_BT_CONSTANT_RETURN_VALUE: u32 = 12;
+
+/// Exact source-level model of current `0x16D7F8..0x16D7FC`.
+///
+/// The four-byte leaf is `MOVS R0,#12; BX LR`: it performs no memory access,
+/// no calls, and no conditional control flow. Incoming register values and
+/// ambient state therefore cannot affect the returned value.
+pub fn bt_stage104_constant_return(
+    _incoming_r0: u32,
+    _incoming_r1: u32,
+    _incoming_r2: u32,
+    _incoming_r3: u32,
+) -> u32 {
+    STAGE104_BT_CONSTANT_RETURN_VALUE
+}
+
+#[cfg(test)]
+mod stage104_tests {
+    use super::*;
+
+    #[test]
+    fn always_returns_exact_literal_twelve() {
+        for inputs in [
+            [0, 0, 0, 0],
+            [1, 2, 3, 4],
+            [u32::MAX, 0x8000_0000, 0x1234_5678, 0xA5A5_5A5A],
+        ] {
+            assert_eq!(
+                bt_stage104_constant_return(inputs[0], inputs[1], inputs[2], inputs[3]),
+                12
+            );
+        }
+    }
+
+    #[test]
+    fn provenance_constants_are_exact() {
+        assert_eq!(STAGE104_CURRENT_BT_CONSTANT_RETURN_ADDR, 0x16D7F8);
+        assert_eq!(STAGE104_BT_CONSTANT_RETURN_VALUE, 12);
+    }
+}
