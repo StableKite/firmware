@@ -15254,3 +15254,313 @@ mod stage105_tests {
         assert_eq!(STAGE105_LEGACY_BT_SOURCE_PTR_ADDR,0x221EA4);
     }
 }
+
+pub const STAGE106_CURRENT_BT_OBJECT_DISPATCH_ADDR: u32 = 0x0016_D90C;
+pub const STAGE106_LEGACY_BT_OBJECT_DISPATCH_ADDR: u32 = 0x0016_AA10;
+pub const STAGE106_CURRENT_BODY_LEN: u32 = 142;
+pub const STAGE106_BT_MASK: u32 = 0x0000_3306;
+
+pub const STAGE106_BT_PRECHECK_BOUNDARY: u32 = 0x0003_CCDC;
+pub const STAGE106_BT_FIRST_TAIL: u32 = 0x0003_CC9E;
+pub const STAGE106_BT_COMMON_BOUNDARY: u32 = 0x0004_BC44;
+pub const STAGE106_BT_XOR_BOUNDARY: u32 = 0x0006_F246;
+pub const STAGE106_BT_FINAL_TAIL: u32 = 0x0004_14A0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage106Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage106Backend {
+    fn read_object_halfword(&mut self, object: u32, offset: u32) -> u16;
+    fn write_object_halfword(&mut self, object: u32, offset: u32, value: u16);
+    fn read_object_byte(&mut self, object: u32, offset: u32) -> u8;
+    fn write_object_byte(&mut self, object: u32, offset: u32, value: u8);
+
+    fn boundary_3ccdc(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage106Regs;
+    fn tail_3cc9e(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage106Regs;
+    fn boundary_4bc44(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage106Regs;
+    fn boundary_6f246(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage106Regs;
+    fn tail_414a0(
+        &mut self, r0: u32, r1: u32, r2: u32, r3: u32,
+    ) -> BtStage106Regs;
+}
+
+fn stage106_set_bit3<B: BtStage106Backend>(
+    object: u32,
+    backend: &mut B,
+) {
+    let value = backend.read_object_byte(object, 0x1F);
+    backend.write_object_byte(object, 0x1F, value | 8);
+}
+
+fn stage106_common<B: BtStage106Backend>(
+    object: u32,
+    mut regs: BtStage106Regs,
+    backend: &mut B,
+) -> u32 {
+    let copied_ec = backend.read_object_halfword(object, 0xEC);
+    backend.write_object_halfword(object, 0x68, copied_ec);
+    regs.r3 = u32::from(copied_ec);
+    regs.r0 = object;
+    regs = backend.boundary_4bc44(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let fresh_ec = backend.read_object_halfword(object, 0xEC);
+    let fresh_64 = backend.read_object_halfword(object, 0x64);
+    regs.r2 = u32::from(fresh_ec) ^ STAGE106_BT_MASK;
+    regs.r1 = u32::from(fresh_64);
+    regs.r0 = 0;
+    regs = backend.boundary_6f246(regs.r0, regs.r1, regs.r2, regs.r3);
+
+    let tail = backend.tail_414a0(object, 1, 0, regs.r3);
+    tail.r0
+}
+
+/// Exact source-level model of current `0x16D90C..0x16D99A`.
+///
+/// Incoming R1-R3 are overwritten before the first opaque boundary, matching
+/// the machine code. The model preserves the two distinct 0x3CC9E tail shapes,
+/// local returns, independent +0xEC rereads, and live caller-volatile R3 edges
+/// through the common boundary chain.
+pub fn bt_stage106_object_dispatch<B: BtStage106Backend>(
+    object: u32,
+    _incoming_r1: u32,
+    _incoming_r2: u32,
+    _incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let first_ec = backend.read_object_halfword(object, 0xEC);
+    let byte_a7 = backend.read_object_byte(object, 0xA7);
+    let masked = u32::from(first_ec) & STAGE106_BT_MASK;
+    let mut regs = BtStage106Regs {
+        r0: object,
+        r1: u32::from(first_ec),
+        r2: masked,
+        r3: u32::from(byte_a7),
+    };
+
+    if masked == 0 {
+        regs.r1 = u32::from(byte_a7 & 0xE0);
+        if regs.r1 != 0 {
+            return stage106_common(object, regs, backend);
+        }
+
+        stage106_set_bit3(object, backend);
+        let byte_eb = backend.read_object_byte(object, 0xEB);
+        regs.r3 = u32::from(byte_eb);
+        if byte_eb & 0x30 == 0 {
+            return regs.r0;
+        }
+
+        let tail = backend.tail_3cc9e(object, 0, 0, regs.r3);
+        return tail.r0;
+    }
+
+    if byte_a7 & 0xE0 == 0 {
+        return stage106_common(object, regs, backend);
+    }
+
+    regs = backend.boundary_3ccdc(regs.r0, regs.r1, regs.r2, regs.r3);
+    if regs.r0 == 0 {
+        return stage106_common(object, regs, backend);
+    }
+
+    stage106_set_bit3(object, backend);
+    let byte_eb = backend.read_object_byte(object, 0xEB);
+    regs.r3 = u32::from(byte_eb & 0x30);
+    if regs.r3 == 0x10 {
+        return regs.r0;
+    }
+
+    regs.r1 = 1;
+    regs.r0 = object;
+    let tail = backend.tail_3cc9e(regs.r0, regs.r1, regs.r2, regs.r3);
+    tail.r0
+}
+
+#[cfg(test)]
+mod stage106_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum E {
+        Call(&'static str, u32, u32, u32, u32),
+        Read(&'static str, u32, u32),
+        Write(&'static str, u32, u32, u32),
+    }
+
+    struct B {
+        ec: VecDeque<u16>,
+        h64: VecDeque<u16>,
+        a7: u8,
+        b1f: VecDeque<u8>,
+        beb: VecDeque<u8>,
+        r_3ccdc: VecDeque<BtStage106Regs>,
+        r_3cc9e: VecDeque<BtStage106Regs>,
+        r_4bc44: VecDeque<BtStage106Regs>,
+        r_6f246: VecDeque<BtStage106Regs>,
+        r_414a0: VecDeque<BtStage106Regs>,
+        e: Vec<E>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                ec: VecDeque::from([0, 0x1111, 0x2222]),
+                h64: VecDeque::from([0x3333]),
+                a7: 0,
+                b1f: VecDeque::from([0x40]),
+                beb: VecDeque::from([0]),
+                r_3ccdc: VecDeque::from([BtStage106Regs{r0:1,r1:2,r2:3,r3:4}]),
+                r_3cc9e: VecDeque::from([BtStage106Regs{r0:0xCC9E,..Default::default()}]),
+                r_4bc44: VecDeque::from([BtStage106Regs{r0:0x41,r1:0x42,r2:0x43,r3:0x4444}]),
+                r_6f246: VecDeque::from([BtStage106Regs{r0:0x51,r1:0x52,r2:0x53,r3:0x5555}]),
+                r_414a0: VecDeque::from([BtStage106Regs{r0:0x414A0,..Default::default()}]),
+                e: Vec::new(),
+            }
+        }
+    }
+
+    impl B {
+        fn pop(q: &mut VecDeque<BtStage106Regs>) -> BtStage106Regs {
+            q.pop_front().unwrap()
+        }
+    }
+
+    impl BtStage106Backend for B {
+        fn read_object_halfword(&mut self,o:u32,off:u32)->u16{
+            let v=match off{0xec=>self.ec.pop_front().unwrap(),0x64=>self.h64.pop_front().unwrap(),_=>panic!()};
+            self.e.push(E::Read("h",o.wrapping_add(off),u32::from(v)));v
+        }
+        fn write_object_halfword(&mut self,o:u32,off:u32,v:u16){
+            self.e.push(E::Write("h",o,off,u32::from(v)));
+        }
+        fn read_object_byte(&mut self,o:u32,off:u32)->u8{
+            let v=match off{0xa7=>self.a7,0x1f=>self.b1f.pop_front().unwrap(),0xeb=>self.beb.pop_front().unwrap(),_=>panic!()};
+            self.e.push(E::Read("b",o.wrapping_add(off),u32::from(v)));v
+        }
+        fn write_object_byte(&mut self,o:u32,off:u32,v:u8){
+            self.e.push(E::Write("b",o,off,u32::from(v)));
+        }
+        fn boundary_3ccdc(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage106Regs{
+            self.e.push(E::Call("3ccdc",a,b,c,d));Self::pop(&mut self.r_3ccdc)
+        }
+        fn tail_3cc9e(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage106Regs{
+            self.e.push(E::Call("3cc9e",a,b,c,d));Self::pop(&mut self.r_3cc9e)
+        }
+        fn boundary_4bc44(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage106Regs{
+            self.e.push(E::Call("4bc44",a,b,c,d));Self::pop(&mut self.r_4bc44)
+        }
+        fn boundary_6f246(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage106Regs{
+            self.e.push(E::Call("6f246",a,b,c,d));Self::pop(&mut self.r_6f246)
+        }
+        fn tail_414a0(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage106Regs{
+            self.e.push(E::Call("414a0",a,b,c,d));Self::pop(&mut self.r_414a0)
+        }
+    }
+
+    #[test]
+    fn zero_mask_zero_high_local_return_sets_bit3_and_ignores_incoming_volatiles(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0]);
+        b.a7=0x1f;
+        b.b1f=VecDeque::from([0x40]);
+        b.beb=VecDeque::from([0]);
+        assert_eq!(bt_stage106_object_dispatch(0x1000,0xaaaa,0xbbbb,0xcccc,&mut b),0x1000);
+        assert!(b.e.contains(&E::Write("b",0x1000,0x1f,0x48)));
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call(..))));
+    }
+
+    #[test]
+    fn zero_mask_zero_high_first_tail_uses_raw_eb_and_zero_r1_r2(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0]);
+        b.a7=0x01;
+        b.beb=VecDeque::from([0x27]);
+        assert_eq!(bt_stage106_object_dispatch(0x1000,9,8,7,&mut b),0xCC9E);
+        assert!(b.e.contains(&E::Call("3cc9e",0x1000,0,0,0x27)));
+    }
+
+    #[test]
+    fn zero_mask_nonzero_high_common_path_preserves_highmask_until_4bc44_and_rereads_ec(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0,0x1234,0x4567]);
+        b.h64=VecDeque::from([0x89ab]);
+        b.a7=0xA5;
+        assert_eq!(bt_stage106_object_dispatch(0x1000,1,2,3,&mut b),0x414A0);
+        assert!(b.e.contains(&E::Call("4bc44",0x1000,0xA0,0,0x1234)));
+        assert!(b.e.contains(&E::Call("6f246",0,0x89ab,0x4567^STAGE106_BT_MASK,0x4444)));
+        assert!(b.e.contains(&E::Call("414a0",0x1000,1,0,0x5555)));
+        assert!(b.e.contains(&E::Write("h",0x1000,0x68,0x1234)));
+    }
+
+    #[test]
+    fn nonzero_mask_zero_high_common_path_uses_full_initial_ec_and_mask(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0x3306,0x1111,0x2222]);
+        b.h64=VecDeque::from([0x3333]);
+        b.a7=0x01;
+        let _=bt_stage106_object_dispatch(0x1000,1,2,3,&mut b);
+        assert!(b.e.contains(&E::Call("4bc44",0x1000,0x3306,0x3306,0x1111)));
+    }
+
+    #[test]
+    fn precheck_zero_return_common_path_preserves_returned_r1_r2_until_4bc44(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0x3306,0x7777,0x8888]);
+        b.h64=VecDeque::from([0x9999]);
+        b.a7=0xE1;
+        b.r_3ccdc=VecDeque::from([BtStage106Regs{r0:0,r1:0xAAAA,r2:0xBBBB,r3:0xCCCC}]);
+        let _=bt_stage106_object_dispatch(0x1000,1,2,3,&mut b);
+        assert!(b.e.contains(&E::Call("3ccdc",0x1000,0x3306,0x3306,0xE1)));
+        assert!(b.e.contains(&E::Call("4bc44",0x1000,0xAAAA,0xBBBB,0x7777)));
+    }
+
+    #[test]
+    fn precheck_nonzero_return_eb10_returns_live_r0_locally(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0x3306]);
+        b.a7=0xE1;
+        b.beb=VecDeque::from([0x1F]);
+        b.r_3ccdc=VecDeque::from([BtStage106Regs{r0:0xDEAD,r1:2,r2:3,r3:4}]);
+        assert_eq!(bt_stage106_object_dispatch(0x1000,1,2,3,&mut b),0xDEAD);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Call("3cc9e",..)|E::Call("4bc44",..))));
+    }
+
+    #[test]
+    fn precheck_nonzero_return_second_tail_uses_live_r2_and_masked_eb(){
+        let mut b=B::default();
+        b.ec=VecDeque::from([0x3306]);
+        b.a7=0xE1;
+        b.beb=VecDeque::from([0x3F]);
+        b.r_3ccdc=VecDeque::from([BtStage106Regs{r0:0xDEAD,r1:0xAAAA,r2:0xBEEF,r3:0xCCCC}]);
+        assert_eq!(bt_stage106_object_dispatch(0x1000,1,2,3,&mut b),0xCC9E);
+        assert!(b.e.contains(&E::Call("3cc9e",0x1000,1,0xBEEF,0x30)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!(STAGE106_CURRENT_BT_OBJECT_DISPATCH_ADDR,0x16D90C);
+        assert_eq!(STAGE106_LEGACY_BT_OBJECT_DISPATCH_ADDR,0x16AA10);
+        assert_eq!(STAGE106_CURRENT_BODY_LEN,142);
+        assert_eq!(STAGE106_BT_MASK,0x3306);
+        assert_eq!(STAGE106_BT_PRECHECK_BOUNDARY,0x3CCDC);
+        assert_eq!(STAGE106_BT_FIRST_TAIL,0x3CC9E);
+        assert_eq!(STAGE106_BT_COMMON_BOUNDARY,0x4BC44);
+        assert_eq!(STAGE106_BT_XOR_BOUNDARY,0x6F246);
+        assert_eq!(STAGE106_BT_FINAL_TAIL,0x414A0);
+    }
+}
