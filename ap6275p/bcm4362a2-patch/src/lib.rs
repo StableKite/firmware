@@ -13553,3 +13553,272 @@ mod stage98_tests {
         assert_eq!(STAGE98_BT_STACK_GUARD_FAIL, 0x94C0);
     }
 }
+
+/// Stage 99: current record-mask walker at `0x172258`.
+///
+/// The exact 186-byte current body has no promoted public-legacy normalized
+/// counterpart. The model preserves signed span clamping, the post-iteration
+/// UXTB remaining counter, independent rereads of the ambient mask count, the
+/// scratch-mask pass, compare gate, and last-match output behavior. Compiler
+/// stack-canary plumbing is provenance only.
+pub const STAGE99_CURRENT_BT_RECORD_MASK_WALK_ADDR: u32 = 0x0017_2258;
+pub const STAGE99_BT_COPY_BOUNDARY: u32 = 0x0000_3DB4;
+pub const STAGE99_BT_COMPARE_BOUNDARY: u32 = 0x000F_8CAC;
+pub const STAGE99_BT_PAIR_LOOKUP_ADDR: u32 = STAGE25_CURRENT_BT_PAIR_CONFIG_LOOKUP_ADDR;
+pub const STAGE99_BT_GUARD_WORD_ADDR: u32 = 0x0020_0890;
+pub const STAGE99_BT_STACK_GUARD_FAIL: u32 = ROM_STACK_GUARD_FAIL_ADDR;
+pub const STAGE99_BT_MASK_BASE_ADDR: u32 = 0x0022_300E;
+pub const STAGE99_BT_REFERENCE_ADDR: u32 = 0x0022_300F;
+
+pub trait BtStage99Backend {
+    fn read_input_byte(&mut self, address: u32) -> u8;
+    fn read_mask_count(&mut self) -> u8;
+
+    /// Current `0x3DB4(scratch, source, len)`. The return is ignored.
+    fn copy_to_scratch(&mut self, source: u32, len: u32) -> u32;
+
+    /// Read one byte relative to current mask base `0x22300E`.
+    fn read_mask_byte(&mut self, offset: u32) -> u8;
+
+    fn read_scratch_byte(&mut self, index: u32) -> u8;
+    fn write_scratch_byte(&mut self, index: u32, value: u8);
+
+    /// Current memcmp-like `0xF8CAC(scratch, 0x22300F, len)`.
+    fn compare_scratch(&mut self, reference: u32, len: u32) -> u32;
+
+    /// Current Stage-25 lookup receives R0=record+2. Firmware also computes a
+    /// caller R1 byte immediately before the call even though the recovered
+    /// callee does not consume it; keep it visible for exact call-site ABI.
+    fn pair_lookup(&mut self, key_ptr: u32, computed_r1: u8) -> u8;
+}
+
+/// Safe source-level model of current `0x172258`.
+pub fn bt_stage99_record_mask_walk<B: BtStage99Backend>(
+    input_ptr: u32,
+    input_len: u32,
+    output: &mut u8,
+    backend: &mut B,
+) -> u32 {
+    let last = input_len.wrapping_sub(1);
+    let mut ptr = input_ptr;
+    let mut remaining = input_len;
+    let mut found = 0u32;
+
+    while remaining != 0 {
+        let mut span = u32::from(backend.read_input_byte(ptr));
+
+        // Current CMP + IT GE uses signed GE, despite span originating as u8.
+        if (span as i32) >= (last as i32) {
+            span = last;
+        }
+
+        let span8 = span as u8;
+
+        if backend.read_input_byte(ptr.wrapping_add(1)) == 0xFF {
+            let count_before_copy = backend.read_mask_count();
+
+            if span8 >= count_before_copy {
+                let source = ptr.wrapping_add(2);
+                let _ = backend.copy_to_scratch(source, u32::from(count_before_copy));
+
+                // Reread after copy. Firmware can mask more scratch bytes than
+                // were copied when this value grows; the backend exposes those
+                // pre-existing scratch bytes rather than inventing zeroes.
+                let count_for_mask = backend.read_mask_count();
+                let mut i = 0u32;
+                while i < u32::from(count_for_mask) {
+                    let mask = backend.read_mask_byte(
+                        u32::from(count_before_copy).wrapping_add(i).wrapping_add(1),
+                    );
+                    let value = backend.read_scratch_byte(i) & mask;
+                    backend.write_scratch_byte(i, value);
+                    i += 1;
+                }
+
+                if backend.compare_scratch(
+                    STAGE99_BT_REFERENCE_ADDR,
+                    u32::from(count_for_mask),
+                ) == 0 {
+                    let count_for_delta = backend.read_mask_count();
+                    let computed_r1 = span8.wrapping_sub(count_for_delta);
+                    let value = backend.pair_lookup(source, computed_r1);
+                    found = 1;
+                    *output = value;
+                }
+            }
+        }
+
+        // Binary sequence is `remaining += ~span8; UXTB remaining`.
+        remaining = u32::from(
+            remaining
+                .wrapping_sub(u32::from(span8))
+                .wrapping_sub(1) as u8,
+        );
+
+        // `span` is UXTB'd before the add, but the +1 itself is 32-bit:
+        // span8=255 advances by 256, not by zero.
+        ptr = ptr.wrapping_add(u32::from(span8).wrapping_add(1));
+    }
+
+    found
+}
+
+#[cfg(test)]
+mod stage99_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    struct B {
+        base: u32,
+        input: [u8; 512],
+        counts: Vec<u8>,
+        ci: usize,
+        mask: [u8; 256],
+        scratch: [u8; 256],
+        compare: u32,
+        pair_value: u8,
+        calls: Vec<(&'static str, u32, u32)>,
+    }
+
+    impl B {
+        fn new() -> Self {
+            Self {
+                base: 0x1000,
+                input: [0; 512],
+                counts: Vec::new(),
+                ci: 0,
+                mask: [0xFF; 256],
+                scratch: [0; 256],
+                compare: 1,
+                pair_value: 0,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl BtStage99Backend for B {
+        fn read_input_byte(&mut self, address: u32) -> u8 {
+            self.calls.push(("read", address, 0));
+            self.input[address.wrapping_sub(self.base) as usize]
+        }
+        fn read_mask_count(&mut self) -> u8 {
+            let v = self.counts[self.ci];
+            self.ci += 1;
+            self.calls.push(("count", u32::from(v), 0));
+            v
+        }
+        fn copy_to_scratch(&mut self, source: u32, len: u32) -> u32 {
+            self.calls.push(("copy", source, len));
+            let mut i = 0;
+            while i < len {
+                self.scratch[i as usize] =
+                    self.input[source.wrapping_sub(self.base).wrapping_add(i) as usize];
+                i += 1;
+            }
+            0xDEAD_BEEF
+        }
+        fn read_mask_byte(&mut self, offset: u32) -> u8 {
+            self.calls.push(("mask", offset, 0));
+            self.mask[offset as usize]
+        }
+        fn read_scratch_byte(&mut self, index: u32) -> u8 {
+            self.scratch[index as usize]
+        }
+        fn write_scratch_byte(&mut self, index: u32, value: u8) {
+            self.calls.push(("scratch", index, u32::from(value)));
+            self.scratch[index as usize] = value;
+        }
+        fn compare_scratch(&mut self, reference: u32, len: u32) -> u32 {
+            self.calls.push(("compare", reference, len));
+            self.compare
+        }
+        fn pair_lookup(&mut self, key_ptr: u32, computed_r1: u8) -> u8 {
+            self.calls.push(("pair", key_ptr, u32::from(computed_r1)));
+            self.pair_value
+        }
+    }
+
+    #[test]
+    fn zero_length_is_strict_no_access_return_zero() {
+        let mut b = B::new();
+        let mut out = 7;
+        assert_eq!(bt_stage99_record_mask_walk(b.base, 0, &mut out, &mut b), 0);
+        assert_eq!(out, 7);
+        assert!(b.calls.is_empty());
+    }
+
+    #[test]
+    fn signed_clamp_and_uxth_like_byte_remaining_advance_are_exact() {
+        let mut b = B::new();
+        b.input[0] = 10;
+        b.input[1] = 0;
+        let mut out = 0;
+        assert_eq!(bt_stage99_record_mask_walk(b.base, 3, &mut out, &mut b), 0);
+        // span is clamped to last=2, so one iteration consumes all three bytes.
+        assert_eq!(b.calls, [("read", 0x1000, 0), ("read", 0x1001, 0)]);
+    }
+
+    #[test]
+    fn special_record_rereads_counts_masks_scratch_and_publishes_pair_value() {
+        let mut b = B::new();
+        b.input[0] = 3;
+        b.input[1] = 0xFF;
+        b.input[2] = 0x0F;
+        b.input[3] = 0x0A;
+        b.counts = vec![2, 2, 1];
+        b.mask[3] = 0x0C;
+        b.mask[4] = 0xFF;
+        b.compare = 0;
+        b.pair_value = 0x5A;
+        let mut out = 0;
+        assert_eq!(bt_stage99_record_mask_walk(b.base, 4, &mut out, &mut b), 1);
+        assert_eq!(out, 0x5A);
+        assert_eq!(b.scratch[0], 0x0C);
+        assert_eq!(b.scratch[1], 0x0A);
+        assert!(b.calls.contains(&("pair", 0x1002, 2)));
+    }
+
+    #[test]
+    fn grown_second_count_masks_preexisting_scratch_beyond_copy_length() {
+        let mut b = B::new();
+        b.input[0] = 2;
+        b.input[1] = 0xFF;
+        b.input[2] = 0xF0;
+        b.counts = vec![1, 2];
+        b.scratch[1] = 0xAA; // models pre-existing stack scratch byte
+        b.mask[2] = 0x0F;
+        b.mask[3] = 0xF0;
+        b.compare = 1;
+        let mut out = 0;
+        assert_eq!(bt_stage99_record_mask_walk(b.base, 3, &mut out, &mut b), 0);
+        assert_eq!(b.scratch[0], 0);
+        assert_eq!(b.scratch[1], 0xA0);
+    }
+
+    #[test]
+    fn later_matching_record_overwrites_output_but_found_remains_one() {
+        let mut b = B::new();
+        // Two 2-byte records, both special, count zero avoids scratch reads.
+        b.input[0] = 1; b.input[1] = 0xFF;
+        b.input[2] = 1; b.input[3] = 0xFF;
+        b.counts = vec![0, 0, 0, 0, 0, 0];
+        b.compare = 0;
+        b.pair_value = 9;
+        let mut out = 0;
+        assert_eq!(bt_stage99_record_mask_walk(b.base, 4, &mut out, &mut b), 1);
+        assert_eq!(out, 9);
+        assert_eq!(b.calls.iter().filter(|x|x.0=="pair").count(), 2);
+    }
+
+    #[test]
+    fn provenance_constants_are_current_only() {
+        assert_eq!(STAGE99_CURRENT_BT_RECORD_MASK_WALK_ADDR, 0x172258);
+        assert_eq!(STAGE99_BT_COPY_BOUNDARY, 0x3DB4);
+        assert_eq!(STAGE99_BT_COMPARE_BOUNDARY, 0xF8CAC);
+        assert_eq!(STAGE99_BT_PAIR_LOOKUP_ADDR, 0x172220);
+        assert_eq!(STAGE99_BT_MASK_BASE_ADDR, 0x22300E);
+        assert_eq!(STAGE99_BT_REFERENCE_ADDR, 0x22300F);
+    }
+}
