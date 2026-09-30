@@ -15564,3 +15564,265 @@ mod stage106_tests {
         assert_eq!(STAGE106_BT_FINAL_TAIL,0x414A0);
     }
 }
+
+
+pub const STAGE107_CURRENT_BT_TAIL_DISPATCH_ADDR: u32 = 0x0016_D99C;
+pub const STAGE107_LEGACY_BT_TAIL_DISPATCH_ADDR: u32 = 0x0016_AAA0;
+pub const STAGE107_BT_GLOBAL_BASE_ADDR: u32 = 0x0020_8830;
+pub const STAGE107_BT_FIRST_BOUNDARY: u32 = 0x0003_CCDC;
+pub const STAGE107_BT_SECOND_BOUNDARY: u32 = 0x0003_CC9E;
+pub const STAGE107_BT_SPECIAL_TAIL: u32 = 0x0003_C3B0;
+pub const STAGE107_BT_DEFAULT_TAIL: u32 = 0x0002_EC18;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage107Regs {
+    pub r0: u32,
+    pub r1: u32,
+    pub r2: u32,
+    pub r3: u32,
+}
+
+pub trait BtStage107Backend {
+    fn read_object_byte(&mut self, object: u32, offset: u32) -> u8;
+    fn read_object_halfword(&mut self, object: u32, offset: u32) -> u16;
+    fn read_object_word(&mut self, object: u32, offset: u32) -> u32;
+    fn read_global_word4(&mut self) -> u32;
+
+    fn boundary_3ccdc(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage107Regs;
+    fn boundary_3cc9e(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage107Regs;
+    fn tail_3c3b0(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage107Regs;
+    fn tail_2ec18(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> BtStage107Regs;
+}
+
+/// Exact register-state model of current `0x16D99C..0x16D9E4`.
+///
+/// The entry overwrites incoming R3 with object byte +0x1D shifted left by
+/// twenty-four, while incoming R1/R2 remain live until overwritten by the
+/// exact path. Both terminal transfers are tail calls; their R0 is final.
+pub fn bt_stage107_tail_dispatch<B: BtStage107Backend>(
+    object: u32,
+    incoming_r1: u32,
+    incoming_r2: u32,
+    _incoming_r3: u32,
+    backend: &mut B,
+) -> u32 {
+    let first_byte1d = backend.read_object_byte(object, 0x1D);
+    let mut regs = BtStage107Regs {
+        r0: object,
+        r1: incoming_r1,
+        r2: incoming_r2,
+        r3: u32::from(first_byte1d) << 24,
+    };
+
+    if first_byte1d & 0x80 != 0 {
+        let halfword_ec = backend.read_object_halfword(object, 0xEC);
+        regs.r1 = u32::from(halfword_ec);
+        regs = backend.boundary_3ccdc(regs.r0, regs.r1, regs.r2, regs.r3);
+        regs.r1 = regs.r0;
+        if regs.r0 == 1 {
+            regs.r0 = object;
+            regs = backend.boundary_3cc9e(regs.r0, regs.r1, regs.r2, regs.r3);
+        }
+    }
+
+    let word38 = backend.read_object_word(object, 0x38);
+    regs.r3 = word38;
+    regs.r1 = word38 << 28;
+
+    if word38 & 8 != 0 {
+        let fresh_byte1d = backend.read_object_byte(object, 0x1D);
+        regs.r3 = u32::from(fresh_byte1d);
+        regs.r2 = u32::from(fresh_byte1d) << 24;
+
+        if fresh_byte1d & 0x80 == 0 {
+            let global_word4 = backend.read_global_word4();
+            regs.r3 = global_word4 << 20;
+            if global_word4 & (1 << 11) != 0 {
+                regs.r0 = object;
+                regs.r1 = 1;
+                return backend.tail_3c3b0(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+        }
+    }
+
+    regs.r0 = object;
+    backend.tail_2ec18(regs.r0, regs.r1, regs.r2, regs.r3).r0
+}
+
+#[cfg(test)]
+mod stage107_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum E {
+        Read(&'static str, u32, u32),
+        Call(&'static str, u32, u32, u32, u32),
+    }
+
+    struct B {
+        byte1d: VecDeque<u8>,
+        halfword_ec: u16,
+        word38: u32,
+        global_word4: u32,
+        returns_3ccdc: VecDeque<BtStage107Regs>,
+        returns_3cc9e: VecDeque<BtStage107Regs>,
+        returns_3c3b0: VecDeque<BtStage107Regs>,
+        returns_2ec18: VecDeque<BtStage107Regs>,
+        e: Vec<E>,
+    }
+
+    impl Default for B {
+        fn default() -> Self {
+            Self {
+                byte1d: VecDeque::from([0]),
+                halfword_ec: 0x1234,
+                word38: 0,
+                global_word4: 0,
+                returns_3ccdc: VecDeque::from([BtStage107Regs {
+                    r0: 2, r1: 0x11, r2: 0x22, r3: 0x33,
+                }]),
+                returns_3cc9e: VecDeque::from([BtStage107Regs {
+                    r0: 3, r1: 0x44, r2: 0x55, r3: 0x66,
+                }]),
+                returns_3c3b0: VecDeque::from([BtStage107Regs {
+                    r0: 0xC3B0, ..Default::default()
+                }]),
+                returns_2ec18: VecDeque::from([BtStage107Regs {
+                    r0: 0xEC18, ..Default::default()
+                }]),
+                e: Vec::new(),
+            }
+        }
+    }
+
+    impl B {
+        fn pop(q: &mut VecDeque<BtStage107Regs>) -> BtStage107Regs {
+            q.pop_front().unwrap()
+        }
+    }
+
+    impl BtStage107Backend for B {
+        fn read_object_byte(&mut self, object: u32, offset: u32) -> u8 {
+            assert_eq!(offset, 0x1D);
+            let v = self.byte1d.pop_front().unwrap();
+            self.e.push(E::Read("byte1d", object, u32::from(v)));
+            v
+        }
+        fn read_object_halfword(&mut self, object: u32, offset: u32) -> u16 {
+            assert_eq!(offset, 0xEC);
+            self.e.push(E::Read("half_ec", object, u32::from(self.halfword_ec)));
+            self.halfword_ec
+        }
+        fn read_object_word(&mut self, object: u32, offset: u32) -> u32 {
+            assert_eq!(offset, 0x38);
+            self.e.push(E::Read("word38", object, self.word38));
+            self.word38
+        }
+        fn read_global_word4(&mut self) -> u32 {
+            self.e.push(E::Read("global4", STAGE107_BT_GLOBAL_BASE_ADDR + 4, self.global_word4));
+            self.global_word4
+        }
+        fn boundary_3ccdc(&mut self, a:u32,b:u32,c:u32,d:u32)->BtStage107Regs{
+            self.e.push(E::Call("3ccdc",a,b,c,d)); Self::pop(&mut self.returns_3ccdc)
+        }
+        fn boundary_3cc9e(&mut self, a:u32,b:u32,c:u32,d:u32)->BtStage107Regs{
+            self.e.push(E::Call("3cc9e",a,b,c,d)); Self::pop(&mut self.returns_3cc9e)
+        }
+        fn tail_3c3b0(&mut self, a:u32,b:u32,c:u32,d:u32)->BtStage107Regs{
+            self.e.push(E::Call("3c3b0",a,b,c,d)); Self::pop(&mut self.returns_3c3b0)
+        }
+        fn tail_2ec18(&mut self, a:u32,b:u32,c:u32,d:u32)->BtStage107Regs{
+            self.e.push(E::Call("2ec18",a,b,c,d)); Self::pop(&mut self.returns_2ec18)
+        }
+    }
+
+    #[test]
+    fn initial_bit7_clear_keeps_incoming_r2_but_overwrites_r1_r3_at_word38_gate() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x12]);
+        b.word38 = 5;
+        assert_eq!(bt_stage107_tail_dispatch(0x1000,0xAAAA,0xBBBB,0xCCCC,&mut b),0xEC18);
+        assert!(!b.e.iter().any(|e| matches!(e,E::Call("3ccdc",..)|E::Call("3cc9e",..))));
+        assert!(b.e.contains(&E::Call("2ec18",0x1000,0x5000_0000,0xBBBB,5)));
+    }
+
+    #[test]
+    fn first_boundary_nonone_preserves_its_live_r2_until_word38_default_tail() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x80]);
+        b.word38 = 2;
+        b.returns_3ccdc = VecDeque::from([BtStage107Regs{r0:7,r1:8,r2:0xCAFE,r3:0xDEAD}]);
+        assert_eq!(bt_stage107_tail_dispatch(0x1000,2,3,4,&mut b),0xEC18);
+        assert!(b.e.contains(&E::Call("3ccdc",0x1000,0x1234,3,0x8000_0000)));
+        assert!(!b.e.iter().any(|e| matches!(e,E::Call("3cc9e",..))));
+        assert!(b.e.contains(&E::Call("2ec18",0x1000,0x2000_0000,0xCAFE,2)));
+    }
+
+    #[test]
+    fn exact_one_first_return_calls_second_and_its_r2_reaches_bit3clear_default_tail() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x80]);
+        b.word38 = 0;
+        b.returns_3ccdc = VecDeque::from([BtStage107Regs{r0:1,r1:8,r2:0x1111,r3:0x2222}]);
+        b.returns_3cc9e = VecDeque::from([BtStage107Regs{r0:9,r1:0x33,r2:0x4444,r3:0x5555}]);
+        let _ = bt_stage107_tail_dispatch(0x1000,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("3cc9e",0x1000,1,0x1111,0x2222)));
+        assert!(b.e.contains(&E::Call("2ec18",0x1000,0,0x4444,0)));
+    }
+
+    #[test]
+    fn bit3set_fresh_bit7set_replaces_r2_r3_before_default_tail() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x00,0xAB]);
+        b.word38 = 8;
+        let _ = bt_stage107_tail_dispatch(0x1000,2,0x9999,4,&mut b);
+        assert!(b.e.contains(&E::Call("2ec18",0x1000,0x8000_0000,0xAB00_0000,0xAB)));
+        assert!(!b.e.iter().any(|e| matches!(e,E::Read("global4",..))));
+    }
+
+    #[test]
+    fn bit3set_fresh_clear_global_bit11clear_uses_shifted_global_r3_in_default_tail() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x00,0x21]);
+        b.word38 = 8;
+        b.global_word4 = 0x123;
+        let _ = bt_stage107_tail_dispatch(0x1000,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("2ec18",0x1000,0x8000_0000,0x2100_0000,0x1230_0000)));
+    }
+
+    #[test]
+    fn special_condition_uses_literal_one_and_shifted_fresh_byte_and_global() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x00,0x21]);
+        b.word38 = 8;
+        b.global_word4 = 0x812;
+        assert_eq!(bt_stage107_tail_dispatch(0x1000,2,3,4,&mut b),0xC3B0);
+        assert!(b.e.contains(&E::Call("3c3b0",0x1000,1,0x2100_0000,0x8120_0000)));
+        assert!(!b.e.iter().any(|e| matches!(e,E::Call("2ec18",..))));
+    }
+
+    #[test]
+    fn byte1d_is_a_true_reread_after_optional_call_chain() {
+        let mut b = B::default();
+        b.byte1d = VecDeque::from([0x80,0x01]);
+        b.word38 = 8;
+        b.global_word4 = 0x800;
+        b.returns_3ccdc = VecDeque::from([BtStage107Regs{r0:2,r1:3,r2:4,r3:5}]);
+        let _ = bt_stage107_tail_dispatch(0x1000,2,3,4,&mut b);
+        assert!(b.e.contains(&E::Call("3ccdc",0x1000,0x1234,3,0x8000_0000)));
+        assert!(b.e.contains(&E::Call("3c3b0",0x1000,1,0x0100_0000,0x8000_0000)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact() {
+        assert_eq!(STAGE107_CURRENT_BT_TAIL_DISPATCH_ADDR,0x16D99C);
+        assert_eq!(STAGE107_LEGACY_BT_TAIL_DISPATCH_ADDR,0x16AAA0);
+        assert_eq!(STAGE107_BT_GLOBAL_BASE_ADDR,0x208830);
+        assert_eq!(STAGE107_BT_FIRST_BOUNDARY,0x3CCDC);
+        assert_eq!(STAGE107_BT_SECOND_BOUNDARY,0x3CC9E);
+        assert_eq!(STAGE107_BT_SPECIAL_TAIL,0x3C3B0);
+        assert_eq!(STAGE107_BT_DEFAULT_TAIL,0x2EC18);
+    }
+}
