@@ -11632,3 +11632,317 @@ mod stage86_tests {
         assert_eq!(STAGE86_BT_WRAP_LIMIT, 99);
     }
 }
+
+/// Stage 87: current staged-init/control wrapper at `0x171C78`.
+///
+/// The exact 118-byte current body is a relocation-normalized structural
+/// counterpart of public-legacy `0x16DBC4`. Stage 79, Stage 85, Stage 86,
+/// and Stage 81 are already reconstructed dependencies; the remaining runtime
+/// entries stay explicit opaque boundaries.
+pub const STAGE87_CURRENT_BT_STAGED_CONTROL_ADDR: u32 = 0x0017_1C78;
+pub const STAGE87_BT_CANARY_ADDR: u32 = 0x0020_0890;
+pub const STAGE87_BT_INITIALIZED_ADDR: u32 = 0x0022_2E00;
+pub const STAGE87_BT_THRESHOLD_HALFWORD_ADDR: u32 = 0x0020_4B14;
+pub const STAGE87_BT_FALLBACK_GATE_ADDR: u32 = 0x0022_2DF8;
+pub const STAGE87_BT_SHIFT_SOURCE_ADDR: u32 = 0x0020_4B10;
+pub const STAGE87_BT_CHAIN_A_BOUNDARY: u32 = 0x000B_AA08;
+pub const STAGE87_BT_CHAIN_B_BOUNDARY: u32 = 0x000B_A988;
+pub const STAGE87_BT_ZERO_RESULT_BOUNDARY: u32 = 0x000B_DDBC;
+pub const STAGE87_BT_CANARY_FAIL_BOUNDARY: u32 = 0x0000_94C0;
+pub const STAGE87_BT_STAGE79_ADDR: u32 = STAGE79_CURRENT_BT_SNAPSHOT_FOLD_ADDR;
+pub const STAGE87_BT_STAGE85_ADDR: u32 = STAGE85_CURRENT_BT_CIRCULAR_DISTANCE_ADDR;
+pub const STAGE87_BT_STAGE86_ADDR: u32 = STAGE86_CURRENT_BT_GUARDED_TABLE_STEP_ADDR;
+pub const STAGE87_BT_STAGE81_ADDR: u32 = STAGE81_CURRENT_BT_CRITICAL_REPAIR_ADDR;
+
+pub trait BtStage87Backend {
+    fn read_word(&mut self, address: u32) -> u32;
+    fn write_word(&mut self, address: u32, value: u32);
+    fn read_halfword(&mut self, address: u32) -> u16;
+    fn read_byte(&mut self, address: u32) -> u8;
+
+    fn stage79_snapshot_fold(&mut self, r0: u32, r1: u32, r2: u32, r3: u32) -> u32;
+    fn chain_a(&mut self, value: u32) -> u32;
+    fn chain_b(&mut self, value: u32) -> u32;
+
+    /// Already-recovered Stage 85 fixed-global distance helper.
+    fn stage85_distance(&mut self) -> u32;
+
+    /// Already-recovered Stage 86. The stack-local dword is passed by pointer
+    /// in firmware and may be replaced by the helper when it returns one.
+    fn stage86_step(&mut self, local_word: &mut u32) -> u32;
+
+    /// Current opaque `0xBDDBC`, reached only with current R0 equal to zero.
+    /// Its return is overwritten by the following Stage-85 call.
+    fn zero_result_boundary(&mut self, current_r0: u32) -> u32;
+
+    /// Already-recovered Stage 81. Its return is ignored locally.
+    fn stage81_repair(&mut self, value: u32) -> u32;
+
+    /// Current hardening boundary `0x94C0`, invoked when the saved canary
+    /// differs from the final reread. Firmware has the local result in R0.
+    fn canary_fail(&mut self, local_word: u32);
+}
+
+/// Safe source-level model of current `0x171C78`.
+///
+/// `local_word` represents stack slot zero. It begins as incoming R0, may be
+/// replaced by Stage 86 through pointer aliasing, or by the conditional
+/// `0xBA988` call. The function returns this stack-local value. Threshold and
+/// canary values are reread exactly where the firmware rereads them.
+pub fn bt_stage87_staged_control<B: BtStage87Backend>(
+    incoming_r0: u32,
+    incoming_r1: u32,
+    backend: &mut B,
+) -> u32 {
+    let canary_before = backend.read_word(STAGE87_BT_CANARY_ADDR);
+    let mut local_word = incoming_r0;
+
+    if backend.read_word(STAGE87_BT_INITIALIZED_ADDR) == 0 {
+        let mut value = backend.stage79_snapshot_fold(
+            incoming_r0,
+            incoming_r1,
+            0,
+            STAGE87_BT_CANARY_ADDR,
+        );
+        value = backend.chain_a(value);
+        value = backend.chain_b(value);
+        value = backend.chain_b(value);
+        let _ = backend.chain_b(value);
+        backend.write_word(STAGE87_BT_INITIALIZED_ADDR, 1);
+    }
+
+    let mut current_r0 = incoming_r0;
+    let mut use_stage86 = incoming_r0 != 0;
+
+    if !use_stage86 {
+        current_r0 = backend.stage85_distance();
+        let threshold = u32::from(backend.read_halfword(STAGE87_BT_THRESHOLD_HALFWORD_ADDR));
+        if current_r0 > threshold {
+            use_stage86 = true;
+        }
+    }
+
+    if use_stage86 {
+        current_r0 = backend.stage86_step(&mut local_word);
+        if current_r0 == 0 {
+            if backend.read_byte(STAGE87_BT_FALLBACK_GATE_ADDR) != 0 {
+                let _ = backend.zero_result_boundary(0);
+            } else {
+                local_word = backend.chain_b(0);
+            }
+        }
+    } else {
+        // This is the branch from the first Stage-85 comparison when
+        // distance <= the live threshold.
+        local_word = backend.chain_b(current_r0);
+    }
+
+    let distance_after = backend.stage85_distance();
+    let threshold_after = u32::from(backend.read_halfword(STAGE87_BT_THRESHOLD_HALFWORD_ADDR));
+    if distance_after <= threshold_after {
+        let value = backend.read_word(STAGE87_BT_SHIFT_SOURCE_ADDR) >> 1;
+        let _ = backend.stage81_repair(value);
+    }
+
+    let canary_after = backend.read_word(STAGE87_BT_CANARY_ADDR);
+    if canary_before != canary_after {
+        backend.canary_fail(local_word);
+    }
+
+    local_word
+}
+
+#[cfg(test)]
+mod stage87_tests {
+    extern crate std;
+    use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B {
+        canary_reads: Vec<u32>,
+        initialized: u32,
+        thresholds: Vec<u16>,
+        fallback_gate: u8,
+        shift_source: u32,
+        stage79_return: u32,
+        chain_returns: Vec<u32>,
+        stage85_returns: Vec<u32>,
+        stage86_return: u32,
+        stage86_write: Option<u32>,
+        events: Vec<(&'static str, u32, u32, u32)>,
+    }
+
+    impl B {
+        fn pop_word(v: &mut Vec<u32>) -> u32 { if v.is_empty() { 0 } else { v.remove(0) } }
+        fn pop_half(v: &mut Vec<u16>) -> u16 { if v.is_empty() { 0 } else { v.remove(0) } }
+    }
+
+    impl BtStage87Backend for B {
+        fn read_word(&mut self, address: u32) -> u32 {
+            self.events.push(("read_word", address, 0, 0));
+            match address {
+                STAGE87_BT_CANARY_ADDR => Self::pop_word(&mut self.canary_reads),
+                STAGE87_BT_INITIALIZED_ADDR => self.initialized,
+                STAGE87_BT_SHIFT_SOURCE_ADDR => self.shift_source,
+                _ => 0,
+            }
+        }
+        fn write_word(&mut self, address: u32, value: u32) {
+            self.events.push(("write_word", address, value, 0));
+            if address == STAGE87_BT_INITIALIZED_ADDR { self.initialized = value; }
+        }
+        fn read_halfword(&mut self, address: u32) -> u16 {
+            self.events.push(("read_half", address, 0, 0));
+            Self::pop_half(&mut self.thresholds)
+        }
+        fn read_byte(&mut self, address: u32) -> u8 {
+            self.events.push(("read_byte", address, 0, 0));
+            self.fallback_gate
+        }
+        fn stage79_snapshot_fold(&mut self, r0:u32,r1:u32,r2:u32,r3:u32)->u32 {
+            self.events.push(("stage79", r0, r1, r2));
+            self.events.push(("stage79_r3", r3, 0, 0));
+            self.stage79_return
+        }
+        fn chain_a(&mut self, value:u32)->u32 {
+            self.events.push(("chain_a", value, 0, 0));
+            Self::pop_word(&mut self.chain_returns)
+        }
+        fn chain_b(&mut self, value:u32)->u32 {
+            self.events.push(("chain_b", value, 0, 0));
+            Self::pop_word(&mut self.chain_returns)
+        }
+        fn stage85_distance(&mut self)->u32 {
+            self.events.push(("stage85", 0, 0, 0));
+            Self::pop_word(&mut self.stage85_returns)
+        }
+        fn stage86_step(&mut self, local_word:&mut u32)->u32 {
+            self.events.push(("stage86", *local_word, 0, 0));
+            if let Some(v)=self.stage86_write { *local_word=v; }
+            self.stage86_return
+        }
+        fn zero_result_boundary(&mut self,current_r0:u32)->u32 {
+            self.events.push(("zero_boundary", current_r0, 0, 0));
+            0xFFFF_FFFF
+        }
+        fn stage81_repair(&mut self,value:u32)->u32 {
+            self.events.push(("stage81", value, 0, 0));
+            0xDEAD_BEEF
+        }
+        fn canary_fail(&mut self,local_word:u32) {
+            self.events.push(("canary_fail", local_word, 0, 0));
+        }
+    }
+
+    #[test]
+    fn one_time_init_threads_stage79_through_a_and_three_b_calls_then_sets_flag() {
+        let mut b=B {
+            canary_reads:vec![7,7],
+            initialized:0,
+            stage79_return:10,
+            chain_returns:vec![11,12,13,14,99],
+            stage85_returns:vec![1,200],
+            thresholds:vec![5,5],
+            ..Default::default()
+        };
+        // incoming_r0 zero: first distance 1 <=5, so the fifth chain-b return
+        // becomes local_word; second distance 200 skips Stage81.
+        assert_eq!(bt_stage87_staged_control(0,2,&mut b),99);
+        assert_eq!(b.initialized,1);
+        let init_pos=b.events.iter().position(|e|e.0=="write_word"&&e.1==STAGE87_BT_INITIALIZED_ADDR).unwrap();
+        let names:Vec<_>=b.events[..init_pos].iter().filter(|e|e.0=="stage79"||e.0=="chain_a"||e.0=="chain_b").map(|e|e.0).collect();
+        assert_eq!(names,["stage79","chain_a","chain_b","chain_b","chain_b"]);
+    }
+
+    #[test]
+    fn nonzero_input_goes_directly_to_stage86_and_changed_write_becomes_final_local() {
+        let mut b=B {
+            canary_reads:vec![1,1],
+            initialized:1,
+            stage86_return:1,
+            stage86_write:Some(0xCAFE_BABE),
+            stage85_returns:vec![999],
+            thresholds:vec![3],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage87_staged_control(0x55,0,&mut b),0xCAFE_BABE);
+        assert!(!b.events.iter().any(|e|e.0=="read_byte"||e.0=="zero_boundary"));
+    }
+
+    #[test]
+    fn zero_stage86_with_zero_gate_replaces_local_with_chain_return() {
+        let mut b=B {
+            canary_reads:vec![2,2],
+            initialized:1,
+            stage85_returns:vec![10],
+            thresholds:vec![2],
+            stage86_return:0,
+            fallback_gate:0,
+            chain_returns:vec![0x1234],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage87_staged_control(0,0,&mut b),0x1234);
+        assert!(b.events.iter().any(|e|*e==("chain_b",0,0,0)));
+    }
+
+    #[test]
+    fn zero_stage86_with_nonzero_gate_calls_opaque_boundary_and_keeps_local() {
+        let mut b=B {
+            canary_reads:vec![3,3],
+            initialized:1,
+            stage85_returns:vec![10],
+            thresholds:vec![2],
+            stage86_return:0,
+            fallback_gate:1,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage87_staged_control(0x44,0,&mut b),0x44);
+        assert!(b.events.iter().any(|e|*e==("zero_boundary",0,0,0)));
+    }
+
+    #[test]
+    fn second_distance_rereads_threshold_and_conditionally_calls_stage81_with_shifted_word() {
+        let mut b=B {
+            canary_reads:vec![4,4],
+            initialized:1,
+            stage85_returns:vec![3,4],
+            thresholds:vec![2,5],
+            stage86_return:1,
+            stage86_write:Some(9),
+            shift_source:0x8000_0003,
+            ..Default::default()
+        };
+        assert_eq!(bt_stage87_staged_control(0,0,&mut b),9);
+        assert!(b.events.iter().any(|e|*e==("stage81",0x4000_0001,0,0)));
+    }
+
+    #[test]
+    fn canary_is_reread_after_all_work_and_mismatch_receives_final_local() {
+        let mut b=B {
+            canary_reads:vec![0x11,0x22],
+            initialized:1,
+            stage85_returns:vec![0,99],
+            thresholds:vec![1,1],
+            chain_returns:vec![0xABCD],
+            ..Default::default()
+        };
+        assert_eq!(bt_stage87_staged_control(0,0,&mut b),0xABCD);
+        assert_eq!(b.events.last(),Some(&("canary_fail",0xABCD,0,0)));
+    }
+
+    #[test]
+    fn provenance_constants_are_current() {
+        assert_eq!(STAGE87_CURRENT_BT_STAGED_CONTROL_ADDR,0x171C78);
+        assert_eq!(STAGE87_BT_CANARY_ADDR,0x200890);
+        assert_eq!(STAGE87_BT_INITIALIZED_ADDR,0x222E00);
+        assert_eq!(STAGE87_BT_THRESHOLD_HALFWORD_ADDR,0x204B14);
+        assert_eq!(STAGE87_BT_FALLBACK_GATE_ADDR,0x222DF8);
+        assert_eq!(STAGE87_BT_SHIFT_SOURCE_ADDR,0x204B10);
+        assert_eq!(STAGE87_BT_STAGE79_ADDR,0x1719E0);
+        assert_eq!(STAGE87_BT_STAGE85_ADDR,0x17192C);
+        assert_eq!(STAGE87_BT_STAGE86_ADDR,0x1718E8);
+        assert_eq!(STAGE87_BT_STAGE81_ADDR,0x171B84);
+    }
+}
