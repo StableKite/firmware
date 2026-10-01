@@ -17642,3 +17642,223 @@ mod stage113_tests {
         assert_eq!(STAGE113_BT_DESTROY_BOUNDARY,0xB0460);
     }
 }
+pub const STAGE114_CURRENT_BT_SLOT_REWRITE_ADDR: u32 = 0x0016_DE9C;
+pub const STAGE114_LEGACY_BT_SLOT_REWRITE_ADDR: u32 = 0x0016_AED0;
+pub const STAGE114_CURRENT_BODY_LEN: u32 = 116;
+
+pub const STAGE114_BT_RESOLVE_BOUNDARY: u32 = 0x0001_EE18;
+pub const STAGE114_BT_DESTROY_BOUNDARY: u32 = 0x000B_0460;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage114Regs {
+    pub r0:u32, pub r1:u32, pub r2:u32, pub r3:u32,
+}
+
+pub trait BtStage114Backend {
+    fn read_input_byte(&mut self, input:u32, offset:u32)->u8;
+    fn write_input_byte(&mut self, input:u32, offset:u32, value:u8);
+
+    fn read_slot_word(&mut self, slot:u32)->u32;
+    fn write_slot_word(&mut self, slot:u32, value:u32);
+
+    fn read_object_word(&mut self, object:u32, offset:u32)->u32;
+    fn write_object_word(&mut self, object:u32, offset:u32, value:u32);
+    fn read_object_byte(&mut self, object:u32, offset:u32)->u8;
+    fn write_object_byte(&mut self, object:u32, offset:u32, value:u8);
+
+    fn read_indirect_byte(&mut self, ptr:u32, offset:u32)->u8;
+    fn read_indirect_halfword(&mut self, ptr:u32, offset:u32)->u16;
+
+    fn read_state_byte(&mut self, state:u32, offset:u32)->u8;
+    fn write_state_byte(&mut self, state:u32, offset:u32, value:u8);
+    fn read_state_halfword(&mut self, state:u32, offset:u32)->u16;
+    fn write_state_halfword(&mut self, state:u32, offset:u32, value:u16);
+
+    fn boundary_1ee18(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage114Regs;
+    fn boundary_b0460(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage114Regs;
+}
+
+/// Exact register-state model of current `0x16DE9C..0x16DF10`.
+///
+/// The resolver receives input byte +0x14 with incoming R1/R2/R3. Its full
+/// caller-volatile return reaches the unconditional destroy of the old slot
+/// word. The destroy return's R0 remains live to the function return.
+pub fn bt_stage114_slot_rewrite<B: BtStage114Backend>(
+    input:u32,
+    slot:u32,
+    state:u32,
+    incoming_r3:u32,
+    backend:&mut B,
+)->u32{
+    let input14=backend.read_input_byte(input,0x14);
+    let mut regs=backend.boundary_1ee18(u32::from(input14),slot,state,incoming_r3);
+    let object=regs.r0;
+
+    regs.r0=backend.read_slot_word(slot);
+    regs=backend.boundary_b0460(regs.r0,regs.r1,regs.r2,regs.r3);
+
+    let descriptor=backend.read_object_word(object,0x10);
+    backend.write_slot_word(slot,descriptor);
+
+    regs.r3=2;
+    backend.write_state_byte(state,0x1D,2);
+
+    let object0b=backend.read_object_byte(object,0x0B);
+    regs.r3=u32::from(object0b & 0xC0);
+    regs.r2=descriptor;
+
+    if regs.r3==0x40 {
+        let b=backend.read_indirect_byte(descriptor,2);
+        regs.r3=u32::from(b)>>3;
+        let old=backend.read_state_halfword(state,0x1A);
+        regs.r2=u32::from(old);
+        let field=(regs.r3 & 0x3FF)<<3;
+        regs.r2=(regs.r2 & !(0x3FF<<3)) | field;
+        backend.write_state_halfword(state,0x1A,regs.r2 as u16);
+    } else if regs.r3==0x80 {
+        let h=backend.read_indirect_halfword(descriptor,2);
+        regs.r3=u32::from(h)>>3;
+        let old=backend.read_state_halfword(state,0x1A);
+        regs.r2=u32::from(old);
+        let field=(regs.r3 & 0x3FF)<<3;
+        regs.r2=(regs.r2 & !(0x3FF<<3)) | field;
+        backend.write_state_halfword(state,0x1A,regs.r2 as u16);
+    }
+
+    let descriptor2=backend.read_object_word(object,0x10);
+    regs.r2=backend.read_indirect_byte(descriptor2,2) as u32;
+    let old1a=backend.read_state_byte(state,0x1A);
+    regs.r3=u32::from(old1a);
+    regs.r3=(regs.r3 & !0x03) | (regs.r2 & 0x03);
+    backend.write_state_byte(state,0x1A,regs.r3 as u8);
+
+    let descriptor3=backend.read_object_word(object,0x10);
+    let source=backend.read_indirect_byte(descriptor3,2);
+    regs.r3=u32::from(source)>>2;
+    regs.r2=u32::from(backend.read_state_byte(state,0x1A));
+    regs.r2=(regs.r2 & !(1<<2)) | ((regs.r3 & 1)<<2);
+    backend.write_state_byte(state,0x1A,regs.r2 as u8);
+
+    let input9=backend.read_input_byte(input,9);
+    regs.r3=u32::from(input9 | 1);
+    backend.write_input_byte(input,9,regs.r3 as u8);
+
+    let fresh0b=backend.read_object_byte(object,0x0B);
+    regs.r3=u32::from((fresh0b & 0xFC) | 0x3C);
+    backend.write_object_byte(object,0x0B,regs.r3 as u8);
+
+    regs.r3=0;
+    backend.write_object_word(object,0x10,0);
+
+    regs.r0
+}
+
+#[cfg(test)]
+mod stage114_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone,Debug,PartialEq,Eq)]
+    enum E {
+        Read(&'static str,u32,u32),
+        Write(&'static str,u32,u32),
+        Call(&'static str,u32,u32,u32,u32),
+    }
+
+    struct B {
+        input14:u8,input9:u8,slot_word:u32,
+        object10:VecDeque<u32>,object0b:VecDeque<u8>,
+        indirect_byte:u8,indirect_half:u16,
+        state1a_byte:VecDeque<u8>,state1a_half:u16,
+        qresolve:VecDeque<BtStage114Regs>,qdestroy:VecDeque<BtStage114Regs>,
+        e:Vec<E>,
+    }
+    impl Default for B {
+        fn default()->Self{Self{
+            input14:0x14,input9:0x10,slot_word:0xAAAA,
+            object10:VecDeque::from([0x5000,0x5000,0x5000]),
+            object0b:VecDeque::from([0,0xFF]),
+            indirect_byte:0xA5,indirect_half:0x3456,
+            state1a_byte:VecDeque::from([0xF0,0xF3]),
+            state1a_half:0xF007,
+            qresolve:VecDeque::from([BtStage114Regs{r0:0x2000,r1:0x11,r2:0x22,r3:0x33}]),
+            qdestroy:VecDeque::from([BtStage114Regs{r0:0xD00D,r1:0x41,r2:0x42,r3:0x43}]),
+            e:Vec::new(),
+        }}
+    }
+    impl B{fn pop(q:&mut VecDeque<BtStage114Regs>)->BtStage114Regs{q.pop_front().unwrap()}}
+    impl BtStage114Backend for B {
+        fn read_input_byte(&mut self,o:u32,off:u32)->u8{let v=if off==0x14{self.input14}else{assert_eq!(off,9);self.input9};self.e.push(E::Read("ib",o+off,u32::from(v)));v}
+        fn write_input_byte(&mut self,o:u32,off:u32,v:u8){self.e.push(E::Write("ib",o+off,u32::from(v)))}
+        fn read_slot_word(&mut self,s:u32)->u32{self.e.push(E::Read("slot",s,self.slot_word));self.slot_word}
+        fn write_slot_word(&mut self,s:u32,v:u32){self.e.push(E::Write("slot",s,v))}
+        fn read_object_word(&mut self,o:u32,off:u32)->u32{assert_eq!(off,0x10);let v=self.object10.pop_front().unwrap();self.e.push(E::Read("ow",o+off,v));v}
+        fn write_object_word(&mut self,o:u32,off:u32,v:u32){self.e.push(E::Write("ow",o+off,v))}
+        fn read_object_byte(&mut self,o:u32,off:u32)->u8{assert_eq!(off,0x0B);let v=self.object0b.pop_front().unwrap();self.e.push(E::Read("ob",o+off,u32::from(v)));v}
+        fn write_object_byte(&mut self,o:u32,off:u32,v:u8){self.e.push(E::Write("ob",o+off,u32::from(v)))}
+        fn read_indirect_byte(&mut self,p:u32,off:u32)->u8{assert_eq!(off,2);self.e.push(E::Read("ib2",p+off,u32::from(self.indirect_byte)));self.indirect_byte}
+        fn read_indirect_halfword(&mut self,p:u32,off:u32)->u16{assert_eq!(off,2);self.e.push(E::Read("ih2",p+off,u32::from(self.indirect_half)));self.indirect_half}
+        fn read_state_byte(&mut self,s:u32,off:u32)->u8{assert_eq!(off,0x1A);let v=self.state1a_byte.pop_front().unwrap();self.e.push(E::Read("sb",s+off,u32::from(v)));v}
+        fn write_state_byte(&mut self,s:u32,off:u32,v:u8){self.e.push(E::Write("sb",s+off,u32::from(v)))}
+        fn read_state_halfword(&mut self,s:u32,off:u32)->u16{assert_eq!(off,0x1A);self.e.push(E::Read("sh",s+off,u32::from(self.state1a_half)));self.state1a_half}
+        fn write_state_halfword(&mut self,s:u32,off:u32,v:u16){self.e.push(E::Write("sh",s+off,u32::from(v)))}
+        fn boundary_1ee18(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage114Regs{self.e.push(E::Call("1ee18",a,b,c,d));Self::pop(&mut self.qresolve)}
+        fn boundary_b0460(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage114Regs{self.e.push(E::Call("b0460",a,b,c,d));Self::pop(&mut self.qdestroy)}
+    }
+
+    #[test]
+    fn resolver_and_unconditional_destroy_preserve_exact_live_args_and_final_r0(){
+        let mut b=B::default();
+        assert_eq!(bt_stage114_slot_rewrite(0x1000,0x3000,0x4000,0x44,&mut b),0xD00D);
+        assert!(b.e.contains(&E::Call("1ee18",0x14,0x3000,0x4000,0x44)));
+        assert!(b.e.contains(&E::Call("b0460",0xAAAA,0x11,0x22,0x33)));
+        assert!(b.e.contains(&E::Write("slot",0x3000,0x5000)));
+    }
+
+    #[test]
+    fn selector_0x40_inserts_ten_bit_byte_derived_field(){
+        let mut b=B::default();b.object0b=VecDeque::from([0x40,0]);
+        let _=bt_stage114_slot_rewrite(0x1000,0x3000,0x4000,0,&mut b);
+        let src=(u32::from(0xA5u8)>>3)&0x3FF;
+        let expected=((0xF007u32 & !(0x3FF<<3)) | (src<<3)) as u16;
+        assert!(b.e.contains(&E::Write("sh",0x401A,u32::from(expected))));
+    }
+
+    #[test]
+    fn selector_0x80_inserts_ten_bit_halfword_derived_field(){
+        let mut b=B::default();b.object0b=VecDeque::from([0x80,0]);
+        let _=bt_stage114_slot_rewrite(0x1000,0x3000,0x4000,0,&mut b);
+        let src=(u32::from(0x3456u16)>>3)&0x3FF;
+        let expected=((0xF007u32 & !(0x3FF<<3)) | (src<<3)) as u16;
+        assert!(b.e.contains(&E::Write("sh",0x401A,u32::from(expected))));
+    }
+
+    #[test]
+    fn other_selector_skips_halfword_field_but_still_rewrites_low_three_bits(){
+        let mut b=B::default();b.object0b=VecDeque::from([0xC0,0]);
+        let _=bt_stage114_slot_rewrite(0x1000,0x3000,0x4000,0,&mut b);
+        assert!(!b.e.iter().any(|e|matches!(e,E::Write("sh",..))));
+        assert!(b.e.contains(&E::Write("sb",0x401A,0xF1)));
+        assert!(b.e.contains(&E::Write("sb",0x401A,0xF7)));
+    }
+
+    #[test]
+    fn final_input_and_object_writes_are_exact(){
+        let mut b=B::default();b.object0b=VecDeque::from([0,0xC3]);b.input9=0xA4;
+        let _=bt_stage114_slot_rewrite(0x1000,0x3000,0x4000,0,&mut b);
+        assert!(b.e.contains(&E::Write("ib",0x1009,0xA5)));
+        assert!(b.e.contains(&E::Write("ob",0x200B,0xFC)));
+        assert!(b.e.contains(&E::Write("ow",0x2010,0)));
+        assert!(b.e.contains(&E::Write("sb",0x401D,2)));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!(STAGE114_CURRENT_BT_SLOT_REWRITE_ADDR,0x16DE9C);
+        assert_eq!(STAGE114_LEGACY_BT_SLOT_REWRITE_ADDR,0x16AED0);
+        assert_eq!(STAGE114_CURRENT_BODY_LEN,116);
+        assert_eq!(STAGE114_BT_RESOLVE_BOUNDARY,0x1EE18);
+        assert_eq!(STAGE114_BT_DESTROY_BOUNDARY,0xB0460);
+    }
+}
