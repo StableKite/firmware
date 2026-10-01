@@ -17862,3 +17862,572 @@ mod stage114_tests {
         assert_eq!(STAGE114_BT_DESTROY_BOUNDARY,0xB0460);
     }
 }
+pub const STAGE115_CURRENT_BT_SELECTOR_DISPATCH_ADDR: u32 = 0x0016_DF10;
+pub const STAGE115_LEGACY_BT_SELECTOR_DISPATCH_ADDR: u32 = 0x0016_AF44;
+pub const STAGE115_CURRENT_BODY_LEN: u32 = 450;
+pub const STAGE115_GLOBAL_WORD_ADDR: u32 = 0x0031_89DC;
+pub const STAGE115_CURRENT_STAGE114_TAIL_ADDR: u32 = 0x0016_DE9C;
+
+pub const STAGE115_BT_FIRST_BOUNDARY: u32 = 0x0003_35AC;
+pub const STAGE115_BT_RESOLVE_BOUNDARY: u32 = 0x0001_EE18;
+pub const STAGE115_BT_GATE_BOUNDARY: u32 = 0x0001_F3BC;
+pub const STAGE115_BT_DESTROY_TAIL: u32 = 0x000B_0460;
+pub const STAGE115_BT_FINAL_TAIL: u32 = 0x0001_F3E0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BtStage115Regs {
+    pub r0:u32, pub r1:u32, pub r2:u32, pub r3:u32,
+}
+
+pub trait BtStage115Backend {
+    fn read_byte(&mut self, addr:u32)->u8;
+    fn read_halfword(&mut self, addr:u32)->u16;
+    fn read_word(&mut self, addr:u32)->u32;
+    fn write_byte(&mut self, addr:u32, value:u8);
+    fn write_halfword(&mut self, addr:u32, value:u16);
+    fn write_word(&mut self, addr:u32, value:u32);
+
+    fn read_global_word_3189dc(&mut self)->u32;
+
+    fn boundary_335ac(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage115Regs;
+    fn boundary_1ee18(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage115Regs;
+    fn boundary_1f3bc(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage115Regs;
+
+    fn tail_stage114(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage115Regs;
+    fn tail_b0460(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage115Regs;
+    fn tail_1f3e0(&mut self,r0:u32,r1:u32,r2:u32,r3:u32)->BtStage115Regs;
+}
+
+fn bfi_u32(dst:u32, src:u32, lsb:u32, width:u32)->u32 {
+    let low_mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
+    let mask = low_mask << lsb;
+    (dst & !mask) | ((src & low_mask) << lsb)
+}
+
+fn selector4(byte:u8)->u32 {
+    (u32::from(byte) >> 2) & 0x0F
+}
+
+/// Exact register-state model of current `0x16DF10..0x16E0D2`.
+///
+/// This preserves the two entry opaque calls, the special state-byte shortcut,
+/// both true reads of global dword `0x3189DC`, the 16-entry TBB selector map,
+/// every path-dependent record initialization, and all three tail shapes.
+/// Direct tail to current Stage-114 entry `0x16DE9C` remains an explicit backend
+/// edge so Stage 115 does not assume higher-level semantics from its neighbor.
+pub fn bt_stage115_selector_dispatch<B: BtStage115Backend>(
+    input:u32,
+    ptr_pair:u32,
+    state:u32,
+    incoming_r3:u32,
+    backend:&mut B,
+)->u32 {
+    let input14_first = backend.read_byte(input.wrapping_add(0x14));
+    let mut regs = backend.boundary_335ac(
+        u32::from(input14_first), ptr_pair, state, incoming_r3
+    );
+    let saved_first_r0 = regs.r0;
+
+    let input14_second = backend.read_byte(input.wrapping_add(0x14));
+    regs.r0 = u32::from(input14_second);
+    regs = backend.boundary_1ee18(regs.r0, regs.r1, regs.r2, regs.r3);
+    let object = regs.r0;
+
+    let state1c = backend.read_byte(state.wrapping_add(0x1C));
+    regs.r3 = u32::from(state1c);
+    if state1c == 2 {
+        let state1d = backend.read_byte(state.wrapping_add(0x1D));
+        regs.r3 = u32::from(state1d);
+        if state1d == 2 || state1d == 4 {
+            let raw0b = backend.read_byte(object.wrapping_add(0x0B));
+            regs.r3 = u32::from(raw0b);
+            regs.r2 = selector4(raw0b);
+
+            if regs.r2 <= 2 {
+                regs.r2 = 3;
+                regs.r3 = bfi_u32(regs.r3, regs.r2, 2, 4);
+                backend.write_byte(object.wrapping_add(0x0B), regs.r3 as u8);
+                return backend.tail_1f3e0(
+                    object, saved_first_r0, regs.r2, regs.r3
+                ).r0;
+            }
+
+            if regs.r2 == 3 {
+                regs.r0 = object;
+                regs = backend.boundary_1f3bc(regs.r0, regs.r1, regs.r2, regs.r3);
+                if regs.r0 == 0 {
+                    return 0;
+                }
+                let fresh0b = backend.read_byte(object.wrapping_add(0x0B));
+                regs.r3 = u32::from(fresh0b | 0x3C);
+                backend.write_byte(object.wrapping_add(0x0B), regs.r3 as u8);
+                return regs.r0;
+            }
+
+            return object;
+        }
+    }
+
+    let input14_third = backend.read_byte(input.wrapping_add(0x14));
+    regs.r3 = u32::from(input14_third);
+    backend.write_byte(object.wrapping_add(0x0C), input14_third);
+
+    let first_a7 = backend.read_byte(saved_first_r0.wrapping_add(0xA7));
+    regs.r3 = u32::from(first_a7 & 0xE0);
+    let input0_for_mode = backend.read_byte(input);
+    regs.r2 = u32::from(input0_for_mode);
+
+    let mut raw0b = backend.read_byte(object.wrapping_add(0x0B));
+    regs.r3 = u32::from(raw0b);
+
+    let mode = if first_a7 & 0xE0 == 0x20 {
+        let n = (u32::from(input0_for_mode) >> 3) & 0x0F;
+        if n <= 9 { 1u32 } else { 2u32 }
+    } else {
+        let masked = u32::from(input0_for_mode) & 0x78;
+        if masked == 0x18 || masked == 0x48 { 1u32 } else { 2u32 }
+    };
+    regs.r2 = mode;
+    regs.r3 = bfi_u32(regs.r3, regs.r2, 6, 2);
+    backend.write_byte(object.wrapping_add(0x0B), regs.r3 as u8);
+
+    let dst1 = backend.read_word(ptr_pair.wrapping_add(4));
+    regs.r2 = dst1;
+    let global_first = backend.read_global_word_3189dc();
+    regs.r1 = global_first;
+    backend.write_byte(dst1, global_first as u8);
+
+    let global_second = backend.read_global_word_3189dc();
+    regs.r3 = global_second >> 8;
+    let dst0 = backend.read_word(ptr_pair);
+    regs.r2 = dst0;
+    backend.write_byte(dst0, regs.r3 as u8);
+
+    raw0b = backend.read_byte(object.wrapping_add(0x0B));
+    regs.r3 = selector4(raw0b);
+    let selector = regs.r3 as u8;
+
+    match selector {
+        0 | 1 => {
+            let word10 = backend.read_word(object.wrapping_add(0x10));
+            regs.r2 = word10;
+            if word10 != 0 {
+                regs.r0 = input;
+                regs.r1 = ptr_pair;
+                regs.r2 = state;
+                return backend.tail_stage114(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+
+            regs.r2 = u32::from(backend.read_byte(object.wrapping_add(0x0B)));
+            regs.r3 = (regs.r3.wrapping_add(1)) & 0x0F;
+            regs.r2 = bfi_u32(regs.r2, regs.r3, 2, 4);
+            backend.write_byte(object.wrapping_add(0x0B), regs.r2 as u8);
+
+            regs.r2 = 0x0C;
+            let record = object.wrapping_add(regs.r2.wrapping_mul(regs.r3));
+            regs.r3 = record;
+            let occupied = backend.read_word(record.wrapping_add(0x14));
+            regs.r2 = occupied;
+            if occupied != 0 {
+                regs.r0 = backend.read_word(ptr_pair);
+                return backend.tail_b0460(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+
+            backend.write_halfword(record.wrapping_add(0x18), 0);
+            let input0 = backend.read_byte(input);
+            regs.r2 = (u32::from(input0) >> 3) & 0x0F;
+            let old18 = backend.read_byte(record.wrapping_add(0x18));
+            regs.r0 = bfi_u32(u32::from(old18), regs.r2, 3, 4);
+            backend.write_byte(record.wrapping_add(0x18), regs.r0 as u8);
+
+            let input2 = backend.read_halfword(input.wrapping_add(2));
+            regs.r2 = u32::from(input2);
+            backend.write_halfword(record.wrapping_add(0x1A), input2);
+
+            let value0 = backend.read_word(ptr_pair);
+            regs.r2 = value0;
+            backend.write_word(record.wrapping_add(0x14), value0);
+
+            regs.r0 = object;
+            regs.r1 = saved_first_r0;
+            return backend.tail_1f3e0(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+        }
+
+        2 => {
+            let word10 = backend.read_word(object.wrapping_add(0x10));
+            regs.r3 = word10;
+            if word10 != 0 {
+                regs.r0 = input;
+                regs.r1 = ptr_pair;
+                regs.r2 = state;
+                return backend.tail_stage114(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+
+            let word20 = backend.read_word(object.wrapping_add(0x20));
+            regs.r2 = word20;
+            let word2c = backend.read_word(object.wrapping_add(0x2C));
+            regs.r3 = word2c;
+            if word20 == 0 {
+                if word2c != 0 {
+                    regs.r0 = backend.read_word(ptr_pair);
+                    return backend.tail_b0460(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+                }
+
+                backend.write_halfword(object.wrapping_add(0x24), 0);
+                let input0 = backend.read_byte(input);
+                regs.r3 = (u32::from(input0) >> 3) & 0x0F;
+                let old24 = backend.read_byte(object.wrapping_add(0x24));
+                regs.r2 = bfi_u32(u32::from(old24), regs.r3, 3, 4);
+                backend.write_byte(object.wrapping_add(0x24), regs.r2 as u8);
+
+                let input2 = backend.read_halfword(input.wrapping_add(2));
+                regs.r3 = u32::from(input2);
+                backend.write_halfword(object.wrapping_add(0x26), input2);
+
+                let value0 = backend.read_word(ptr_pair);
+                regs.r3 = value0;
+                backend.write_word(object.wrapping_add(0x20), value0);
+
+                regs.r2 = 1;
+                let fresh0b = backend.read_byte(object.wrapping_add(0x0B));
+                regs.r3 = bfi_u32(u32::from(fresh0b), regs.r2, 2, 4);
+                backend.write_byte(object.wrapping_add(0x0B), regs.r3 as u8);
+
+                regs.r0 = object;
+                regs.r1 = saved_first_r0;
+                return backend.tail_1f3e0(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+
+            if word2c != 0 {
+                regs.r0 = backend.read_word(ptr_pair);
+                return backend.tail_b0460(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+
+            backend.write_halfword(object.wrapping_add(0x30), 0);
+            let input0 = backend.read_byte(input);
+            regs.r3 = (u32::from(input0) >> 3) & 0x0F;
+            let old30 = backend.read_byte(object.wrapping_add(0x30));
+            regs.r2 = bfi_u32(u32::from(old30), regs.r3, 3, 4);
+            backend.write_byte(object.wrapping_add(0x30), regs.r2 as u8);
+
+            let input2 = backend.read_halfword(input.wrapping_add(2));
+            regs.r3 = u32::from(input2);
+            backend.write_halfword(object.wrapping_add(0x32), input2);
+
+            let value0 = backend.read_word(ptr_pair);
+            regs.r3 = value0;
+            backend.write_word(object.wrapping_add(0x2C), value0);
+
+            regs.r0 = object;
+            regs.r1 = saved_first_r0;
+            return backend.tail_1f3e0(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+        }
+
+        3 => {
+            regs.r0 = object;
+            regs = backend.boundary_1f3bc(regs.r0, regs.r1, regs.r2, regs.r3);
+            if regs.r0 == 0 {
+                regs.r0 = backend.read_word(ptr_pair);
+                return backend.tail_b0460(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+            }
+
+            regs.r2 = 0;
+            backend.write_halfword(object.wrapping_add(0x18), 0);
+
+            let input0 = backend.read_byte(input);
+            regs.r3 = (u32::from(input0) >> 3) & 0x0F;
+            let old18 = backend.read_byte(object.wrapping_add(0x18));
+            regs.r1 = bfi_u32(u32::from(old18), regs.r3, 3, 4);
+            backend.write_byte(object.wrapping_add(0x18), regs.r1 as u8);
+
+            let input2 = backend.read_halfword(input.wrapping_add(2));
+            regs.r3 = u32::from(input2);
+            backend.write_halfword(object.wrapping_add(0x1A), input2);
+
+            let value0 = backend.read_word(ptr_pair);
+            regs.r3 = value0;
+            backend.write_word(object.wrapping_add(0x14), value0);
+
+            let fresh0b = backend.read_byte(object.wrapping_add(0x0B));
+            regs.r3 = bfi_u32(u32::from(fresh0b), regs.r2, 2, 4);
+            backend.write_byte(object.wrapping_add(0x0B), regs.r3 as u8);
+
+            regs.r0 = object;
+            regs.r1 = saved_first_r0;
+            return backend.tail_1f3e0(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+        }
+
+        15 => {
+            let raw = backend.read_byte(object.wrapping_add(0x0B));
+            regs.r3 = bfi_u32(u32::from(raw), 0, 2, 4);
+            backend.write_byte(object.wrapping_add(0x0B), regs.r3 as u8);
+
+            backend.write_halfword(object.wrapping_add(0x18), 0);
+
+            let input0 = backend.read_byte(input);
+            regs.r3 = (u32::from(input0) >> 3) & 0x0F;
+            let old18 = backend.read_byte(object.wrapping_add(0x18));
+            regs.r2 = bfi_u32(u32::from(old18), regs.r3, 3, 4);
+            backend.write_byte(object.wrapping_add(0x18), regs.r2 as u8);
+
+            let input2 = backend.read_halfword(input.wrapping_add(2));
+            regs.r3 = u32::from(input2);
+            backend.write_halfword(object.wrapping_add(0x1A), input2);
+
+            let value0 = backend.read_word(ptr_pair);
+            regs.r3 = value0;
+            backend.write_word(object.wrapping_add(0x14), value0);
+
+            regs.r0 = object;
+            regs.r1 = saved_first_r0;
+            return backend.tail_1f3e0(regs.r0, regs.r1, regs.r2, regs.r3).r0;
+        }
+
+        4..=14 => object,
+        _ => object,
+    }
+}
+
+#[cfg(test)]
+mod stage115_tests {
+    use super::*;
+    use std::collections::{BTreeMap,VecDeque};
+    use std::vec::Vec;
+
+    #[derive(Clone,Debug,PartialEq,Eq)]
+    enum E {
+        R8(u32,u8),R16(u32,u16),R32(u32,u32),
+        W8(u32,u8),W16(u32,u16),W32(u32,u32),
+        G(u32),
+        Call(&'static str,u32,u32,u32,u32),
+    }
+
+    struct B {
+        b8:BTreeMap<u32,VecDeque<u8>>,
+        h16:BTreeMap<u32,VecDeque<u16>>,
+        w32:BTreeMap<u32,VecDeque<u32>>,
+        globals:VecDeque<u32>,
+        q335:VecDeque<BtStage115Regs>,
+        qresolve:VecDeque<BtStage115Regs>,
+        qgate:VecDeque<BtStage115Regs>,
+        qstage114:VecDeque<BtStage115Regs>,
+        qdestroy:VecDeque<BtStage115Regs>,
+        qfinal:VecDeque<BtStage115Regs>,
+        e:Vec<E>,
+    }
+
+    impl Default for B {
+        fn default()->Self {
+            let mut b=Self{
+                b8:BTreeMap::new(),h16:BTreeMap::new(),w32:BTreeMap::new(),
+                globals:VecDeque::from([0x11223344,0x11223344]),
+                q335:VecDeque::from([BtStage115Regs{r0:0x5000,r1:0x11,r2:0x22,r3:0x33}]),
+                qresolve:VecDeque::from([BtStage115Regs{r0:0x2000,r1:0x41,r2:0x42,r3:0x43}]),
+                qgate:VecDeque::from([BtStage115Regs{r0:1,r1:0x51,r2:0x52,r3:0x53}]),
+                qstage114:VecDeque::from([BtStage115Regs{r0:0x114,..Default::default()}]),
+                qdestroy:VecDeque::from([BtStage115Regs{r0:0xD00D,..Default::default()}]),
+                qfinal:VecDeque::from([BtStage115Regs{r0:0xF3E0,..Default::default()}]),
+                e:Vec::new(),
+            };
+            b.push8(0x1014,[0x14,0x14,0x14]);
+            b.push8(0x301C,[0]); b.push8(0x301D,[0]);
+            b.push8(0x50A7,[0x20]);
+            b.push8(0x1000,[0x18,0x18]);
+            b.push16(0x1002,[0x5678]);
+            b.push8(0x200B,[0,0,0]);
+            b.push32(0x4000,[0x6000,0x6000,0x6000]);
+            b.push32(0x4004,[0x6004]);
+            b
+        }
+    }
+    impl B{
+        fn push8<const N:usize>(&mut self,a:u32,v:[u8;N]){self.b8.insert(a,VecDeque::from(v));}
+        fn push16<const N:usize>(&mut self,a:u32,v:[u16;N]){self.h16.insert(a,VecDeque::from(v));}
+        fn push32<const N:usize>(&mut self,a:u32,v:[u32;N]){self.w32.insert(a,VecDeque::from(v));}
+        fn pop(q:&mut VecDeque<BtStage115Regs>)->BtStage115Regs{q.pop_front().unwrap()}
+    }
+    impl BtStage115Backend for B {
+        fn read_byte(&mut self,a:u32)->u8{let v=self.b8.get_mut(&a).unwrap_or_else(||panic!("no b8 {a:#x}")).pop_front().unwrap();self.e.push(E::R8(a,v));v}
+        fn read_halfword(&mut self,a:u32)->u16{let v=self.h16.get_mut(&a).unwrap_or_else(||panic!("no h16 {a:#x}")).pop_front().unwrap();self.e.push(E::R16(a,v));v}
+        fn read_word(&mut self,a:u32)->u32{let v=self.w32.get_mut(&a).unwrap_or_else(||panic!("no w32 {a:#x}")).pop_front().unwrap();self.e.push(E::R32(a,v));v}
+        fn write_byte(&mut self,a:u32,v:u8){self.e.push(E::W8(a,v))}
+        fn write_halfword(&mut self,a:u32,v:u16){self.e.push(E::W16(a,v))}
+        fn write_word(&mut self,a:u32,v:u32){self.e.push(E::W32(a,v))}
+        fn read_global_word_3189dc(&mut self)->u32{let v=self.globals.pop_front().unwrap();self.e.push(E::G(v));v}
+        fn boundary_335ac(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage115Regs{self.e.push(E::Call("335ac",a,b,c,d));Self::pop(&mut self.q335)}
+        fn boundary_1ee18(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage115Regs{self.e.push(E::Call("1ee18",a,b,c,d));Self::pop(&mut self.qresolve)}
+        fn boundary_1f3bc(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage115Regs{self.e.push(E::Call("1f3bc",a,b,c,d));Self::pop(&mut self.qgate)}
+        fn tail_stage114(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage115Regs{self.e.push(E::Call("stage114",a,b,c,d));Self::pop(&mut self.qstage114)}
+        fn tail_b0460(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage115Regs{self.e.push(E::Call("b0460",a,b,c,d));Self::pop(&mut self.qdestroy)}
+        fn tail_1f3e0(&mut self,a:u32,b:u32,c:u32,d:u32)->BtStage115Regs{self.e.push(E::Call("1f3e0",a,b,c,d));Self::pop(&mut self.qfinal)}
+    }
+
+    fn seed_common(b:&mut B, selector:u8) {
+        let raw=(selector & 0xF)<<2;
+        b.b8.insert(0x200B,VecDeque::from([0,raw|0x40,raw|0x40]));
+    }
+
+    #[test]
+    fn entry_boundaries_get_exact_args_and_special_selector_gt3_returns_object(){
+        let mut b=B::default();
+        b.b8.insert(0x301C,VecDeque::from([2]));b.b8.insert(0x301D,VecDeque::from([2]));
+        b.b8.insert(0x200B,VecDeque::from([4<<2]));
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0x99,&mut b),0x2000);
+        assert!(b.e.contains(&E::Call("335ac",0x14,0x4000,0x3000,0x99)));
+        assert!(b.e.contains(&E::Call("1ee18",0x14,0x11,0x22,0x33)));
+    }
+
+    #[test]
+    fn special_selector_le2_sets_three_and_tails_final(){
+        let mut b=B::default();
+        b.b8.insert(0x301C,VecDeque::from([2]));b.b8.insert(0x301D,VecDeque::from([4]));
+        b.b8.insert(0x200B,VecDeque::from([0x81]));
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b),0xF3E0);
+        let rewritten=(0x81u32 & !0x3C) | (3<<2);
+        assert!(b.e.contains(&E::W8(0x200B,rewritten as u8)));
+        assert!(b.e.contains(&E::Call("1f3e0",0x2000,0x5000,3,rewritten)));
+    }
+
+    #[test]
+    fn special_selector3_gate_zero_returns_zero_and_nonzero_sets_0x3c(){
+        let mut b=B::default();
+        b.b8.insert(0x301C,VecDeque::from([2]));b.b8.insert(0x301D,VecDeque::from([2]));
+        b.b8.insert(0x200B,VecDeque::from([3<<2]));
+        b.qgate=VecDeque::from([BtStage115Regs{r0:0,r1:1,r2:2,r3:3}]);
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b),0);
+
+        let mut b=B::default();
+        b.b8.insert(0x301C,VecDeque::from([2]));b.b8.insert(0x301D,VecDeque::from([2]));
+        b.b8.insert(0x200B,VecDeque::from([3<<2,0x80]));
+        b.qgate=VecDeque::from([BtStage115Regs{r0:7,r1:1,r2:2,r3:3}]);
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b),7);
+        assert!(b.e.contains(&E::W8(0x200B,0xBC)));
+    }
+
+    #[test]
+    fn common_prefix_rewrites_mode_and_copies_two_true_global_reads(){
+        let mut b=B::default(); seed_common(&mut b,4);
+        b.globals=VecDeque::from([0x11223344,0x55667788]);
+        let out=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert_eq!(out,0x2000);
+        assert!(b.e.contains(&E::W8(0x200C,0x14)));
+        assert!(b.e.contains(&E::W8(0x6004,0x44)));
+        assert!(b.e.contains(&E::W8(0x6000,0x77)));
+    }
+
+    #[test]
+    fn selector0_word10_nonzero_tails_stage114_with_selector_r3(){
+        let mut b=B::default(); seed_common(&mut b,0);
+        b.push32(0x2010,[9]);
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b),0x114);
+        assert!(b.e.contains(&E::Call("stage114",0x1000,0x4000,0x3000,0)));
+    }
+
+    #[test]
+    fn selector0_empty_next_record_initializes_and_tails_with_record_pointer(){
+        let mut b=B::default(); seed_common(&mut b,0);
+        b.push32(0x2010,[0]);
+        let rec=0x2000+0x0C;
+        b.push32(rec+0x14,[0]);
+        b.push8(rec+0x18,[0]);
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b),0xF3E0);
+        assert!(b.e.contains(&E::W16(rec+0x18,0)));
+        assert!(b.e.contains(&E::W16(rec+0x1A,0x5678)));
+        assert!(b.e.contains(&E::W32(rec+0x14,0x6000)));
+        assert!(b.e.contains(&E::Call("1f3e0",0x2000,0x5000,0x6000,rec)));
+    }
+
+    #[test]
+    fn selector0_occupied_record_tails_destroy_with_global_word_and_record_ptr(){
+        let mut b=B::default(); seed_common(&mut b,0);
+        b.push32(0x2010,[0]);
+        let rec=0x2000+0x0C;
+        b.push32(rec+0x14,[0xAABB]);
+        assert_eq!(bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b),0xD00D);
+        assert!(b.e.contains(&E::Call("b0460",0x6000,0x11223344,0xAABB,rec)));
+    }
+
+    #[test]
+    fn selector2_word10_nonzero_tails_stage114_with_word10_in_r3(){
+        let mut b=B::default(); seed_common(&mut b,2);
+        b.push32(0x2010,[0xABCD]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::Call("stage114",0x1000,0x4000,0x3000,0xABCD)));
+    }
+
+    #[test]
+    fn selector2_resource_pair_tail_and_first_record_initialization_are_exact(){
+        let mut b=B::default(); seed_common(&mut b,2);
+        b.push32(0x2010,[0]);b.push32(0x2020,[0x20]);b.push32(0x202C,[0x2C]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::Call("b0460",0x6000,0x11223344,0x20,0x2C)));
+
+        let mut b=B::default(); seed_common(&mut b,2);
+        b.push32(0x2010,[0]);b.push32(0x2020,[0]);b.push32(0x202C,[0]);
+        b.push8(0x2024,[0]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::W16(0x2024,0)));
+        assert!(b.e.contains(&E::W32(0x2020,0x6000)));
+        assert!(b.e.contains(&E::Call("1f3e0",0x2000,0x5000,1,0x44)));
+
+        let mut b=B::default(); seed_common(&mut b,2);
+        b.push32(0x2010,[0]);b.push32(0x2020,[0]);b.push32(0x202C,[0x2C]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::Call("b0460",0x6000,0x11223344,0,0x2C)));
+    }
+
+    #[test]
+    fn selector2_occupied_first_empty_second_initializes_second_record(){
+        let mut b=B::default(); seed_common(&mut b,2);
+        b.push32(0x2010,[0]);b.push32(0x2020,[0x20]);b.push32(0x202C,[0]);
+        b.push8(0x2030,[0]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::W16(0x2030,0)));
+        assert!(b.e.contains(&E::W16(0x2032,0x5678)));
+        assert!(b.e.contains(&E::W32(0x202C,0x6000)));
+        assert!(b.e.contains(&E::Call("1f3e0",0x2000,0x5000,0x18,0x6000)));
+    }
+
+    #[test]
+    fn selector3_gate_zero_tail_preserves_boundary_return_tuple(){
+        let mut b=B::default(); seed_common(&mut b,3);
+        b.qgate=VecDeque::from([BtStage115Regs{r0:0,r1:0xA1,r2:0xA2,r3:0xA3}]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::Call("1f3bc",0x2000,0x11223344,0x6000,3)));
+        assert!(b.e.contains(&E::Call("b0460",0x6000,0xA1,0xA2,0xA3)));
+    }
+
+    #[test]
+    fn selector3_gate_nonzero_initializes_selector0_and_tails_final(){
+        let mut b=B::default(); seed_common(&mut b,3);
+        b.qgate=VecDeque::from([BtStage115Regs{r0:1,r1:0xA1,r2:0xA2,r3:0xA3}]);
+        b.push8(0x2018,[0]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::W16(0x2018,0)));
+        assert!(b.e.contains(&E::W32(0x2014,0x6000)));
+        assert!(b.e.iter().any(|e|matches!(e,E::Call("1f3e0",0x2000,0x5000,0,_))));
+    }
+
+    #[test]
+    fn selector15_clears_selector_and_initializes_primary_record(){
+        let mut b=B::default(); seed_common(&mut b,15);
+        b.push8(0x2018,[0]);
+        let _=bt_stage115_selector_dispatch(0x1000,0x4000,0x3000,0,&mut b);
+        assert!(b.e.contains(&E::W16(0x2018,0)));
+        assert!(b.e.contains(&E::W32(0x2014,0x6000)));
+        assert!(b.e.iter().any(|e|matches!(e,E::Call("1f3e0",0x2000,0x5000,_,0x6000))));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!(STAGE115_CURRENT_BT_SELECTOR_DISPATCH_ADDR,0x16DF10);
+        assert_eq!(STAGE115_LEGACY_BT_SELECTOR_DISPATCH_ADDR,0x16AF44);
+        assert_eq!(STAGE115_CURRENT_BODY_LEN,450);
+        assert_eq!(STAGE115_GLOBAL_WORD_ADDR,0x3189DC);
+        assert_eq!(STAGE115_BT_FIRST_BOUNDARY,0x335AC);
+        assert_eq!(STAGE115_BT_RESOLVE_BOUNDARY,0x1EE18);
+        assert_eq!(STAGE115_BT_GATE_BOUNDARY,0x1F3BC);
+        assert_eq!(STAGE115_BT_DESTROY_TAIL,0xB0460);
+        assert_eq!(STAGE115_BT_FINAL_TAIL,0x1F3E0);
+    }
+}
