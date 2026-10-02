@@ -21672,3 +21672,422 @@ mod stage122_tests{
         assert_eq!((STAGE122_LITERAL_POOL_START,STAGE122_LITERAL_POOL_END,STAGE122_VENEER_START,STAGE122_VENEER_END,STAGE122_VENEER_POOL_START,STAGE122_VENEER_POOL_END,STAGE122_NEXT_PROLOGUE),(0x16f01c,0x16f050,0x16f050,0x16f058,0x16f058,0x16f060,0x16f060));
     }
 }
+
+pub const STAGE123_CURRENT_ADDR:u32=0x0016_F060;
+pub const STAGE123_LEGACY_ADDR:u32=0x0016_C094;
+pub const STAGE123_BODY_LEN:u32=318;
+pub const STAGE123_CURRENT_RAW_SHA256:&str="1c704c7c01ad3355ed63deccb3dda4e1eac16b77958dd198fce6c1a7dba651a4";
+pub const STAGE123_LEGACY_RAW_SHA256:&str="3960a00b15d9b93f081ed3d80feaec4de55cd2c4059dd17b89e081b2b13c4839";
+pub const STAGE123_NORMALIZED_SHA256:&str="3bd17327334daa7f63fc5b8e5cd424e8a16027e1b726484689e8dd5701e04045";
+pub const STAGE123_TRANSFER_OFFSETS:[u16;8]=[0x10,0x16,0x1e,0x4a,0x50,0x5a,0xfe,0x138];
+pub const STAGE123_DIRECT_TRANSFERS:[u32;8]=[0x282f0,0x2218c,0x27c50,0x386c8,0x17e2c,0x18548,0x29778,0x1d104];
+
+pub const STAGE123_G_202754:u32=0x0020_2754;
+pub const STAGE123_G_20798A:u32=0x0020_798A;
+pub const STAGE123_G_20277A:u32=0x0020_277A;
+pub const STAGE123_G_2079A0:u32=0x0020_79A0;
+pub const STAGE123_G_202752:u32=0x0020_2752;
+pub const STAGE123_G_20276E:u32=0x0020_276E;
+pub const STAGE123_G_221EEC:u32=0x0022_1EEC;
+pub const STAGE123_G_20798C:u32=0x0020_798C;
+pub const STAGE123_G_206F78:u32=0x0020_6F78;
+pub const STAGE123_LITERAL_VALUES:[u32;9]=[
+    STAGE123_G_202754,STAGE123_G_20798A,STAGE123_G_20277A,STAGE123_G_2079A0,
+    STAGE123_G_202752,STAGE123_G_20276E,STAGE123_G_221EEC,STAGE123_G_20798C,
+    STAGE123_G_206F78
+];
+
+pub const STAGE123_POST_NOP_START:u32=0x0016_F19E;
+pub const STAGE123_LITERAL_POOL_START:u32=0x0016_F1A0;
+pub const STAGE123_LITERAL_POOL_END:u32=0x0016_F1C4;
+pub const STAGE123_NEXT_PROLOGUE:u32=0x0016_F1C4;
+
+pub const STAGE123_CALL_282F0:u32=0x0002_82F0;
+pub const STAGE123_CALL_2218C:u32=0x0002_218C;
+pub const STAGE123_CALL_27C50:u32=0x0002_7C50;
+pub const STAGE123_CALL_386C8:u32=0x0003_86C8;
+pub const STAGE123_CALL_17E2C:u32=0x0001_7E2C;
+pub const STAGE123_CALL_18548:u32=0x0001_8548;
+pub const STAGE123_CALL_29778:u32=0x0002_9778;
+pub const STAGE123_TAIL_1D104:u32=0x0001_D104;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage123Regs{pub r0:u32,pub r1:u32,pub r2:u32,pub r3:u32}
+
+pub trait BtStage123Backend{
+    fn read8(&mut self,addr:u32)->u8;
+    fn read16(&mut self,addr:u32)->u16;
+    fn read32(&mut self,addr:u32)->u32;
+    fn write8(&mut self,addr:u32,value:u8);
+    fn write16(&mut self,addr:u32,value:u16);
+    fn call(&mut self,target:u32,regs:BtStage123Regs)->BtStage123Regs;
+}
+
+fn stage123_asr_reg(value:u32,shift_reg:u32)->u32{
+    let n=shift_reg&0xff;
+    if n==0{value}
+    else if n<32{((value as i32)>>n) as u32}
+    else if (value&0x8000_0000)!=0{u32::MAX}else{0}
+}
+fn stage123_lsl_reg(value:u32,shift_reg:u32)->u32{
+    let n=shift_reg&0xff;
+    if n==0{value}
+    else if n<32{value<<n}
+    else{0}
+}
+
+/// Exact current-HCD register/memory model for `0x16F060..0x16F19E`.
+///
+/// Opaque calls consume and return live R0-R3. Physical rereads stay distinct.
+/// Effective addresses/arithmetic wrap as u32, byte/halfword loads zero-extend,
+/// stores truncate to physical width, signed and unsigned comparisons stay distinct,
+/// and the final restored-register tail is opaque.
+pub fn bt_stage123_register_state<B:BtStage123Backend>(
+    incoming_r0:u32,incoming_r1:u32,incoming_r2:u32,incoming_r3:u32,backend:&mut B
+)->BtStage123Regs{
+    let mut regs=BtStage123Regs{r0:incoming_r0,r1:incoming_r1,r2:incoming_r2,r3:incoming_r3};
+    let saved_r3=incoming_r3;
+    let r7=STAGE123_G_202754;
+
+    regs.r3=u32::from(backend.read8(regs.r0.wrapping_add(0x43)));
+    let r6=backend.read32(regs.r0.wrapping_add(0x28));
+    let mut r5=u32::from(backend.read16(r7));
+    let r4=regs.r0;
+
+    if regs.r3!=0{
+        regs=backend.call(STAGE123_CALL_282F0,regs);
+    }
+
+    regs.r0=r4;
+    regs=backend.call(STAGE123_CALL_2218C,regs);
+    if regs.r0!=0{
+        regs.r0=r4;
+        regs=backend.call(STAGE123_CALL_27C50,regs);
+    }else{
+        regs.r3=u32::from(backend.read8(r4.wrapping_add(0x25)));
+        if regs.r3!=0{
+            regs.r3=u32::from(backend.read8(r4.wrapping_add(0x42)));
+            if regs.r3==1{
+                regs.r3=u32::from(backend.read16(r4.wrapping_add(0x38)));
+                backend.write16(r4.wrapping_add(0x20),regs.r3 as u16);
+                regs.r3=u32::from(backend.read16(r4.wrapping_add(0x3a)));
+            }else{
+                regs.r3=u32::from(backend.read16(r4.wrapping_add(0x34)));
+                backend.write16(r4.wrapping_add(0x20),regs.r3 as u16);
+                regs.r3=u32::from(backend.read16(r4.wrapping_add(0x36)));
+            }
+            backend.write16(r4.wrapping_add(0x22),regs.r3 as u16);
+        }
+    }
+
+    regs.r2=u32::from(backend.read8(r4.wrapping_add(0x24)));
+    regs.r1=u32::from(backend.read16(r4.wrapping_add(0x20)));
+    regs.r0=u32::from(backend.read16(r4.wrapping_add(0x22)));
+    regs=backend.call(STAGE123_CALL_386C8,regs);
+
+    regs.r0=u32::from(backend.read8(r4.wrapping_add(0x0e)));
+    regs=backend.call(STAGE123_CALL_17E2C,regs);
+    regs.r1=u32::from(backend.read16(r6.wrapping_add(0x108)));
+    regs.r0&=0xffff;
+    regs=backend.call(STAGE123_CALL_18548,regs);
+
+    regs.r3=STAGE123_G_20798A;
+    regs.r2=u32::from(backend.read16(regs.r3));
+    if regs.r2!=0{
+        regs.r3=u32::from(backend.read16(r6.wrapping_add(0x106)));
+        if regs.r2>=regs.r3{
+            regs.r2=STAGE123_G_20277A;
+            r5=u32::from(backend.read8(regs.r2));
+            regs.r3=stage123_asr_reg(regs.r3,r5);
+            r5=u32::from(backend.read16(r7));
+            if (regs.r3 as i32)>=(r5 as i32){
+                regs.r3=r5;
+            }
+            r5=regs.r3&0xffff;
+        }
+    }
+
+    let mut high=false;
+    regs.r3=u32::from(backend.read16(r7));
+    if regs.r3!=0 && regs.r0>=regs.r3{
+        high=true;
+    }else{
+        regs.r3=u32::from(backend.read8(STAGE123_G_2079A0));
+        if regs.r3!=0{
+            regs.r2=u32::from(backend.read16(r4.wrapping_add(0x22)));
+            regs.r3=regs.r2.wrapping_mul(regs.r3);
+            if regs.r0>=regs.r3{
+                high=true;
+            }
+        }
+        if !high && regs.r0>=r5{
+            high=true;
+        }
+    }
+
+    if high{
+        regs.r3=0x4c7e;
+        if regs.r0>regs.r3{
+            regs.r3=u32::from(backend.read8(r4.wrapping_add(0x4b)));
+            backend.write8(r4.wrapping_add(0x12),regs.r3 as u8);
+            regs.r3=0;
+        }else{
+            regs.r2=STAGE123_G_20277A;
+            regs.r3=u32::from(backend.read16(r6.wrapping_add(0x106)));
+            regs.r2=u32::from(backend.read8(regs.r2));
+            regs.r3=stage123_asr_reg(regs.r3,regs.r2);
+            regs.r2=if regs.r0>=regs.r3{0x89}else{0x70};
+            regs.r3=1;
+            backend.write8(r4.wrapping_add(0x12),regs.r2 as u8);
+        }
+        backend.write8(r4.wrapping_add(0x48),regs.r3 as u8);
+        regs.r3=0;
+        backend.write8(r4.wrapping_add(0x47),regs.r3 as u8);
+    }else{
+        regs.r3=u32::from(backend.read8(r4.wrapping_add(0x47)));
+        if regs.r3!=0{
+            regs.r3=regs.r3.wrapping_sub(1)&0xff;
+            backend.write8(r4.wrapping_add(0x47),regs.r3 as u8);
+            if regs.r3==0{
+                regs.r3=u32::from(backend.read8(r4.wrapping_add(0x4b)));
+            }else{
+                regs.r3=0x89;
+            }
+            backend.write8(r4.wrapping_add(0x12),regs.r3 as u8);
+        }else{
+            regs.r3=STAGE123_G_202752;
+            regs.r2=u32::from(backend.read8(r4.wrapping_add(0x49)));
+            regs.r3=u32::from(backend.read8(regs.r3));
+            let mut force_89=regs.r2>regs.r3;
+            let mut selected_written=false;
+            if !force_89{
+                regs.r2=u32::from(backend.read8(r4.wrapping_add(0x4a)));
+                if regs.r2>regs.r3{
+                    force_89=true;
+                }else{
+                    regs.r0=u32::from(backend.read8(r4.wrapping_add(0x0e)));
+                    regs=backend.call(STAGE123_CALL_29778,regs);
+                    if regs.r0!=0{
+                        force_89=true;
+                    }else{
+                        regs.r3=backend.read32(r4.wrapping_add(0x28));
+                        regs.r2=u32::from(backend.read8(regs.r3.wrapping_add(0xa4)));
+                        regs.r3=STAGE123_G_221EEC;
+                        regs.r1=backend.read32(regs.r3);
+                        regs.r3=1;
+                        regs.r1=backend.read32(regs.r1);
+                        regs.r3=stage123_lsl_reg(regs.r3,regs.r2);
+                        if (regs.r3&regs.r1)==0{
+                            regs.r3=u32::from(backend.read8(r4.wrapping_add(0x4b)));
+                        }else{
+                            regs.r3=STAGE123_G_20798C;
+                            regs.r3=u32::from(backend.read8(regs.r3.wrapping_add(regs.r2)));
+                            if regs.r3==0{
+                                regs.r3=u32::from(backend.read8(r4.wrapping_add(0x4b)));
+                            }
+                        }
+                        backend.write8(r4.wrapping_add(0x12),regs.r3 as u8);
+                        selected_written=true;
+                    }
+                }
+            }
+            if force_89{
+                regs.r3=0x89;
+                backend.write8(r4.wrapping_add(0x12),regs.r3 as u8);
+                regs.r3=STAGE123_G_20276E;
+                regs.r3=u32::from(backend.read8(regs.r3));
+                backend.write8(r4.wrapping_add(0x47),regs.r3 as u8);
+            }else if !selected_written{
+                unreachable!();
+            }
+        }
+    }
+
+    regs.r3=STAGE123_G_206F78;
+    regs.r3=u32::from(backend.read8(regs.r3.wrapping_add(0x0d)));
+    regs.r1=0;
+    backend.write8(r6.wrapping_add(0x11f),regs.r1 as u8);
+
+    if regs.r3!=0{
+        regs.r0=0x24;
+        regs.r3=saved_r3;
+        return backend.call(STAGE123_TAIL_1D104,regs);
+    }
+
+    regs.r3=saved_r3;
+    regs
+}
+
+#[cfg(test)]
+mod stage123_tests{
+    use super::*;
+    use std::collections::{BTreeMap,VecDeque};
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B{
+        mem:BTreeMap<u32,u8>,
+        q8:BTreeMap<u32,VecDeque<u8>>,
+        q16:BTreeMap<u32,VecDeque<u16>>,
+        q32:BTreeMap<u32,VecDeque<u32>>,
+        ret:BTreeMap<u32,VecDeque<BtStage123Regs>>,
+        calls:Vec<(u32,BtStage123Regs)>,
+        reads8:Vec<u32>,reads16:Vec<u32>,reads32:Vec<u32>,
+        writes8:Vec<(u32,u8)>,writes16:Vec<(u32,u16)>,
+    }
+    impl B{
+        fn set8(&mut self,a:u32,v:u8){self.mem.insert(a,v);}
+        fn set16(&mut self,a:u32,v:u16){for i in 0..2{self.set8(a.wrapping_add(i),((u32::from(v)>>(8*i))&0xff)as u8);}}
+        fn set32(&mut self,a:u32,v:u32){for i in 0..4{self.set8(a.wrapping_add(i),((v>>(8*i))&0xff)as u8);}}
+        fn get8(&self,a:u32)->u8{*self.mem.get(&a).unwrap_or(&0)}
+        fn get16(&self,a:u32)->u16{(0..2).fold(0u16,|v,i|v|(u16::from(self.get8(a.wrapping_add(i)))<<(8*i)))}
+        fn get32(&self,a:u32)->u32{(0..4).fold(0u32,|v,i|v|(u32::from(self.get8(a.wrapping_add(i)))<<(8*i)))}
+        fn qcall(&mut self,t:u32,r:BtStage123Regs){self.ret.entry(t).or_default().push_back(r);}
+    }
+    impl BtStage123Backend for B{
+        fn read8(&mut self,a:u32)->u8{self.reads8.push(a);if let Some(q)=self.q8.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get8(a)}
+        fn read16(&mut self,a:u32)->u16{self.reads16.push(a);if let Some(q)=self.q16.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get16(a)}
+        fn read32(&mut self,a:u32)->u32{self.reads32.push(a);if let Some(q)=self.q32.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get32(a)}
+        fn write8(&mut self,a:u32,v:u8){self.writes8.push((a,v));self.set8(a,v);}
+        fn write16(&mut self,a:u32,v:u16){self.writes16.push((a,v));self.set16(a,v);}
+        fn call(&mut self,t:u32,r:BtStage123Regs)->BtStage123Regs{self.calls.push((t,r));self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)}
+    }
+    fn q(b:&mut B,t:u32,r0:u32,r1:u32,r2:u32,r3:u32){b.qcall(t,BtStage123Regs{r0,r1,r2,r3});}
+
+    fn seed_after_gate(b:&mut B,r4:u32){
+        b.set32(r4+0x28,0x3000);
+        b.set16(STAGE123_G_202754,0);
+        q(b,STAGE123_CALL_2218C,1,0x21,0x22,0x23);
+        q(b,STAGE123_CALL_27C50,0x31,0x32,0x33,0x34);
+        b.set8(r4+0x24,3);b.set16(r4+0x20,4);b.set16(r4+0x22,5);
+        q(b,STAGE123_CALL_386C8,0x41,0x42,0x43,0x44);
+        b.set8(r4+0x0e,9);
+        q(b,STAGE123_CALL_17E2C,0x12345,0x52,0x53,0x54);
+        b.set16(0x3000+0x108,0x10);
+        q(b,STAGE123_CALL_18548,0,0x62,0x63,0x64);
+        b.set16(STAGE123_G_20798A,0);
+        b.set8(STAGE123_G_2079A0,0);
+        b.set16(0x3000+0x106,0);
+        b.set8(STAGE123_G_20277A,0);
+        b.set8(STAGE123_G_206F78+0x0d,0);
+    }
+
+    #[test]
+    fn conditional_first_call_and_nonzero_second_gate_preserve_live_inputs(){
+        let mut b=B::default();let r4=0x1000;seed_after_gate(&mut b,r4);
+        b.set8(r4+0x43,1);
+        q(&mut b,STAGE123_CALL_282F0,0xaa,0xa1,0xa2,0xa3);
+        let out=bt_stage123_register_state(r4,0x11,0x12,0x13,&mut b);
+        assert_eq!(b.calls[0],(STAGE123_CALL_282F0,BtStage123Regs{r0:r4,r1:0x11,r2:0x12,r3:1}));
+        assert_eq!(b.calls[1],(STAGE123_CALL_2218C,BtStage123Regs{r0:r4,r1:0xa1,r2:0xa2,r3:0xa3}));
+        assert_eq!(b.calls[2],(STAGE123_CALL_27C50,BtStage123Regs{r0:r4,r1:0x21,r2:0x22,r3:0x23}));
+        let c386=b.calls.iter().find(|x|x.0==STAGE123_CALL_386C8).unwrap().1;
+        assert_eq!(c386,BtStage123Regs{r0:5,r1:4,r2:3,r3:0x34});
+        assert_eq!(out.r3,0x13);
+        assert_eq!(out.r1,0);
+        assert!(b.writes8.contains(&(r4+0x12,0x89)));
+        assert!(b.writes8.contains(&(0x3000+0x11f,0)));
+    }
+
+    #[test]
+    fn zero_second_gate_copies_selected_halfwords_before_common_call(){
+        let mut b=B::default();let r4=0x1100;
+        b.set32(r4+0x28,0x3100);b.set16(STAGE123_G_202754,0);
+        q(&mut b,STAGE123_CALL_2218C,0,0x21,0x22,0x23);
+        b.set8(r4+0x25,1);b.set8(r4+0x42,1);
+        b.set16(r4+0x38,0x1111);b.set16(r4+0x3a,0x2222);b.set8(r4+0x24,0x33);
+        q(&mut b,STAGE123_CALL_386C8,1,2,3,4);b.set8(r4+0x0e,1);
+        q(&mut b,STAGE123_CALL_17E2C,2,3,4,5);b.set16(0x3100+0x108,6);
+        q(&mut b,STAGE123_CALL_18548,0,7,8,9);
+        b.set16(STAGE123_G_20798A,0);b.set8(STAGE123_G_2079A0,0);b.set16(0x3100+0x106,0);b.set8(STAGE123_G_20277A,0);b.set8(STAGE123_G_206F78+0x0d,0);
+        let _=bt_stage123_register_state(r4,0x10,0x20,0x30,&mut b);
+        assert_eq!(b.writes16,vec![(r4+0x20,0x1111),(r4+0x22,0x2222)]);
+        let c386=b.calls.iter().find(|x|x.0==STAGE123_CALL_386C8).unwrap().1;
+        assert_eq!(c386,BtStage123Regs{r0:0x2222,r1:0x1111,r2:0x33,r3:0x2222});
+    }
+
+    #[test]
+    fn threshold_path_physically_rereads_global_and_uses_register_shift_rules(){
+        let mut b=B::default();let r4=0x1200;b.set32(r4+0x28,0x3200);
+        b.q16.insert(STAGE123_G_202754,VecDeque::from([0x1111,0x2222,0]));
+        q(&mut b,STAGE123_CALL_2218C,1,1,2,3);q(&mut b,STAGE123_CALL_27C50,4,5,6,7);
+        b.set8(r4+0x24,1);b.set16(r4+0x20,2);b.set16(r4+0x22,3);q(&mut b,STAGE123_CALL_386C8,1,2,3,4);
+        b.set8(r4+0x0e,1);q(&mut b,STAGE123_CALL_17E2C,5,6,7,8);b.set16(0x3200+0x108,1);q(&mut b,STAGE123_CALL_18548,0,9,10,11);
+        b.set16(STAGE123_G_20798A,100);b.set16(0x3200+0x106,50);b.set8(STAGE123_G_20277A,32);b.set8(STAGE123_G_2079A0,0);b.set8(STAGE123_G_206F78+0x0d,0);
+        let _=bt_stage123_register_state(r4,2,3,4,&mut b);
+        assert_eq!(b.reads16.iter().filter(|&&a|a==STAGE123_G_202754).count(),3);
+        assert_eq!(stage123_asr_reg(0x8000_0000,32),u32::MAX);
+        assert_eq!(stage123_lsl_reg(1,32),0);
+    }
+
+    #[test]
+    fn large_high_path_copies_byte4b_and_clears_flags(){
+        let mut b=B::default();let r4=0x1300;b.set32(r4+0x28,0x3300);b.q16.insert(STAGE123_G_202754,VecDeque::from([100,0]));
+        q(&mut b,STAGE123_CALL_2218C,1,1,2,3);q(&mut b,STAGE123_CALL_27C50,4,5,6,7);
+        b.set8(r4+0x24,1);b.set16(r4+0x20,2);b.set16(r4+0x22,3);q(&mut b,STAGE123_CALL_386C8,1,2,3,4);
+        b.set8(r4+0x0e,1);q(&mut b,STAGE123_CALL_17E2C,5,6,7,8);b.set16(0x3300+0x108,1);q(&mut b,STAGE123_CALL_18548,0x5000,9,10,11);
+        b.set16(STAGE123_G_20798A,0);b.set8(STAGE123_G_2079A0,0);b.set8(r4+0x4b,0x66);b.set8(STAGE123_G_206F78+0x0d,0);
+        let _=bt_stage123_register_state(r4,2,3,4,&mut b);
+        assert!(b.writes8.windows(3).any(|w|w==[(r4+0x12,0x66),(r4+0x48,0),(r4+0x47,0)]));
+    }
+
+    #[test]
+    fn low_countdown_path_truncates_decrement_and_uses_byte4b_on_zero(){
+        let mut b=B::default();let r4=0x1400;b.set32(r4+0x28,0x3400);b.q16.insert(STAGE123_G_202754,VecDeque::from([100,0]));
+        q(&mut b,STAGE123_CALL_2218C,1,1,2,3);q(&mut b,STAGE123_CALL_27C50,4,5,6,7);
+        b.set8(r4+0x24,1);b.set16(r4+0x20,2);b.set16(r4+0x22,3);q(&mut b,STAGE123_CALL_386C8,1,2,3,4);
+        b.set8(r4+0x0e,1);q(&mut b,STAGE123_CALL_17E2C,5,6,7,8);b.set16(0x3400+0x108,1);q(&mut b,STAGE123_CALL_18548,50,9,0x77,11);
+        b.set16(STAGE123_G_20798A,0);b.set8(STAGE123_G_2079A0,0);b.set8(r4+0x47,1);b.set8(r4+0x4b,0x66);b.set8(STAGE123_G_206F78+0x0d,0);
+        let out=bt_stage123_register_state(r4,2,3,0x44,&mut b);
+        assert!(b.writes8.contains(&(r4+0x47,0)));
+        assert!(b.writes8.contains(&(r4+0x12,0x66)));
+        assert_eq!(out.r2,0);
+        assert_eq!(out.r3,0x44);
+    }
+
+    #[test]
+    fn low_pointer_table_path_uses_fresh_object_pointer_and_exact_29778_inputs(){
+        let mut b=B::default();let r4=0x1500;
+        b.q32.insert(r4+0x28,VecDeque::from([0x3500,0x4000]));
+        b.q16.insert(STAGE123_G_202754,VecDeque::from([100,0]));
+        q(&mut b,STAGE123_CALL_2218C,1,1,2,3);q(&mut b,STAGE123_CALL_27C50,4,5,6,7);
+        b.set8(r4+0x24,1);b.set16(r4+0x20,2);b.set16(r4+0x22,3);q(&mut b,STAGE123_CALL_386C8,1,2,3,4);
+        b.set8(r4+0x0e,9);q(&mut b,STAGE123_CALL_17E2C,5,6,7,8);b.set16(0x3500+0x108,1);q(&mut b,STAGE123_CALL_18548,50,0x91,0x92,0x93);
+        b.set16(STAGE123_G_20798A,0);b.set8(STAGE123_G_2079A0,0);b.set8(r4+0x47,0);
+        b.set8(STAGE123_G_202752,10);b.set8(r4+0x49,5);b.set8(r4+0x4a,6);
+        q(&mut b,STAGE123_CALL_29778,0,0xa1,0xa2,0xa3);
+        b.set8(0x4000+0xa4,2);b.set32(STAGE123_G_221EEC,0x5000);b.set32(0x5000,4);b.set8(STAGE123_G_20798C+2,0x77);
+        b.set8(STAGE123_G_206F78+0x0d,0);
+        let out=bt_stage123_register_state(r4,2,3,0x55,&mut b);
+        let c=b.calls.iter().find(|x|x.0==STAGE123_CALL_29778).unwrap().1;
+        assert_eq!(c,BtStage123Regs{r0:9,r1:0x91,r2:6,r3:10});
+        assert_eq!(b.reads32.iter().filter(|&&a|a==r4+0x28).count(),2);
+        assert!(b.writes8.contains(&(r4+0x12,0x77)));
+        assert_eq!(out.r2,2);
+        assert_eq!(out.r3,0x55);
+    }
+
+    #[test]
+    fn final_gate_restores_entry_r3_and_tail_calls_with_r0_24_r1_zero(){
+        let mut b=B::default();let r4=0x1600;seed_after_gate(&mut b,r4);
+        b.set8(STAGE123_G_206F78+0x0d,1);
+        q(&mut b,STAGE123_TAIL_1D104,0xa1,0xa2,0xa3,0xa4);
+        let out=bt_stage123_register_state(r4,0x11,0x12,0xfeed_beef,&mut b);
+        let tail=b.calls.last().unwrap();
+        assert_eq!(tail.0,STAGE123_TAIL_1D104);
+        assert_eq!(tail.1.r0,0x24);
+        assert_eq!(tail.1.r1,0);
+        assert_eq!(tail.1.r3,0xfeed_beef);
+        assert_eq!(out,BtStage123Regs{r0:0xa1,r1:0xa2,r2:0xa3,r3:0xa4});
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!((STAGE123_CURRENT_ADDR,STAGE123_LEGACY_ADDR,STAGE123_BODY_LEN),(0x16f060,0x16c094,318));
+        assert_eq!(STAGE123_TRANSFER_OFFSETS,[0x10,0x16,0x1e,0x4a,0x50,0x5a,0xfe,0x138]);
+        assert_eq!(STAGE123_DIRECT_TRANSFERS,[0x282f0,0x2218c,0x27c50,0x386c8,0x17e2c,0x18548,0x29778,0x1d104]);
+        assert_eq!(STAGE123_LITERAL_VALUES,[0x202754,0x20798a,0x20277a,0x2079a0,0x202752,0x20276e,0x221eec,0x20798c,0x206f78]);
+        assert_eq!((STAGE123_POST_NOP_START,STAGE123_LITERAL_POOL_START,STAGE123_LITERAL_POOL_END,STAGE123_NEXT_PROLOGUE),(0x16f19e,0x16f1a0,0x16f1c4,0x16f1c4));
+    }
+}
