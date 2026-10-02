@@ -21006,3 +21006,262 @@ mod stage120_tests{
         assert_eq!((STAGE120_POST_NOP_START,STAGE120_LITERAL_POOL_START,STAGE120_LITERAL_POOL_END,STAGE120_VENEER_START,STAGE120_VENEER_END,STAGE120_VENEER_POOL_START,STAGE120_VENEER_POOL_END,STAGE120_NEXT_PROLOGUE),(0x16EDA6,0x16EDA8,0x16EDE0,0x16EDE0,0x16EDEC,0x16EDEC,0x16EDF8,0x16EDF8));
     }
 }
+
+pub const STAGE121_CURRENT_ADDR:u32=0x0016_EDF8;
+pub const STAGE121_LEGACY_ADDR:u32=0x0016_BE2C;
+pub const STAGE121_BODY_LEN:u32=148;
+pub const STAGE121_CURRENT_RAW_SHA256:&str="16733956d6ce78f8ae80d377abc988e9751083faccb59b9e3a1e8c3f43331882";
+pub const STAGE121_NORMALIZED_SHA256:&str="52144a963f2dacc6853cb4ba0a8bbdb15b8a01a4c9a13033c97623c86db2ed9a";
+pub const STAGE121_TRANSFER_OFFSETS:[u16;2]=[0x22,0x66];
+pub const STAGE121_CALL_25144:u32=0x0002_5144;
+pub const STAGE121_CALL_3DB4:u32=0x0000_3DB4;
+pub const STAGE121_DIRECT_TRANSFERS:[u32;2]=[STAGE121_CALL_25144,STAGE121_CALL_3DB4];
+
+pub const STAGE121_G_ROOT:u32=0x0020_7A54;
+pub const STAGE121_G_STATUS:u32=0x0020_7A29;
+pub const STAGE121_PAIR_HI:u32=0x0031_8B2C;
+pub const STAGE121_MASK:u32=0x0044_0011;
+pub const STAGE121_COPY_SRC:u32=0x0020_7A44;
+pub const STAGE121_G_FLAGS:u32=0x0020_7A3C;
+pub const STAGE121_LITERAL_VALUES:[u32;6]=[
+    STAGE121_G_ROOT,STAGE121_G_STATUS,STAGE121_PAIR_HI,STAGE121_MASK,STAGE121_COPY_SRC,STAGE121_G_FLAGS
+];
+pub const STAGE121_LITERAL_POOL_START:u32=0x0016_EE8C;
+pub const STAGE121_LITERAL_POOL_END:u32=0x0016_EEA4;
+pub const STAGE121_NEXT_PROLOGUE:u32=0x0016_EEA4;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage121Regs{pub r0:u32,pub r1:u32,pub r2:u32,pub r3:u32}
+
+pub trait BtStage121Backend{
+    fn read8(&mut self,addr:u32)->u8;
+    fn read16(&mut self,addr:u32)->u16;
+    fn read32(&mut self,addr:u32)->u32;
+    fn write8(&mut self,addr:u32,value:u8);
+    fn write16(&mut self,addr:u32,value:u16);
+    fn call(&mut self,target:u32,regs:BtStage121Regs)->BtStage121Regs;
+}
+
+fn stage121_finish<B:BtStage121Backend>(
+    backend:&mut B,mut regs:BtStage121Regs,r8:u32,r7:u32,set_bit:bool
+)->BtStage121Regs{
+    if set_bit{
+        regs.r3=u32::from(backend.read8(r8.wrapping_add(0x17)));
+        regs.r3|=0x2;
+        backend.write8(r8.wrapping_add(0x17),regs.r3 as u8);
+        regs.r3=3;
+    }else{
+        regs.r3=u32::from(backend.read8(r8.wrapping_add(0x17)));
+        regs.r3&=!0x2;
+        backend.write8(r8.wrapping_add(0x17),regs.r3 as u8);
+        regs.r3=0;
+    }
+    backend.write8(r7,regs.r3 as u8);
+    regs
+}
+
+/// Exact current-HCD register/memory model for `0x16EDF8..0x16EE8C`.
+///
+/// Opaque calls receive and return the live caller-volatile R0-R3 tuple.
+/// Physical rereads remain explicit, addresses wrap as u32, byte/halfword
+/// truncation follows the machine, and the following literal pool is not executable.
+pub fn bt_stage121_register_state<B:BtStage121Backend>(
+    incoming_r0:u32,incoming_r1:u32,incoming_r2:u32,incoming_r3:u32,backend:&mut B
+)->BtStage121Regs{
+    let mut regs=BtStage121Regs{r0:incoming_r0,r1:incoming_r1,r2:incoming_r2,r3:incoming_r3};
+    let r6=STAGE121_G_ROOT;
+
+    regs.r3=backend.read32(r6);
+    if regs.r3==0{
+        return regs;
+    }
+
+    regs.r3=u32::from(backend.read8(regs.r0.wrapping_add(0x78)));
+    let r8=STAGE121_G_FLAGS;
+    let r7=STAGE121_G_STATUS;
+
+    if regs.r3==5{
+        return stage121_finish(backend,regs,r8,r7,false);
+    }
+
+    let mut r4=backend.read32(STAGE121_PAIR_HI);
+    let mut r5=backend.read32(STAGE121_PAIR_HI.wrapping_sub(4));
+    regs.r3=STAGE121_PAIR_HI;
+    regs=backend.call(STAGE121_CALL_25144,regs);
+
+    regs.r3=r5.wrapping_shl(13);
+    if (regs.r3 as i32)<0{
+        regs.r3=STAGE121_MASK;
+        regs.r3&=r4;
+        if regs.r3==0x0004_0000{
+            r5>>=3;
+            regs.r3=r5&0xf;
+            regs.r3=regs.r3.wrapping_sub(3);
+            let mut width:Option<u32>=None;
+            if regs.r3<=1{
+                regs.r3=backend.read32(r6);
+                width=Some((r4>>5)&0x1f);
+            }else{
+                r5&=0xb;
+                r5=r5.wrapping_sub(0xa);
+                if r5<=1{
+                    regs.r3=backend.read32(r6);
+                    width=Some((r4>>5)&0x1fff);
+                }
+            }
+            if let Some(mut value)=width{
+                if value>=0xf0{value=0xf0;}
+                backend.write16(regs.r3.wrapping_add(6),value as u16);
+            }
+        }
+    }
+
+    regs.r2=6;
+    regs.r1=STAGE121_COPY_SRC;
+    regs.r0=backend.read32(r6);
+    regs=backend.call(STAGE121_CALL_3DB4,regs);
+
+    regs.r3=backend.read32(r6);
+    regs.r3=u32::from(backend.read16(regs.r3.wrapping_add(6)));
+    let set_bit=regs.r3!=0;
+    stage121_finish(backend,regs,r8,r7,set_bit)
+}
+
+#[cfg(test)]
+mod stage121_tests{
+    use super::*;
+    use std::collections::{BTreeMap,VecDeque};
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B{
+        mem:BTreeMap<u32,u8>,
+        q8:BTreeMap<u32,VecDeque<u8>>,
+        q16:BTreeMap<u32,VecDeque<u16>>,
+        q32:BTreeMap<u32,VecDeque<u32>>,
+        ret:BTreeMap<u32,VecDeque<BtStage121Regs>>,
+        calls:Vec<(u32,BtStage121Regs)>,
+        reads8:Vec<u32>,reads16:Vec<u32>,reads32:Vec<u32>,
+        writes8:Vec<(u32,u8)>,writes16:Vec<(u32,u16)>,
+    }
+    impl B{
+        fn set8(&mut self,a:u32,v:u8){self.mem.insert(a,v);}
+        fn set16(&mut self,a:u32,v:u16){for i in 0..2{self.set8(a.wrapping_add(i),((u32::from(v)>>(8*i))&0xff)as u8);}}
+        fn set32(&mut self,a:u32,v:u32){for i in 0..4{self.set8(a.wrapping_add(i),((v>>(8*i))&0xff)as u8);}}
+        fn get8(&self,a:u32)->u8{*self.mem.get(&a).unwrap_or(&0)}
+        fn get16(&self,a:u32)->u16{(0..2).fold(0u16,|v,i|v|(u16::from(self.get8(a.wrapping_add(i)))<<(8*i)))}
+        fn get32(&self,a:u32)->u32{(0..4).fold(0u32,|v,i|v|(u32::from(self.get8(a.wrapping_add(i)))<<(8*i)))}
+        fn qcall(&mut self,t:u32,r:BtStage121Regs){self.ret.entry(t).or_default().push_back(r);}
+    }
+    impl BtStage121Backend for B{
+        fn read8(&mut self,a:u32)->u8{self.reads8.push(a);if let Some(q)=self.q8.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get8(a)}
+        fn read16(&mut self,a:u32)->u16{self.reads16.push(a);if let Some(q)=self.q16.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get16(a)}
+        fn read32(&mut self,a:u32)->u32{self.reads32.push(a);if let Some(q)=self.q32.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get32(a)}
+        fn write8(&mut self,a:u32,v:u8){self.writes8.push((a,v));self.set8(a,v);}
+        fn write16(&mut self,a:u32,v:u16){self.writes16.push((a,v));self.set16(a,v);}
+        fn call(&mut self,t:u32,r:BtStage121Regs)->BtStage121Regs{self.calls.push((t,r));self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)}
+    }
+
+    fn seed_common(b:&mut B,input:u32,root:u32){
+        b.set32(STAGE121_G_ROOT,root);
+        b.set8(input.wrapping_add(0x78),1);
+        b.set32(STAGE121_PAIR_HI,0x0004_0000);
+        b.set32(STAGE121_PAIR_HI-4,0);
+        b.set8(STAGE121_G_FLAGS+0x17,0x81);
+        b.set16(root+6,1);
+    }
+
+    #[test]
+    fn zero_root_returns_incoming_r0_r2_and_zero_r3_without_calls(){
+        let mut b=B::default(); b.set32(STAGE121_G_ROOT,0);
+        let out=bt_stage121_register_state(0x10,0x11,0x12,0x13,&mut b);
+        assert_eq!(out,BtStage121Regs{r0:0x10,r1:0x11,r2:0x12,r3:0});
+        assert!(b.calls.is_empty()); assert_eq!(b.reads32,vec![STAGE121_G_ROOT]);
+    }
+
+    #[test]
+    fn type_five_clears_bit_one_and_status_without_calls(){
+        let mut b=B::default();let input=0x1000;let root=0x2000;seed_common(&mut b,input,root);
+        b.set8(input+0x78,5);b.set8(STAGE121_G_FLAGS+0x17,0xff);
+        let out=bt_stage121_register_state(input,2,3,4,&mut b);
+        assert_eq!(out,BtStage121Regs{r0:input,r1:2,r2:3,r3:0});
+        assert_eq!(b.writes8,vec![(STAGE121_G_FLAGS+0x17,0xfd),(STAGE121_G_STATUS,0)]);
+        assert!(b.calls.is_empty());
+    }
+
+    #[test]
+    fn bit18_clear_skips_config_and_preserves_live_r3_into_copy_call(){
+        let mut b=B::default();let input=0x1100;let root=0x2100;seed_common(&mut b,input,root);
+        b.set32(STAGE121_PAIR_HI-4,0x1234);
+        b.qcall(STAGE121_CALL_25144,BtStage121Regs{r0:0xaa,r1:0xbb,r2:0xcc,r3:0xdd});
+        b.qcall(STAGE121_CALL_3DB4,BtStage121Regs{r0:0x31,r1:0x32,r2:0x33,r3:0x34});
+        let out=bt_stage121_register_state(input,0x21,0x22,0x23,&mut b);
+        assert_eq!(b.calls[0],(STAGE121_CALL_25144,BtStage121Regs{r0:input,r1:0x21,r2:0x22,r3:STAGE121_PAIR_HI}));
+        assert_eq!(b.calls[1],(STAGE121_CALL_3DB4,BtStage121Regs{r0:root,r1:STAGE121_COPY_SRC,r2:6,r3:0x1234u32<<13}));
+        assert_eq!(out,BtStage121Regs{r0:0x31,r1:0x32,r2:0x33,r3:3});
+        assert!(b.writes16.is_empty());
+        assert_eq!(b.get8(STAGE121_G_FLAGS+0x17),0x83);assert_eq!(b.get8(STAGE121_G_STATUS),3);
+    }
+
+    #[test]
+    fn primary_extract_uses_fresh_root_and_writes_five_bit_value(){
+        let mut b=B::default();let input=0x1200;seed_common(&mut b,input,0x2200);
+        b.set32(STAGE121_PAIR_HI,0x0004_03c0);
+        b.set32(STAGE121_PAIR_HI-4,0x0004_0018);
+        b.q32.insert(STAGE121_G_ROOT,VecDeque::from([0x2200,0x2300,0x2400,0x2500]));
+        b.set16(0x2506,1);
+        b.qcall(STAGE121_CALL_25144,BtStage121Regs{r0:1,r1:2,r2:3,r3:4});
+        b.qcall(STAGE121_CALL_3DB4,BtStage121Regs{r0:5,r1:6,r2:7,r3:8});
+        let _=bt_stage121_register_state(input,9,10,11,&mut b);
+        assert_eq!(b.writes16,vec![(0x2306,0x1e)]);
+        assert_eq!(b.calls[1].1,BtStage121Regs{r0:0x2400,r1:STAGE121_COPY_SRC,r2:6,r3:0x2300});
+        assert_eq!(b.reads32.iter().filter(|&&a|a==STAGE121_G_ROOT).count(),4);
+    }
+
+    #[test]
+    fn secondary_extract_clamps_thirteen_bit_value_to_f0(){
+        let mut b=B::default();let input=0x1300;let root=0x2600;seed_common(&mut b,input,root);
+        b.set32(STAGE121_PAIR_HI,0x0004_3fe0);
+        b.set32(STAGE121_PAIR_HI-4,0x0004_0050);
+        b.qcall(STAGE121_CALL_25144,BtStage121Regs{r0:1,r1:2,r2:3,r3:4});
+        b.qcall(STAGE121_CALL_3DB4,BtStage121Regs{r0:5,r1:6,r2:7,r3:8});
+        let _=bt_stage121_register_state(input,9,10,11,&mut b);
+        assert_eq!(b.writes16,vec![(root+6,0xf0)]);
+    }
+
+    #[test]
+    fn mask_mismatch_skips_write_and_passes_masked_r3_to_copy_call(){
+        let mut b=B::default();let input=0x1400;let root=0x2700;seed_common(&mut b,input,root);
+        b.set32(STAGE121_PAIR_HI,0x0044_0011);
+        b.set32(STAGE121_PAIR_HI-4,0x0004_0000);
+        b.qcall(STAGE121_CALL_25144,BtStage121Regs{r0:1,r1:2,r2:3,r3:4});
+        b.qcall(STAGE121_CALL_3DB4,BtStage121Regs{r0:5,r1:6,r2:7,r3:8});
+        let _=bt_stage121_register_state(input,9,10,11,&mut b);
+        assert!(b.writes16.is_empty());
+        assert_eq!(b.calls[1].1.r3,STAGE121_MASK);
+    }
+
+    #[test]
+    fn postcall_zero_halfword_clears_bit_one_and_returns_call_r0_r2(){
+        let mut b=B::default();let input=0x1500;let root=0x2800;seed_common(&mut b,input,root);
+        b.set32(STAGE121_PAIR_HI-4,0);
+        b.set16(root+6,0);b.set8(STAGE121_G_FLAGS+0x17,0xff);
+        b.qcall(STAGE121_CALL_25144,BtStage121Regs{r0:1,r1:2,r2:3,r3:4});
+        b.qcall(STAGE121_CALL_3DB4,BtStage121Regs{r0:0xa1,r1:0xa2,r2:0xa3,r3:0xa4});
+        let out=bt_stage121_register_state(input,9,10,11,&mut b);
+        assert_eq!(out,BtStage121Regs{r0:0xa1,r1:0xa2,r2:0xa3,r3:0});
+        assert_eq!(b.get8(STAGE121_G_FLAGS+0x17),0xfd);assert_eq!(b.get8(STAGE121_G_STATUS),0);
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!(STAGE121_CURRENT_ADDR,0x16EDF8);
+        assert_eq!(STAGE121_LEGACY_ADDR,0x16BE2C);
+        assert_eq!(STAGE121_BODY_LEN,148);
+        assert_eq!(STAGE121_TRANSFER_OFFSETS,[0x22,0x66]);
+        assert_eq!(STAGE121_DIRECT_TRANSFERS,[0x25144,0x3db4]);
+        assert_eq!(STAGE121_LITERAL_VALUES,[0x207a54,0x207a29,0x318b2c,0x440011,0x207a44,0x207a3c]);
+        assert_eq!((STAGE121_LITERAL_POOL_START,STAGE121_LITERAL_POOL_END,STAGE121_NEXT_PROLOGUE),(0x16EE8C,0x16EEA4,0x16EEA4));
+    }
+}
