@@ -20389,3 +20389,191 @@ mod stage118_tests{
         assert!(s.contains(&STAGE118_TAIL_221AC));
     }
 }
+
+pub const STAGE119_CURRENT_ADDR:u32=0x0016_EBA4;
+pub const STAGE119_LEGACY_ADDR:u32=0x0016_BBD8;
+pub const STAGE119_BODY_LEN:u32=64;
+pub const STAGE119_CURRENT_RAW_SHA256:&str="eb6364d7f626b41ac2b70b26bb48e51022b9a2e559157f21e596e49bbc6081cd";
+pub const STAGE119_NORMALIZED_SHA256:&str="a269e71c19c88a27158cb592e954183b4824ed7bd0b956ce96503cb5551e7670";
+pub const STAGE119_TRANSFER_OFFSETS:[u16;3]=[0x08,0x16,0x20];
+pub const STAGE119_LITERAL_POOL_START:u32=0x0016_EBE4;
+pub const STAGE119_LITERAL_POOL_END:u32=0x0016_EBEC;
+pub const STAGE119_NEXT_PROLOGUE:u32=0x0016_EBEC;
+
+pub const STAGE119_CALL_338FC:u32=0x0003_38FC;
+pub const STAGE119_CALL_4D552:u32=0x0004_D552;
+pub const STAGE119_CALL_18540:u32=0x0001_8540;
+pub const STAGE119_G_221EDC:u32=0x0022_1EDC;
+pub const STAGE119_G_221EE0:u32=0x0022_1EE0;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage119Regs{pub r0:u32,pub r1:u32,pub r2:u32,pub r3:u32}
+
+pub trait BtStage119Backend{
+    fn read8(&mut self,addr:u32)->u8;
+    fn read32(&mut self,addr:u32)->u32;
+    fn call(&mut self,target:u32,regs:BtStage119Regs)->BtStage119Regs;
+}
+
+/// Exact current-HCD register/memory model for `0x16EBA4..0x16EBE4`.
+///
+/// The model preserves caller-volatile R0-R3 across all three opaque calls,
+/// performs the second state+0xA4 read freshly, applies the exact 28-bit mask
+/// to the dword loaded through the returned object pointer, and preserves the
+/// firmware's unsigned lower/upper bound comparisons and conditional second
+/// global read.
+pub fn bt_stage119_register_state<B:BtStage119Backend>(
+    state:u32,incoming_r1:u32,incoming_r2:u32,incoming_r3:u32,backend:&mut B
+)->u32{
+    let mut regs=BtStage119Regs{
+        r0:u32::from(backend.read8(state.wrapping_add(0xa4))),
+        r1:incoming_r1,
+        r2:incoming_r2,
+        r3:incoming_r3,
+    };
+    regs=backend.call(STAGE119_CALL_338FC,regs);
+    if regs.r0==0{return 0;}
+
+    let r4=backend.read32(regs.r0);
+    if r4!=0{
+        regs.r0=u32::from(backend.read8(state.wrapping_add(0xa4)));
+        regs=backend.call(STAGE119_CALL_4D552,regs);
+        regs.r1=backend.read32(r4.wrapping_add(0x0c))&0x0fff_ffff;
+        regs=backend.call(STAGE119_CALL_18540,regs);
+    }else{
+        regs.r0=r4;
+    }
+
+    regs.r3=backend.read32(STAGE119_G_221EDC);
+    if regs.r0<=regs.r3{return 0;}
+    regs.r3=backend.read32(STAGE119_G_221EE0);
+    if regs.r0<regs.r3{1}else{0}
+}
+
+#[cfg(test)]
+mod stage119_tests{
+    use super::*;
+    use std::collections::{BTreeMap,VecDeque};
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B{
+        mem:BTreeMap<u32,u8>,
+        read8q:BTreeMap<u32,VecDeque<u8>>,
+        read32q:BTreeMap<u32,VecDeque<u32>>,
+        ret:BTreeMap<u32,VecDeque<BtStage119Regs>>,
+        calls:Vec<(u32,BtStage119Regs)>,
+        reads32:Vec<u32>,
+    }
+    impl B{
+        fn set8(&mut self,a:u32,v:u8){self.mem.insert(a,v);}
+        fn set32(&mut self,a:u32,v:u32){for i in 0..4{self.set8(a.wrapping_add(i),((v>>(8*i))&0xff) as u8);}}
+        fn get8(&self,a:u32)->u8{*self.mem.get(&a).unwrap_or(&0)}
+        fn get32(&self,a:u32)->u32{(0..4).fold(0u32,|v,i|v|(u32::from(self.get8(a.wrapping_add(i)))<<(8*i)))}
+        fn q(&mut self,t:u32,r:BtStage119Regs){self.ret.entry(t).or_default().push_back(r);}
+        fn q8(&mut self,a:u32,vals:&[u8]){let q=self.read8q.entry(a).or_default();for &v in vals{q.push_back(v);}}
+        fn q32(&mut self,a:u32,vals:&[u32]){let q=self.read32q.entry(a).or_default();for &v in vals{q.push_back(v);}}
+    }
+    impl BtStage119Backend for B{
+        fn read8(&mut self,a:u32)->u8{
+            if let Some(q)=self.read8q.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}
+            self.get8(a)
+        }
+        fn read32(&mut self,a:u32)->u32{
+            self.reads32.push(a);
+            if let Some(q)=self.read32q.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}
+            self.get32(a)
+        }
+        fn call(&mut self,t:u32,r:BtStage119Regs)->BtStage119Regs{
+            self.calls.push((t,r));
+            self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)
+        }
+    }
+
+    fn base(b:&mut B,state:u32,objref:u32,obj:u32){
+        b.set8(state+0xa4,3);
+        b.set32(objref,obj);
+        b.set32(obj+0x0c,0xf234_5678);
+        b.set32(STAGE119_G_221EDC,0x1000);
+        b.set32(STAGE119_G_221EE0,0x2000);
+        b.q(STAGE119_CALL_338FC,BtStage119Regs{r0:objref,r1:0x11,r2:0x22,r3:0x33});
+    }
+
+    #[test]
+    fn zero_338fc_returns_immediately_and_reads_no_globals(){
+        let state=0x200000;let mut b=B::default();b.set8(state+0xa4,7);
+        b.q(STAGE119_CALL_338FC,BtStage119Regs{r0:0,r1:9,r2:8,r3:7});
+        assert_eq!(bt_stage119_register_state(state,1,2,3,&mut b),0);
+        assert_eq!(b.calls,vec![(STAGE119_CALL_338FC,BtStage119Regs{r0:7,r1:1,r2:2,r3:3})]);
+        assert!(b.reads32.is_empty());
+    }
+
+    #[test]
+    fn zero_object_field_preserves_no_extra_calls_and_short_circuits_high_global(){
+        let state=0x210000;let objref=0x300000;let mut b=B::default();
+        b.set8(state+0xa4,3);b.set32(objref,0);b.set32(STAGE119_G_221EDC,0);
+        b.q(STAGE119_CALL_338FC,BtStage119Regs{r0:objref,r1:0xaa,r2:0xbb,r3:0xcc});
+        assert_eq!(bt_stage119_register_state(state,1,2,3,&mut b),0);
+        assert_eq!(b.calls.len(),1);
+        assert_eq!(b.reads32,vec![objref,STAGE119_G_221EDC]);
+    }
+
+    #[test]
+    fn fresh_state_a4_and_exact_live_call_tuples_are_preserved(){
+        let state=0x220000;let objref=0x310000;let obj=0x320000;let mut b=B::default();base(&mut b,state,objref,obj);
+        b.q8(state+0xa4,&[3,9]);
+        b.ret.get_mut(&STAGE119_CALL_338FC).unwrap().clear();
+        b.q(STAGE119_CALL_338FC,BtStage119Regs{r0:objref,r1:0xa1,r2:0xa2,r3:0xa3});
+        b.q(STAGE119_CALL_4D552,BtStage119Regs{r0:0x1800,r1:0xb1,r2:0xb2,r3:0xb3});
+        b.q(STAGE119_CALL_18540,BtStage119Regs{r0:0x1800,r1:0xc1,r2:0xc2,r3:0xc3});
+        assert_eq!(bt_stage119_register_state(state,0x11,0x22,0x33,&mut b),1);
+        assert_eq!(b.calls[0],(STAGE119_CALL_338FC,BtStage119Regs{r0:3,r1:0x11,r2:0x22,r3:0x33}));
+        assert_eq!(b.calls[1],(STAGE119_CALL_4D552,BtStage119Regs{r0:9,r1:0xa1,r2:0xa2,r3:0xa3}));
+        assert_eq!(b.calls[2],(STAGE119_CALL_18540,BtStage119Regs{r0:0x1800,r1:0x0234_5678,r2:0xb2,r3:0xb3}));
+    }
+
+    #[test]
+    fn lower_bound_equality_is_zero_and_skips_upper_read(){
+        let state=0x230000;let objref=0x330000;let obj=0x340000;let mut b=B::default();base(&mut b,state,objref,obj);
+        b.q(STAGE119_CALL_4D552,BtStage119Regs{r0:0x1000,..Default::default()});
+        b.q(STAGE119_CALL_18540,BtStage119Regs{r0:0x1000,..Default::default()});
+        assert_eq!(bt_stage119_register_state(state,0,0,0,&mut b),0);
+        assert!(b.reads32.contains(&STAGE119_G_221EDC));
+        assert!(!b.reads32.contains(&STAGE119_G_221EE0));
+    }
+
+    #[test]
+    fn strict_inside_range_returns_one_and_reads_both_bounds(){
+        let state=0x240000;let objref=0x350000;let obj=0x360000;let mut b=B::default();base(&mut b,state,objref,obj);
+        b.q(STAGE119_CALL_4D552,BtStage119Regs{r0:0x1800,..Default::default()});
+        b.q(STAGE119_CALL_18540,BtStage119Regs{r0:0x1800,..Default::default()});
+        assert_eq!(bt_stage119_register_state(state,0,0,0,&mut b),1);
+        assert!(b.reads32.contains(&STAGE119_G_221EDC));assert!(b.reads32.contains(&STAGE119_G_221EE0));
+    }
+
+    #[test]
+    fn upper_bound_equality_is_zero(){
+        let state=0x250000;let objref=0x370000;let obj=0x380000;let mut b=B::default();base(&mut b,state,objref,obj);
+        b.q(STAGE119_CALL_4D552,BtStage119Regs{r0:0x2000,..Default::default()});
+        b.q(STAGE119_CALL_18540,BtStage119Regs{r0:0x2000,..Default::default()});
+        assert_eq!(bt_stage119_register_state(state,0,0,0,&mut b),0);
+    }
+
+    #[test]
+    fn comparisons_are_unsigned(){
+        let state=0x260000;let objref=0x390000;let obj=0x3a0000;let mut b=B::default();base(&mut b,state,objref,obj);
+        b.set32(STAGE119_G_221EDC,0x8000_0000);b.set32(STAGE119_G_221EE0,0xf000_0000);
+        b.q(STAGE119_CALL_4D552,BtStage119Regs{r0:0x9000_0000,..Default::default()});
+        b.q(STAGE119_CALL_18540,BtStage119Regs{r0:0x9000_0000,..Default::default()});
+        assert_eq!(bt_stage119_register_state(state,0,0,0,&mut b),1);
+    }
+
+    #[test]
+    fn provenance_transfer_windows_and_literals_are_exact(){
+        assert_eq!(STAGE119_CURRENT_ADDR,0x16EBA4);assert_eq!(STAGE119_LEGACY_ADDR,0x16BBD8);assert_eq!(STAGE119_BODY_LEN,64);
+        assert_eq!(STAGE119_TRANSFER_OFFSETS,[0x08,0x16,0x20]);
+        assert_eq!((STAGE119_LITERAL_POOL_START,STAGE119_LITERAL_POOL_END,STAGE119_NEXT_PROLOGUE),(0x16EBE4,0x16EBEC,0x16EBEC));
+        assert_eq!((STAGE119_G_221EDC,STAGE119_G_221EE0),(0x221EDC,0x221EE0));
+    }
+}
