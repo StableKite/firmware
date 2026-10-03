@@ -22091,3 +22091,210 @@ mod stage123_tests{
         assert_eq!((STAGE123_POST_NOP_START,STAGE123_LITERAL_POOL_START,STAGE123_LITERAL_POOL_END,STAGE123_NEXT_PROLOGUE),(0x16f19e,0x16f1a0,0x16f1c4,0x16f1c4));
     }
 }
+
+pub const STAGE124_CURRENT_ADDR:u32=0x0016_F1C4;
+pub const STAGE124_LEGACY_ADDR:u32=0x0016_C1F8;
+pub const STAGE124_BODY_LEN:u32=92;
+pub const STAGE124_CURRENT_RAW_SHA256:&str="2a215624f073acbcc36b894b37789c7a21b7c7b252a432a23945769e63c1f9c4";
+pub const STAGE124_LEGACY_RAW_SHA256:&str="d1c81f0ba187bfe4ade2705f48f8119b063fe7245ac40e36b174cd7d06934d61";
+pub const STAGE124_NORMALIZED_SHA256:&str="5122b78240ed710fb983d0e39bd1a30c249d43522b943e0ac4d064fed57c3770";
+pub const STAGE124_TRANSFER_OFFSETS:[u16;5]=[0x1e,0x26,0x3c,0x48,0x58];
+pub const STAGE124_DIRECT_TRANSFERS:[u32;5]=[0x204f4,0x18214,0x264a0,0x217d0,0x222a4];
+
+
+pub const STAGE124_G_208338:u32=0x0020_8338;
+pub const STAGE124_LIT_26691:u32=0x0002_6691;
+pub const STAGE124_LITERAL_VALUES:[u32;2]=[STAGE124_G_208338,STAGE124_LIT_26691];
+pub const STAGE124_LITERAL_POOL_START:u32=0x0016_F220;
+pub const STAGE124_LITERAL_POOL_END:u32=0x0016_F228;
+pub const STAGE124_NEXT_PROLOGUE:u32=0x0016_F228;
+
+
+pub const STAGE124_CALL_204F4:u32=0x0002_04F4;
+pub const STAGE124_CALL_18214:u32=0x0001_8214;
+pub const STAGE124_CALL_264A0:u32=0x0002_64A0;
+pub const STAGE124_TAIL_217D0:u32=0x0002_17D0;
+pub const STAGE124_TAIL_222A4:u32=0x0002_22A4;
+
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage124Regs{pub r0:u32,pub r1:u32,pub r2:u32,pub r3:u32}
+
+
+pub trait BtStage124Backend{
+    fn read8(&mut self,addr:u32)->u8;
+    fn read16(&mut self,addr:u32)->u16;
+    fn write8(&mut self,addr:u32,value:u8);
+    fn call(&mut self,target:u32,regs:BtStage124Regs)->BtStage124Regs;
+    /// Opaque call boundary with one explicit 32-bit caller stack word at [SP].
+    /// Current `0x264A0` receives a zero-extended halfword from `0x208352` here.
+    fn call_with_stack_word(&mut self,target:u32,regs:BtStage124Regs,stack_word:u32)->BtStage124Regs;
+    /// Opaque restored-LR tail transfer. The model returns the tail boundary's opaque tuple.
+    fn tail_call(&mut self,target:u32,regs:BtStage124Regs)->BtStage124Regs;
+}
+
+
+/// Exact current-HCD R0-R3/register-memory model for `0x16F1C4..0x16F220`.
+///
+/// Opaque calls consume and return live R0-R3. The `0x264A0` fifth argument is represented
+/// explicitly as a caller stack word rather than as a fabricated register or address.
+/// Physical rereads stay distinct; effective addresses wrap as u32; byte/halfword loads
+/// zero-extend; byte stores truncate; and both restored-LR tails remain opaque boundaries.
+pub fn bt_stage124_register_state<B:BtStage124Backend>(
+    incoming_r0:u32,incoming_r1:u32,incoming_r2:u32,incoming_r3:u32,backend:&mut B
+)->BtStage124Regs{
+    let mut regs=BtStage124Regs{r0:incoming_r0,r1:incoming_r1,r2:incoming_r2,r3:incoming_r3};
+
+
+    regs.r1&=7;
+    regs.r3=0x28;
+    let r4=regs.r0;
+    backend.write8(regs.r0.wrapping_add(0x12),regs.r3 as u8);
+
+
+    let common=if regs.r1==1{
+        true
+    }else{
+        regs.r3=u32::from(backend.read8(regs.r0.wrapping_add(0x41)));
+        regs.r3==8
+    };
+
+
+    if !common{
+        regs.r3=1;
+        backend.write8(regs.r0.wrapping_add(0x41),regs.r3 as u8);
+        return backend.tail_call(STAGE124_TAIL_222A4,regs);
+    }
+
+
+    regs.r1=0;
+    regs.r0=u32::from(backend.read8(r4.wrapping_add(0x43)));
+    regs=backend.call(STAGE124_CALL_204F4,regs);
+
+
+    regs.r0=u32::from(backend.read8(r4.wrapping_add(0x43)));
+    regs=backend.call(STAGE124_CALL_18214,regs);
+
+
+    regs.r3=STAGE124_G_208338;
+    regs.r2=u32::from(backend.read8(r4.wrapping_add(0x44)));
+    regs.r3=u32::from(backend.read16(regs.r3.wrapping_add(0x1a)));
+    let stack_word=regs.r3;
+    regs.r0=r4;
+    regs.r1=u32::from(backend.read8(r4.wrapping_add(0x42)));
+    regs.r3=STAGE124_LIT_26691;
+    regs=backend.call_with_stack_word(STAGE124_CALL_264A0,regs,stack_word);
+
+
+    regs.r0=r4;
+    backend.tail_call(STAGE124_TAIL_217D0,regs)
+}
+
+
+#[cfg(test)]
+mod stage124_tests{
+    use super::*;
+    use std::collections::{BTreeMap,VecDeque};
+    use std::vec;
+    use std::vec::Vec;
+
+
+    #[derive(Default)]
+    struct B{
+        mem:BTreeMap<u32,u8>,
+        q8:BTreeMap<u32,VecDeque<u8>>,
+        q16:BTreeMap<u32,VecDeque<u16>>,
+        ret:BTreeMap<u32,VecDeque<BtStage124Regs>>,
+        calls:Vec<(u32,BtStage124Regs)>,
+        stack_calls:Vec<(u32,BtStage124Regs,u32)>,
+        tails:Vec<(u32,BtStage124Regs)>,
+        reads8:Vec<u32>,reads16:Vec<u32>,writes8:Vec<(u32,u8)>,
+    }
+    impl B{
+        fn set8(&mut self,a:u32,v:u8){self.mem.insert(a,v);}
+        fn set16(&mut self,a:u32,v:u16){for i in 0..2{self.set8(a.wrapping_add(i),((u32::from(v)>>(8*i))&0xff)as u8);}}
+        fn get8(&self,a:u32)->u8{*self.mem.get(&a).unwrap_or(&0)}
+        fn get16(&self,a:u32)->u16{(0..2).fold(0u16,|v,i|v|(u16::from(self.get8(a.wrapping_add(i)))<<(8*i)))}
+        fn qcall(&mut self,t:u32,r:BtStage124Regs){self.ret.entry(t).or_default().push_back(r);}
+    }
+    impl BtStage124Backend for B{
+        fn read8(&mut self,a:u32)->u8{self.reads8.push(a);if let Some(q)=self.q8.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get8(a)}
+        fn read16(&mut self,a:u32)->u16{self.reads16.push(a);if let Some(q)=self.q16.get_mut(&a){if let Some(v)=q.pop_front(){return v;}}self.get16(a)}
+        fn write8(&mut self,a:u32,v:u8){self.writes8.push((a,v));self.set8(a,v);}
+        fn call(&mut self,t:u32,r:BtStage124Regs)->BtStage124Regs{self.calls.push((t,r));self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)}
+        fn call_with_stack_word(&mut self,t:u32,r:BtStage124Regs,w:u32)->BtStage124Regs{self.stack_calls.push((t,r,w));self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)}
+        fn tail_call(&mut self,t:u32,r:BtStage124Regs)->BtStage124Regs{self.tails.push((t,r));self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)}
+    }
+    fn rr(r0:u32,r1:u32,r2:u32,r3:u32)->BtStage124Regs{BtStage124Regs{r0,r1,r2,r3}}
+
+
+    #[test]
+    fn masked_one_common_path_preserves_exact_calls_stack_word_and_tail(){
+        let mut b=B::default();let obj=0x1000;
+        b.q8.insert(obj+0x43,VecDeque::from([0x11,0x22]));
+        b.set8(obj+0x44,0x44);b.set8(obj+0x42,0x42);b.set16(STAGE124_G_208338+0x1a,0xbeef);
+        b.qcall(STAGE124_CALL_204F4,rr(0xa0,0xa1,0xa2,0xa3));
+        b.qcall(STAGE124_CALL_18214,rr(0xb0,0xb1,0xb2,0xb3));
+        b.qcall(STAGE124_CALL_264A0,rr(0xc0,0xc1,0xc2,0xc3));
+        b.qcall(STAGE124_TAIL_217D0,rr(0xd0,0xd1,0xd2,0xd3));
+        let out=bt_stage124_register_state(obj,0x09,0x22,0x33,&mut b);
+        assert_eq!(b.writes8,vec![(obj+0x12,0x28)]);
+        assert_eq!(b.calls,vec![
+            (STAGE124_CALL_204F4,rr(0x11,0,0x22,0x28)),
+            (STAGE124_CALL_18214,rr(0x22,0xa1,0xa2,0xa3)),
+        ]);
+        assert_eq!(b.stack_calls,vec![(STAGE124_CALL_264A0,rr(obj,0x42,0x44,STAGE124_LIT_26691),0xbeef)]);
+        assert_eq!(b.tails,vec![(STAGE124_TAIL_217D0,rr(obj,0xc1,0xc2,0xc3))]);
+        assert_eq!(b.reads8.iter().filter(|&&a|a==obj+0x43).count(),2);
+        assert_eq!(b.reads16,vec![STAGE124_G_208338+0x1a]);
+        assert_eq!(out,rr(0xd0,0xd1,0xd2,0xd3));
+    }
+
+
+    #[test]
+    fn byte41_eight_enters_common_with_path_dependent_live_r3(){
+        let mut b=B::default();let obj=0x2000;
+        b.set8(obj+0x41,8);b.q8.insert(obj+0x43,VecDeque::from([3,4]));
+        b.set8(obj+0x44,5);b.set8(obj+0x42,6);b.set16(STAGE124_G_208338+0x1a,7);
+        b.qcall(STAGE124_CALL_204F4,rr(10,11,12,13));
+        b.qcall(STAGE124_CALL_18214,rr(20,21,22,23));
+        b.qcall(STAGE124_CALL_264A0,rr(30,31,32,33));
+        let _=bt_stage124_register_state(obj,0x12,0x55,0x66,&mut b);
+        assert_eq!(b.calls[0],(STAGE124_CALL_204F4,rr(3,0,0x55,8)));
+        assert_eq!(b.stack_calls[0],(STAGE124_CALL_264A0,rr(obj,6,5,STAGE124_LIT_26691),7));
+        assert!(b.writes8.contains(&(obj+0x12,0x28)));
+        assert!(!b.writes8.contains(&(obj+0x41,1)));
+    }
+
+
+    #[test]
+    fn alternate_path_writes_byte41_and_tail_calls_with_masked_r1(){
+        let mut b=B::default();let obj=0x3000;b.set8(obj+0x41,7);
+        b.qcall(STAGE124_TAIL_222A4,rr(0xa1,0xa2,0xa3,0xa4));
+        let out=bt_stage124_register_state(obj,0x12,0x5566,0x7788,&mut b);
+        assert_eq!(b.writes8,vec![(obj+0x12,0x28),(obj+0x41,1)]);
+        assert!(b.calls.is_empty()&&b.stack_calls.is_empty());
+        assert_eq!(b.tails,vec![(STAGE124_TAIL_222A4,rr(obj,2,0x5566,1))]);
+        assert_eq!(out,rr(0xa1,0xa2,0xa3,0xa4));
+    }
+
+
+    #[test]
+    fn wrapping_effective_addresses_are_preserved_on_alternate_path(){
+        let mut b=B::default();let obj=u32::MAX-0x11;
+        let byte41=obj.wrapping_add(0x41);b.set8(byte41,0);
+        let _=bt_stage124_register_state(obj,0,0x22,0x33,&mut b);
+        assert_eq!(b.writes8,vec![(0,0x28),(byte41,1)]);
+        assert_eq!(b.tails[0],(STAGE124_TAIL_222A4,rr(obj,0,0x22,1)));
+    }
+
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!((STAGE124_CURRENT_ADDR,STAGE124_LEGACY_ADDR,STAGE124_BODY_LEN),(0x16f1c4,0x16c1f8,92));
+        assert_eq!(STAGE124_TRANSFER_OFFSETS,[0x1e,0x26,0x3c,0x48,0x58]);
+        assert_eq!(STAGE124_DIRECT_TRANSFERS,[0x204f4,0x18214,0x264a0,0x217d0,0x222a4]);
+        assert_eq!(STAGE124_LITERAL_VALUES,[0x208338,0x26691]);
+        assert_eq!((STAGE124_LITERAL_POOL_START,STAGE124_LITERAL_POOL_END,STAGE124_NEXT_PROLOGUE),(0x16f220,0x16f228,0x16f228));
+    }
+}
