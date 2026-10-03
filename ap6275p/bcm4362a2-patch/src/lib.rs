@@ -22298,3 +22298,114 @@ mod stage124_tests{
         assert_eq!((STAGE124_LITERAL_POOL_START,STAGE124_LITERAL_POOL_END,STAGE124_NEXT_PROLOGUE),(0x16f220,0x16f228,0x16f228));
     }
 }
+
+pub const STAGE125_CURRENT_ADDR:u32=0x0016_F228;
+pub const STAGE125_LEGACY_ADDR:u32=0x0016_C25C;
+pub const STAGE125_BODY_LEN:u32=20;
+pub const STAGE125_CURRENT_RAW_SHA256:&str="c9746dcab7a28858cebab9a5bb4ab08bd50bba18a2a573363015aa6829d076e1";
+pub const STAGE125_LEGACY_RAW_SHA256:&str="d98875bf68a2c42c0753c7cf36113c5b8bcd86a5dd700be89312e394eb3b457b";
+pub const STAGE125_NORMALIZED_SHA256:&str="0d6c3674da7f8058ac5d982a2d2d8bcf98bec2b38778acaea66fce91b1973ca8";
+pub const STAGE125_TRANSFER_OFFSETS:[u16;2]=[0x06,0x10];
+pub const STAGE125_DIRECT_TRANSFERS:[u32;2]=[0x0004_4468,0x0002_65E8];
+pub const STAGE125_NEXT_UNREACHABLE_CODE:u32=0x0016_F23C;
+pub const STAGE125_NEXT_LEAF_LITERAL_POOL_START:u32=0x0016_F244;
+pub const STAGE125_NEXT_LEAF_LITERAL_POOL_END:u32=0x0016_F24C;
+pub const STAGE125_NEXT_PUSH_PROLOGUE:u32=0x0016_F24C;
+
+pub const STAGE125_CALL_44468:u32=0x0004_4468;
+pub const STAGE125_TAIL_265E8:u32=0x0002_65E8;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct BtStage125Regs{pub r0:u32,pub r1:u32,pub r2:u32,pub r3:u32}
+
+pub trait BtStage125Backend{
+    /// Opaque ordinary call boundary. R0-R3 are caller-volatiles and the
+    /// returned tuple becomes the live post-call R0-R3 state.
+    fn call(&mut self,target:u32,regs:BtStage125Regs)->BtStage125Regs;
+    /// Opaque restored-LR tail transfer. Its opaque result is the function result.
+    fn tail_call(&mut self,target:u32,regs:BtStage125Regs)->BtStage125Regs;
+}
+
+/// Exact current-HCD R0-R3 model for executable body `0x16F228..0x16F23C`.
+///
+/// Entry R0 is saved in callee-saved R4 before the opaque call. The body forces
+/// R1=1 for `0x44468`; R0-R3 returned by that call are caller-volatile. It then
+/// restores R0 from saved R4, restores R4/LR, and tail-transfers opaquely to
+/// `0x265E8` with the call-returned R1-R3 still live. There are no body memory
+/// accesses, arithmetic, truncation, or literal loads.
+pub fn bt_stage125_register_state<B:BtStage125Backend>(
+    incoming_r0:u32,incoming_r1:u32,incoming_r2:u32,incoming_r3:u32,backend:&mut B
+)->BtStage125Regs{
+    let saved_r4=incoming_r0;
+    let mut regs=BtStage125Regs{
+        r0:incoming_r0,
+        r1:1,
+        r2:incoming_r2,
+        r3:incoming_r3,
+    };
+    let _=incoming_r1;
+    regs=backend.call(STAGE125_CALL_44468,regs);
+    regs.r0=saved_r4;
+    backend.tail_call(STAGE125_TAIL_265E8,regs)
+}
+
+#[cfg(test)]
+mod stage125_tests{
+    use super::*;
+    use std::collections::{BTreeMap,VecDeque};
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct B{
+        ret:BTreeMap<u32,VecDeque<BtStage125Regs>>,
+        calls:Vec<(u32,BtStage125Regs)>,
+        tails:Vec<(u32,BtStage125Regs)>,
+    }
+    impl B{
+        fn q(&mut self,t:u32,r:BtStage125Regs){self.ret.entry(t).or_default().push_back(r);}
+    }
+    impl BtStage125Backend for B{
+        fn call(&mut self,t:u32,r:BtStage125Regs)->BtStage125Regs{
+            self.calls.push((t,r));
+            self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)
+        }
+        fn tail_call(&mut self,t:u32,r:BtStage125Regs)->BtStage125Regs{
+            self.tails.push((t,r));
+            self.ret.get_mut(&t).and_then(|q|q.pop_front()).unwrap_or(r)
+        }
+    }
+    fn rr(r0:u32,r1:u32,r2:u32,r3:u32)->BtStage125Regs{BtStage125Regs{r0,r1,r2,r3}}
+
+    #[test]
+    fn first_call_forces_r1_one_and_preserves_entry_r0_r2_r3(){
+        let mut b=B::default();
+        b.q(STAGE125_CALL_44468,rr(0xa0,0xa1,0xa2,0xa3));
+        b.q(STAGE125_TAIL_265E8,rr(0xb0,0xb1,0xb2,0xb3));
+        let out=bt_stage125_register_state(0x1000,0x11,0x22,0x33,&mut b);
+        assert_eq!(b.calls,vec![(STAGE125_CALL_44468,rr(0x1000,1,0x22,0x33))]);
+        assert_eq!(b.tails,vec![(STAGE125_TAIL_265E8,rr(0x1000,0xa1,0xa2,0xa3))]);
+        assert_eq!(out,rr(0xb0,0xb1,0xb2,0xb3));
+    }
+
+    #[test]
+    fn opaque_call_r0_is_discarded_but_returned_r1_r3_flow_to_tail(){
+        let mut b=B::default();
+        b.q(STAGE125_CALL_44468,rr(0xdead_beef,0x21,0x22,0x23));
+        let out=bt_stage125_register_state(0x2000,u32::MAX,0x55,0x66,&mut b);
+        assert_eq!(b.calls[0].1,rr(0x2000,1,0x55,0x66));
+        assert_eq!(b.tails[0],(STAGE125_TAIL_265E8,rr(0x2000,0x21,0x22,0x23)));
+        assert_eq!(out,rr(0x2000,0x21,0x22,0x23));
+    }
+
+    #[test]
+    fn provenance_constants_are_exact(){
+        assert_eq!((STAGE125_CURRENT_ADDR,STAGE125_LEGACY_ADDR,STAGE125_BODY_LEN),(0x16f228,0x16c25c,20));
+        assert_eq!(STAGE125_TRANSFER_OFFSETS,[0x06,0x10]);
+        assert_eq!(STAGE125_DIRECT_TRANSFERS,[0x44468,0x265e8]);
+        assert_eq!((STAGE125_NEXT_UNREACHABLE_CODE,STAGE125_NEXT_LEAF_LITERAL_POOL_START,STAGE125_NEXT_LEAF_LITERAL_POOL_END,STAGE125_NEXT_PUSH_PROLOGUE),(0x16f23c,0x16f244,0x16f24c,0x16f24c));
+        assert_eq!(STAGE125_CURRENT_RAW_SHA256,"c9746dcab7a28858cebab9a5bb4ab08bd50bba18a2a573363015aa6829d076e1");
+        assert_eq!(STAGE125_LEGACY_RAW_SHA256,"d98875bf68a2c42c0753c7cf36113c5b8bcd86a5dd700be89312e394eb3b457b");
+        assert_eq!(STAGE125_NORMALIZED_SHA256,"0d6c3674da7f8058ac5d982a2d2d8bcf98bec2b38778acaea66fce91b1973ca8");
+    }
+}
